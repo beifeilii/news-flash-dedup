@@ -53,7 +53,10 @@ def judge_in_chain_enabled(environ: Mapping | None = None) -> bool:
 
 ORDERS = ("ab", "ba")
 PROOF_VERDICTS = ("duplicate", "not_duplicate", "doubtful", "failure", "invalid")
-FALSIFICATION_DIMENSIONS = ("subject", "event", "stage", "numeric")
+# 合同 v2（D7 裁定 2026-10-09，主窗口 D1-D10 逐条）：证伪词表=实现五族
+# （subject/numeric/time/stage/polarity，宪章 §二 机检可判族）——"event"
+# 无机检判据不冒充，合同 v2 删除；与 judge_adapter 原生维发射同步。
+FALSIFICATION_DIMENSIONS = ("subject", "numeric", "time", "stage", "polarity")
 CHECK_CONCLUSIONS = ("一致", "不一致", "无法判定")
 
 # 合同 §三 失败/未决枚举（P1-b 一律映射为"未决"进人工，禁止静默豁免）
