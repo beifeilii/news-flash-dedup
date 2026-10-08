@@ -359,6 +359,16 @@ def verify_signed_judgment(judgment: Mapping[str, Any],
 NEGATION_TOKENS = ("否认", "不予", "不再", "并无", "并未", "未有", "取消",
                    "终止", "否决")
 
+# 证明路阶段词表（2026-10-09 policy_v2 对齐，宪章 §二-3 枚举：开盘/收盘、
+# 同比/环比、当日/次日、初值/终值、当年/次年）=现役 STAGE_WORDS + 宪章补员
+# （当日/次日）。现役 STAGE_WORDS 一字不动（R2 旧路锚），本表仅证明路消费。
+PROOF_STAGE_WORDS = STAGE_WORDS + ("当日", "次日")
+
+# 相对时间词族（宪章 C14/T-3 生效口径：含"今日/昨日/当年"等相对时间且
+# 双侧无共同绝对锚点 → 即使同文也按边界，不得签"重复"）。闭合词表=
+# 宪章示例（今日/昨日/当年）+ §二-3 列员（当日/次日）+ 直系同族（明日/今年）。
+RELATIVE_TIME_TOKENS = ("今日", "昨日", "当年", "当日", "次日", "明日", "今年")
+
 # 机器时间抽取（闭合形态：YYYY年M月D日[号]/M月D日[号]/YYYY-M-D/YYYY/M/D；
 # 归一复用 _norm_time 去\s年月日号）。阶段词复用 STAGE_WORDS 闭合词表。
 _TIME_DATE_RE = re.compile(
@@ -387,8 +397,9 @@ def find_quote_spans(quote: str, text: str) -> tuple[tuple[int, int], ...]:
 
 
 def extract_stage_set(text: str) -> set[str]:
-    """机器独立抽取阶段词集（STAGE_WORDS 闭合词表，不信判官供数）。"""
-    return {w for w in STAGE_WORDS if w in text}
+    """机器独立抽取阶段词集（证明路词表 PROOF_STAGE_WORDS=STAGE_WORDS+宪章
+    §二-3 补员 当日/次日，policy_v2 对齐；不信判官供数）。"""
+    return {w for w in PROOF_STAGE_WORDS if w in text}
 
 
 def extract_time_mentions(text: str) -> tuple[dict, ...]:
@@ -440,20 +451,37 @@ def subject_code_mentions(text: str) -> tuple[dict, ...]:
 def machine_time_stage_compare(text_a: str, text_b: str) -> dict:
     """R2 证明级替代：时间/阶段由机器从原文独立抽取比对（P1-a ③）。
 
-    - time_conflict：双侧机器时间集均非空、归一不等、且双侧阶段词集并集
-      非空（R2"阶段限定"判据移植到机抽集合——日期差须落在讨论阶段事实
-      的文本中才算事件时间冲突，如无阶段词的发布日时差宽放，避免假冲突）；
-      一侧缺失放行（缺失≠冲突）。
-    - stage_conflict：双侧机抽阶段词集均非空且不等（如 初值 vs 终值、
-      开盘 vs 收盘——同事件链不同阶段不得签同事实）。
+    policy_v2 对齐（宪章 §一-3/§二-3，2026-10-09 生效）：
+    - time_conflict：双侧机抽时间集均非空且归一不等 → **直接**冲突
+      （宪章"时间/阶段可识别差异"为不重复直接事由，判"重复"须时间归一
+      一致；此前"阶段词在场"限定词超出宪章放宽，policy_v2 起删除）；
+      一侧缺失放行=缺失≠冲突（宪章"时间缺失例外"）。
+    - stage_conflict：双侧机抽阶段词集均非空且不等（开盘/收盘、同比/
+      环比、当日/次日、初值/终值、当年/次年——宪章 §二-3 枚举族）。
     """
     ta, tb = extract_time_set(text_a), extract_time_set(text_b)
     sa, sb = extract_stage_set(text_a), extract_stage_set(text_b)
-    time_conflict = bool(ta and tb and ta != tb and (sa or sb))
+    time_conflict = bool(ta and tb and ta != tb)
     stage_conflict = bool(sa and sb and sa != sb)
     return {"times_a": sorted(ta), "times_b": sorted(tb),
             "stage_a": sorted(sa), "stage_b": sorted(sb),
             "time_conflict": time_conflict, "stage_conflict": stage_conflict}
+
+
+def machine_relative_time_anchor_check(text_a: str, text_b: str) -> dict:
+    """相对时间无锚点机检（宪章 C14 + T-3 生效处置，policy_v2 对齐）。
+
+    block=True 当且仅当：任一侧含相对时间词族（RELATIVE_TIME_TOKENS）
+    且双侧无共同绝对锚点（机抽日期集交集为空）——此时即使两条正文完全
+    相同也不得签"重复"（按边界保守口径）；不得用系统接收时间/发布时间/
+    另一条正文替其补日期（本函数只看正文，结构性合规）。
+    """
+    ra = sorted({t for t in RELATIVE_TIME_TOKENS if t in text_a})
+    rb = sorted({t for t in RELATIVE_TIME_TOKENS if t in text_b})
+    shared = bool(extract_time_set(text_a) & extract_time_set(text_b))
+    return {"relative_tokens_a": ra, "relative_tokens_b": rb,
+            "shared_absolute_anchor": shared,
+            "block": bool((ra or rb) and not shared)}
 
 
 def machine_negation_compare(text_a: str, text_b: str) -> dict:
@@ -479,7 +507,9 @@ __all__ = [
     "rule_r4_ungrounded_claims", "rule_r5_evidence_verbatim",
     "rule_r6_polarity_conflict", "verify_signed_judgment",
     # 2026-10-09 P1-a 证明级机检原语（增量；旧 audit 路径零消费）
+    "PROOF_STAGE_WORDS", "RELATIVE_TIME_TOKENS",
     "find_quote_spans", "extract_stage_set", "extract_time_mentions",
     "extract_time_set", "number_mentions", "subject_code_mentions",
     "machine_time_stage_compare", "machine_negation_compare",
+    "machine_relative_time_anchor_check",
 ]

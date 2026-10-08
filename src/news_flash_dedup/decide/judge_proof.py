@@ -13,6 +13,26 @@
 audit 模式只观测不降级、gate 模式按 P_* 触发降级存疑（含"不重复无机器
 可证伪轴"降级——未证排除不得冒充已证，任务书⑥）。
 
+policy_v2 对齐（2026-10-09 主窗口通报：《判定宪章》policy_v2 经用户审签
+生效，文件=log\判定宪章-草案-v2-1009.md 头部生效声明）：
+- policy_version 字段取值="policy_v2"（宪章版本；旧 "p1a-proof-v1" 作废
+  升级——verify_proof_dict 按版本对拍，旧版本证明件自然不复验=历史
+  证明按旧版本封存）；
+- 机侧核验语义照宪章条目：数值完全一致含缺失例外（§一-2，R3 同口径
+  机抽双向差异才冲突）；时间/阶段可识别差异=不重复直接事由（§二-3，
+  time_conflict 不再要阶段限定词；一侧缺失放行=§一-3 缺失例外）；主体
+  缺失进边界（§三-1，机检可判域=单侧主体代码缺失拦签 P_SUBJECT_MISSING；
+  双侧皆无代码=机检无主体判据，留判官域+其余机检闸）；方向冲突
+  （§二-5=极性词对）；关键对象不同（§二-4）与长文未对齐原子事件
+  （§二-6/C09）**无机检可判判据**——判官口径（judge_v2/v3 条款）+④结论
+  对拍兜底，机检不冒充（呈主窗口备案的解释项）；
+- 相对时间无锚点（C14+T-3 生效处置）：任一侧含相对时间词族且双侧无
+  共同绝对锚点 → 即使同文也不得签"重复"（P_REL_TIME 拦签按边界）；
+- "不重复"证伪合同照宪章 §二：机检可判族=主体完全不一致/任一对应数值
+  差异/时间·阶段可识别差异/方向冲突（轴词表 subject/numeric/time/stage/
+  polarity，stage 词表含宪章补员 当日/次日）；关键对象/原子事件两族
+  同上留判官域。
+
 七条口径落点（任务书①-⑦）：
 ① 缓存键加固 → llm_residual.residual_cache_key_hardened（本模块供
    PROOF_POLICY_VERSION 维度）；证明每跑必从判定+原文现算——缓存命中
@@ -56,7 +76,7 @@ from . import machine_verify as _mv
 
 # ---------------------------------------------------------------- 常量 / 开关
 
-PROOF_POLICY_VERSION = "p1a-proof-v1"
+PROOF_POLICY_VERSION = "policy_v2"       # 判定宪章版本（2026-10-09 用户审签生效）
 PROOF_TYPE_DUPLICATE = "duplicate"
 PROOF_TYPE_NOT_DUPLICATE = "not_duplicate"
 JUDGE_PROOF_ENV = "DEDUP_JUDGE_PROOF"
@@ -64,17 +84,20 @@ JUDGE_PROOF_ENV = "DEDUP_JUDGE_PROOF"
 # P_* 证明级规则 id（与现役 R1-R6 audit 规则命名隔离）
 P_OFFSET = "P_OFFSET"            # ② 引文 offset 绑定（锚短/伪匹配/错侧拒签）
 P_NUMERIC = "P_NUMERIC"          # ③ 机侧数值冲突（R3 同口径机抽集合）
-P_TIME = "P_TIME"                # ③ 机侧时间冲突（机抽日期集，阶段限定）
+P_TIME = "P_TIME"                # ③ 机侧时间冲突（机抽日期集，policy_v2 直接事由）
 P_STAGE = "P_STAGE"              # ③ 机侧阶段冲突（机抽阶段词集不对称）
 P_NEGATION = "P_NEGATION"        # 否定/极性机检冲突（R6+否定词族不对称）
-P_SUBJECT = "P_SUBJECT"          # 主体锚一致性（R1 同口径机抽代码集）
+P_SUBJECT = "P_SUBJECT"          # 主体锚一致性（R1 同口径机抽代码集互斥）
+P_SUBJECT_MISSING = "P_SUBJECT_MISSING"  # 主体缺失进边界（宪章 §三-1，单侧代码缺失）
+P_REL_TIME = "P_REL_TIME"        # 相对时间无锚点（宪章 C14/T-3，同文亦拦）
 P_CONCLUSION = "P_CONCLUSION"    # ④ 判定与分项结论对拍（重复 vs 不一致）
 P_JTIME = "P_JTIME"              # 判官自供时间自相矛盾（R2 同型抓自反）
 P_NO_AXIS = "P_NO_AXIS"          # ⑥ 不重复无机器可证伪轴（证据不足→未决）
 
 # to_interceptions 确定性输出序
-_P_RULE_ORDER = (P_OFFSET, P_SUBJECT, P_NUMERIC, P_TIME, P_STAGE,
-                 P_NEGATION, P_CONCLUSION, P_JTIME, P_NO_AXIS)
+_P_RULE_ORDER = (P_OFFSET, P_SUBJECT, P_SUBJECT_MISSING, P_NUMERIC, P_TIME,
+                 P_STAGE, P_REL_TIME, P_NEGATION, P_CONCLUSION, P_JTIME,
+                 P_NO_AXIS)
 
 _WS_RE = re.compile(r"\s+")      # R5 锚长检查同款空白归一（machine_verify._WS 同型）
 
@@ -332,6 +355,7 @@ class OrderVerification:
     stage_check: dict
     negation_check: dict
     subject_check: dict
+    rel_time_check: dict                    # 宪章 C14/T-3 相对时间无锚点机检
     conclusion_check: dict
     judge_time_selfcheck: dict
     axes: tuple[dict, ...]                  # 仅 decision=="不重复" 时非空
@@ -351,6 +375,16 @@ class OrderVerification:
                 out.append({"rule": rule,
                             "codes_a": list(self.subject_check["codes_a"]),
                             "codes_b": list(self.subject_check["codes_b"])})
+            elif rule == P_SUBJECT_MISSING:
+                out.append({"rule": rule,
+                            "codes_a": list(self.subject_check["codes_a"]),
+                            "codes_b": list(self.subject_check["codes_b"])})
+            elif rule == P_REL_TIME:
+                out.append({"rule": rule,
+                            "relative_tokens_a": list(
+                                self.rel_time_check["relative_tokens_a"]),
+                            "relative_tokens_b": list(
+                                self.rel_time_check["relative_tokens_b"])})
             elif rule == P_NUMERIC:
                 out.append({"rule": rule,
                             "only_a": list(self.numeric_check["only_a"]),
@@ -396,6 +430,7 @@ class OrderVerification:
             "negation_check": json.loads(
                 json.dumps(self.negation_check, ensure_ascii=False)),
             "subject_check": dict(self.subject_check),
+            "rel_time_check": dict(self.rel_time_check),
             "conclusion_check": json.loads(
                 json.dumps(self.conclusion_check, ensure_ascii=False)),
             "judge_time_selfcheck": dict(self.judge_time_selfcheck),
@@ -415,6 +450,7 @@ class OrderVerification:
             stage_check=dict(d["stage_check"]),
             negation_check=dict(d["negation_check"]),
             subject_check=dict(d["subject_check"]),
+            rel_time_check=dict(d["rel_time_check"]),
             conclusion_check=dict(d["conclusion_check"]),
             judge_time_selfcheck=dict(d["judge_time_selfcheck"]),
             axes=tuple(dict(a) for a in d["axes"]),
@@ -446,9 +482,21 @@ def verify_order_judgment(*, order: str, judgment: Mapping[str, Any],
     neg = _mv.machine_negation_compare(text_a, text_b)
     codes_a = sorted({m["surface"] for m in _mv.subject_code_mentions(text_a)})
     codes_b = sorted({m["surface"] for m in _mv.subject_code_mentions(text_b)})
+    # 主体缺失进边界（宪章 §三-1，policy_v2 对齐）：机检可判域=恰一侧有
+    # 主体代码（另一侧机检抽不出主体锚→不得自动签"重复"）；双侧皆无=
+    # 机检无主体判据，不冒充（判官域+其余机检闸兜底，呈主窗口备案）。
+    subj_missing = bool(codes_a) != bool(codes_b)
+    subj_conflict = _mv.rule_r1_subject_codes(text_a, text_b)
     subj = {"codes_a": codes_a, "codes_b": codes_b,
-            "machine_conflict": _mv.rule_r1_subject_codes(text_a, text_b),
-            "backed": not _mv.rule_r1_subject_codes(text_a, text_b)}
+            "machine_conflict": subj_conflict,
+            "machine_missing": subj_missing,
+            "backed": not (subj_conflict or subj_missing)}
+    rel = _mv.machine_relative_time_anchor_check(text_a, text_b)
+    rel_chk = {"relative_tokens_a": rel["relative_tokens_a"],
+               "relative_tokens_b": rel["relative_tokens_b"],
+               "shared_absolute_anchor": rel["shared_absolute_anchor"],
+               "machine_block": rel["block"],
+               "backed": not rel["block"]}
     concl = _conclusion_check(judgment)
     jtime = _judge_time_selfcheck(judgment)
     failures: list[str] = []
@@ -456,14 +504,18 @@ def verify_order_judgment(*, order: str, judgment: Mapping[str, Any],
         failures.append(P_OFFSET)
     axes: tuple[dict, ...] = ()
     if decision == "重复":
-        if subj["machine_conflict"]:
+        if subj_conflict:
             failures.append(P_SUBJECT)
+        if subj_missing:
+            failures.append(P_SUBJECT_MISSING)
         if numeric["machine_conflict"]:
             failures.append(P_NUMERIC)
         if time_chk["machine_conflict"]:
             failures.append(P_TIME)
         if stage_chk["machine_conflict"]:
             failures.append(P_STAGE)
+        if rel["block"]:
+            failures.append(P_REL_TIME)
         if neg["conflict"]:
             failures.append(P_NEGATION)
         if not concl["ok"]:
@@ -480,7 +532,7 @@ def verify_order_judgment(*, order: str, judgment: Mapping[str, Any],
         judgment=dict(judgment), citations=citations,
         citation_failures=citation_failures, numeric_check=numeric,
         time_check=time_chk, stage_check=stage_chk, negation_check=neg,
-        subject_check=subj, conclusion_check=concl,
+        subject_check=subj, rel_time_check=rel_chk, conclusion_check=concl,
         judge_time_selfcheck=jtime, axes=axes,
         failures=tuple(failures), ok=not failures)
 
@@ -727,7 +779,8 @@ def verify_proof_dict(proof: Mapping[str, Any], text_history: str,
 __all__ = [
     "PROOF_POLICY_VERSION", "PROOF_TYPE_DUPLICATE", "PROOF_TYPE_NOT_DUPLICATE",
     "JUDGE_PROOF_ENV", "P_OFFSET", "P_NUMERIC", "P_TIME", "P_STAGE",
-    "P_NEGATION", "P_SUBJECT", "P_CONCLUSION", "P_JTIME", "P_NO_AXIS",
+    "P_NEGATION", "P_SUBJECT", "P_SUBJECT_MISSING", "P_REL_TIME",
+    "P_CONCLUSION", "P_JTIME", "P_NO_AXIS",
     "judge_proof_enabled", "text_sha256", "NotDuplicateFailure",
     "CitationSpan", "OrderVerification", "VerifiedJudgeProof",
     "NotDuplicateProof", "verify_order_judgment", "build_duplicate_proof",
