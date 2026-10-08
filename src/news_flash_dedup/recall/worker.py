@@ -37,6 +37,7 @@ from news_flash_dedup.commit.coordinator import (
     commit_one,
 )
 from news_flash_dedup.deadline import parse_utc_iso
+from news_flash_dedup.decide import judge_adapter as judge_adapter_module
 from news_flash_dedup.decide import service as decide_service
 from news_flash_dedup.decide.types import DecideOutcome
 from news_flash_dedup.es_admission_schema import day_index
@@ -72,14 +73,21 @@ def shadow_decide(current: Mapping, candidates: tuple[Mapping, ...], *,
                   coverage_complete: bool, visible_seq: int,
                   prepared_seq: int, pipeline_version: str = "dedup_v1",
                   dictionary=None,
-                  dictionary_version: str = "dict_v1") -> DecideOutcome:
+                  dictionary_version: str = "dict_v1",
+                  judge_callable=None) -> DecideOutcome:
     """影子腿决策：与生效腿 commit_one 决策段同型镜像（零副作用纯函数）。
 
     候选非空：decide_for_task(history=candidates[-1], candidates=candidates[:-1],
     ...)（coordinator.py:144-160 同型调用）；零候选：coordinator.py:161-198
     两分支逐字镜像（reason/internal_code/unresolved_fields 同文）。
+
+    judge_callable（2026-10-09 P1 联调，coordinator.py commit_one 装配同型）：
+    显式注入优先；None=按 env 装配真件（DEDUP_JUDGE_PROOF 关→未注入
+    fail-closed 未决）。影子腿与生效腿同闸同件，镜像语义不破。
     """
     if candidates:
+        if judge_callable is None:
+            judge_callable = judge_adapter_module.build_judge_callable()
         return decide_service.decide_for_task(
             history=candidates[-1],
             candidates=candidates[:-1],
@@ -90,6 +98,7 @@ def shadow_decide(current: Mapping, candidates: tuple[Mapping, ...], *,
             prepared_seq=prepared_seq,
             dictionary=dictionary,
             dictionary_version=dictionary_version,
+            judge_callable=judge_callable,
         )
     if coverage_complete:
         return DecideOutcome(

@@ -19,6 +19,7 @@ from typing import Any
 from news_flash_dedup.commit.fake_store import FakeCommitStore, FakeMainRecord
 from news_flash_dedup.deadline import deadline_iso
 from news_flash_dedup.decide import audit as audit_module
+from news_flash_dedup.decide import judge_adapter as judge_adapter_module
 from news_flash_dedup.decide import service as decide_service
 from news_flash_dedup.decide.audit import AuditBatch
 from news_flash_dedup.decide.types import DecideOutcome
@@ -179,6 +180,7 @@ def commit_one(
     expires_at: str | None = None,          # P2 C-04/C-08（窗口X 并线）：None=现状（不钳制不透传）
     request_id: str | None = None,          # P2 P17-3 前置（窗口X 并线）：None=D24 回退链不变
     budget=None,                            # W2 ⑩①-4（N43 挂账清偿）：ProcessingBudget|None；None=现役逐字节
+    judge_callable=None,                    # P1 联调（2026-10-09 P1-a）：None=按 env 装配真件（DEDUP_JUDGE_PROOF 关→None=未注入 fail-closed 未决）
 ) -> CommitOutcome:
     """commit_one 编排（fake 仓储注测）。
 
@@ -227,6 +229,14 @@ def commit_one(
     if ctx.candidates:
         history = ctx.candidates[-1]
         remaining_candidates = ctx.candidates[:-1]
+        # P1 联调装配（2026-10-09 P1-a）：真件 judge_callable 透传——显式
+        # 注入优先（测试罐装 LLM 边界）；None=按 env 装配（DEDUP_JUDGE_PROOF
+        # 关→build_judge_callable 返 None=未注入，adjudicate_pair 默认实现
+        # fail-closed 未决，绝不冒签）。DEDUP_JUDGE_IN_CHAIN 关=判官段整体
+        # 跳过（decide_for_task 内闸，老行为逐字节）。
+        if judge_callable is None:
+            judge_callable = judge_adapter_module.build_judge_callable(
+                budget=budget)
         decide = decide_service.decide_for_task(
             history=history,
             candidates=remaining_candidates,
@@ -238,6 +248,7 @@ def commit_one(
             dictionary=dictionary,  # D19 杠杆 b 穿透
             dictionary_version=dictionary_version,
             budget=budget,  # W2 ⑩①-4：T011 归因面透传（None=零 diff）
+            judge_callable=judge_callable,  # P1 联调：真件/None（未注入 fail-closed）
         )
     else:
         # R9 外部审核 F3 修复（主窗口 06:5x）：分区首条（零候选）——无历史
