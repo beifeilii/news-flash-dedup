@@ -287,16 +287,29 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
                 for r in exam_rows]
 
     # 判官相位（①复用；verdicts_in=断点复跑零 API）
+    # 证据先行（2026-10-09 主窗口令）：evidence_dir 进执行器——判毕先于对账
+    # 闸落 verdicts-{run_id}-judge.json；执行器红（hits>0/api<arms）时本层
+    # 补 assessment stub 再停（红停不丢判，金标轨与 T 轨同款纪律）。
     if verdicts_in is not None:
         verdicts = json.loads(verdicts_in.read_text(encoding="utf-8"))["results"]
         usage = {"resume_from": str(verdicts_in)}
         stopped_reason = None
     else:
-        report = run_judge_batch(
-            requests, run_id=f"{run_id}-judge", workers=workers,
-            token_budget=token_budget,
-            usage_ledger_path=str(out_dir / "judge-usage.jsonl"),
-            progress=progress)
+        try:
+            report = run_judge_batch(
+                requests, run_id=f"{run_id}-judge", workers=workers,
+                token_budget=token_budget,
+                usage_ledger_path=str(out_dir / "judge-usage.jsonl"),
+                evidence_dir=str(out_dir),
+                progress=progress)
+        except JudgeExecutorError as error:
+            (out_dir / "assessment.json").write_text(json.dumps({
+                "schema": "vfy-layered-assessment-v1", "run_id": run_id,
+                "mode": mode, "stopped": f"judge_executor_red: {error}",
+                "executor_payload": error.payload,
+                "note": "执行器红停：verdicts 已证据先行落盘（见 payload.evidence）"},
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            raise
         verdicts = [
             {"pair_id": r.pair_id, "cell": r.cell, "signed": r.signed,
              "verdict_residual": r.verdict_residual,

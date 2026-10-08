@@ -174,30 +174,41 @@ def _t_record(item_id: str, text: str, seq: int, fact_supply) -> dict:
             "arrival_seq": seq, "facts": fact_supply(rid, text)}
 
 
-def run_t0909_track(*, run_id: str, sample: int, max_pairs_per_item: int,
-                    workers: int, token_budget: int, seed: int,
-                    out_dir: Path, stream_path: Path, decisions_path: Path,
-                    max_failure_rate: float, progress=None) -> dict:
-    """T0909 轨：冻结决策行抽样 → 判官（①）+ 链原生三态 → 分布评分。"""
-    from news_flash_dedup.recall.service import RuleFactSupply
-    from news_flash_dedup.decide import service as decide_service
+def _build_t_requests(rows: list, texts: dict,
+                      max_pairs_per_item: int) -> tuple[list, dict, list]:
+    """T 轨判官对集装配 + 缺失点名（2026-10-09 主窗口令："1,000 抽 999"
+    类缺失不许静默——逐行点名原因）。
 
-    texts = _load_stream_texts(stream_path)
-    rows = _sample_t_rows(decisions_path, sample, seed)
-    if not rows:
-        raise RunnerStop(4, "T 轨抽样为空（candidate_count>0 行零）")
-
-    # 判官对集：每行 top-N 候选（冻结行 candidates 按 score 降序取前 N）
+    返 (requests, pair_backref, skips)。skips 逐条 {item_id, reason, detail}：
+    - candidate_text_missing   候选 item_id 在流件正文表缺席（正文缺）；
+    - candidate_text_identical 候选正文与当前条逐字同（自对，判了无义）；
+    - candidates_list_empty    行 candidate_count>0 但 candidates 表空（数据缺）。
+    """
     requests: list[JudgePairRequest] = []
     pair_backref: dict = {}
-    skipped_no_text = 0
+    skips: list[dict] = []
     for row in rows:
-        candidates = sorted(row["candidates"],
+        candidates = sorted(row.get("candidates") or [],
                             key=lambda c: -c.get("score", 0.0))
+        if not candidates:
+            skips.append({"item_id": row["item_id"],
+                          "reason": "candidates_list_empty",
+                          "detail": f"candidate_count={row.get('candidate_count')}"
+                                    f" 但 candidates 表空"})
+            continue
         for cand in candidates[:max_pairs_per_item]:
             cand_text = texts.get(cand["item_id"])
-            if cand_text is None or cand_text == row["text"]:
-                skipped_no_text += 1
+            if cand_text is None:
+                skips.append({"item_id": row["item_id"],
+                              "candidate_item_id": cand["item_id"],
+                              "reason": "candidate_text_missing",
+                              "detail": "候选 item_id 流件正文表缺席"})
+                continue
+            if cand_text == row["text"]:
+                skips.append({"item_id": row["item_id"],
+                              "candidate_item_id": cand["item_id"],
+                              "reason": "candidate_text_identical",
+                              "detail": "候选正文与当前条逐字同（自对）"})
                 continue
             pid = hashlib.sha256(
                 f"{row['record_id']}|{cand['item_id']}".encode("utf-8")).hexdigest()
@@ -207,14 +218,51 @@ def run_t0909_track(*, run_id: str, sample: int, max_pairs_per_item: int,
                       "candidate_item_id": cand["item_id"],
                       "candidate_score": cand.get("score")}))
             pair_backref[pid] = (row["item_id"], cand["item_id"])
+    return requests, pair_backref, skips
+
+
+def run_t0909_track(*, run_id: str, sample: int, max_pairs_per_item: int,
+                    workers: int, token_budget: int, seed: int,
+                    out_dir: Path, stream_path: Path, decisions_path: Path,
+                    max_failure_rate: float, progress=None) -> dict:
+    """T0909 轨：冻结决策行抽样 → 判官（①）+ 链原生三态 → 分布评分。
+    证据先行（2026-10-09 主窗口令）：判官批毕先落 verdicts.json（执行器
+    evidence_dir 内落 + 本层显式落，双保险），再进链原生相位与一切闸。"""
+    from news_flash_dedup.recall.service import RuleFactSupply
+    from news_flash_dedup.decide import service as decide_service
+
+    texts = _load_stream_texts(stream_path)
+    rows = _sample_t_rows(decisions_path, sample, seed)
+    if not rows:
+        raise RunnerStop(4, "T 轨抽样为空（candidate_count>0 行零）")
+
+    requests, pair_backref, skips = _build_t_requests(
+        rows, texts, max_pairs_per_item)
     if not requests:
-        raise RunnerStop(4, "T 轨判官对集为空（候选正文回指全失败）")
+        raise RunnerStop(4, "T 轨判官对集为空（候选正文回指全失败）",
+                         {"skips": skips[:20]})
 
     report = run_judge_batch(
         requests, run_id=f"{run_id}-judge", workers=workers,
         token_budget=token_budget,
         usage_ledger_path=str(out_dir / "judge-usage.jsonl"),
+        evidence_dir=str(out_dir),
         progress=progress)
+
+    # 证据先行：判毕即落 verdicts.json（链原生相位/失败率闸/任何后续之前）
+    judge_results = [
+        {"pair_id": r.pair_id, "cell": r.cell,
+         "verdict_residual": r.verdict_residual,
+         "verdict_proof": r.verdict_proof,
+         "backref": pair_backref.get(r.pair_id)}
+        for r in report.results]
+    (out_dir / "verdicts.json").write_text(json.dumps(
+        {"schema": "exam-t0909-verdicts-v1", "run_id": run_id,
+         "note": "证据先行：判毕即落（一切后续闸之前）",
+         "arms": report.arms, "usage": report.usage,
+         "stopped_reason": report.stopped_reason,
+         "results": judge_results},
+        ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 链原生三态：每行一次 decide_for_task（真实候选集进 required）
     supply = RuleFactSupply()
@@ -262,8 +310,18 @@ def run_t0909_track(*, run_id: str, sample: int, max_pairs_per_item: int,
         "schema": "exam-t0909-assessment-v1", "run_id": run_id,
         "partition": T_BUSINESS_DATE, "seed": seed,
         "sample_rows": len(rows), "judge_pairs": len(requests),
-        "skipped_no_text": skipped_no_text,
         "max_pairs_per_item": max_pairs_per_item,
+        # 缺失点名（主窗口令："1,000 抽 999"类缺口逐因列名，不静默）：
+        # 采样边界（池<请求）+ 对集缺口逐条原因 + 预算截停对数。
+        "sample_gap": {
+            "requested": sample, "sampled": len(rows),
+            "pool_shortfall": max(0, sample - len(rows)),
+            "pairs_built": len(requests),
+            "pair_gap": len(rows) * max_pairs_per_item - len(requests),
+            "skips": skips,
+            "budget_skipped": sum(1 for r in report.results
+                                  if r.cell == "budget_skip"),
+        },
         "stopped_reason": report.stopped_reason,
         "judge_usage": report.usage, "arms": arms,
         "failure_rate": failure_rate,
@@ -274,12 +332,7 @@ def run_t0909_track(*, run_id: str, sample: int, max_pairs_per_item: int,
         "signed_rate": (cell_dist.get("signed", 0) / len(requests))
         if requests else None,
         "chain_rows": chain_rows,
-        "judge_results": [
-            {"pair_id": r.pair_id, "cell": r.cell,
-             "verdict_residual": r.verdict_residual,
-             "verdict_proof": r.verdict_proof,
-             "backref": pair_backref.get(r.pair_id)}
-            for r in report.results],
+        "judge_results": judge_results,
     }
     (out_dir / "assessment.json").write_text(json.dumps(
         assessment, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -369,17 +422,27 @@ def main() -> int:
             Path(args.t_frozen_dir) if args.t_frozen_dir else None,
             Path(args.t_stream) if args.t_stream else None,
             Path(args.t_decisions) if args.t_decisions else None)
-        assessment = run_t0909_track(
-            run_id=t_run_id, sample=args.t_sample,
-            max_pairs_per_item=args.t_max_pairs_per_item,
-            workers=args.workers, token_budget=args.t_token_budget,
-            seed=args.seed, out_dir=t_dir,
-            stream_path=stream_path, decisions_path=decisions_path,
-            max_failure_rate=args.t_max_failure_rate,
-            progress=lambda *a: print(f"[EXAM-T0909] {a}", flush=True))
+        try:
+            assessment = run_t0909_track(
+                run_id=t_run_id, sample=args.t_sample,
+                max_pairs_per_item=args.t_max_pairs_per_item,
+                workers=args.workers, token_budget=args.t_token_budget,
+                seed=args.seed, out_dir=t_dir,
+                stream_path=stream_path, decisions_path=decisions_path,
+                max_failure_rate=args.t_max_failure_rate,
+                progress=lambda *a: print(f"[EXAM-T0909] {a}", flush=True))
+        except JudgeExecutorError as error:
+            # 证据先行（主窗口令）：执行器红停也落 summary stub（verdicts 已
+            # 由执行器 evidence_dir 先落 t_dir，红停不丢判）
+            (run_root / "summary.json").write_text(json.dumps(
+                {**summary, "stopped": f"t0909 judge_executor_red: {error}",
+                 "executor_payload": error.payload},
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            raise
         summary["tracks"]["t0909"] = {
             "run_id": t_run_id, "sample_rows": assessment["sample_rows"],
             "judge_pairs": assessment["judge_pairs"],
+            "sample_gap": assessment["sample_gap"],
             "judge_merged_dist": assessment["judge_merged_dist"],
             "judge_proof_dist": assessment["judge_proof_dist"],
             "chain_native_dist": assessment["chain_native_dist"],
