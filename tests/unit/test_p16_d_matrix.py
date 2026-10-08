@@ -291,14 +291,20 @@ def test_p03_conflict_independent_of_other_issues():
     current 侧未验证 missing → 时间未决 FACT_INCOMPLETE）并钉其真在
     场，再钉冲突不被撤销（判定壁优先序 conflicts 先于 issues，
     pair_compare.py:421-425）与聚合决策。"""
-    history_text = "甲公司9月26日公布现价100元。"
+    # 2026-10-09（P2 先行件①夹具重钉；宪章 v2 §三-2）：history 时间槽原
+    # "9月26日"（无年 M月D日）在 _YEAR_LESS_DEFAULT_YEAR 拆除后落
+    # TIME_RELATION_UNCERTAIN——本用例语义靶是"无关槽 issue 恰为 current
+    # 侧未验证 missing（FACT_INCOMPLETE）真在场且充分冲突不被撤销"，故
+    # history 夹具改为带年日期（合法绝对时间，槽 valid），无关 issue
+    # 构成与断言面逐字节保持。
+    history_text = "甲公司2026年9月26日公布现价100元。"
     pair, out, _, p15_report = _run_pipeline(
         history_text,
         "甲公司公布现价101元。",
         history_numerics=["100"], current_numerics=["101"],
         history_key="现价", current_key="现价",
         history_predicate="公布", current_predicate="公布",
-        history_time=_time_present_slot(history_text, "9月26日",
+        history_time=_time_present_slot(history_text, "2026年9月26日",
                                         record_id=RECORD_ID_H),
         current_time=None,   # 未验证 missing（N29：抽取未命中≠原文确无）
     )
