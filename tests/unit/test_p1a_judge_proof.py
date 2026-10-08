@@ -22,6 +22,11 @@
 ⑦ gate 语义：开关默认关=老行为逐字节（含 gate 下去空白伪匹配照放、
    R1-R6 旧规则、审计负载无证明键）；开关开 audit 只观测、gate 降级。
 
+policy_v2 宪章对齐（2026-10-09 主窗口通报生效，log\判定宪章-草案-v2-1009.md）：
+   policy_version="policy_v2"；时间/阶段可识别差异=不重复直接事由（无阶段
+   限定词）；主体缺失（单侧代码）进边界 P_SUBJECT_MISSING；相对时间无共同
+   绝对锚点同文亦拦 P_REL_TIME（C14/T-3）；阶段词表补员 当日/次日（§二-3）。
+
 夹具纪律：全真实现类——SyncResidualJudge/judge_proof/machine_verify 真
 实现，仅 LLM 网络边界以罐装响应 mock（test_decide_llm_residual.py 同型）。
 """
@@ -540,7 +545,7 @@ def test_duplicate_proof_issued_field_contract(monkeypatch):
     assert proof.model == lr.DEFAULT_MODEL
     assert proof.prompt_version == lr.JUDGE_PROMPT_VERSION
     assert proof.prompt_sha256 == lr.PROMPT_SHA256
-    assert proof.policy_version == jp.PROOF_POLICY_VERSION == "p1a-proof-v1"
+    assert proof.policy_version == jp.PROOF_POLICY_VERSION == "policy_v2"
     assert proof.final_decision == "重复"
     assert proof.failure_reasons == ()
     assert len(proof.orders) == 2
@@ -827,6 +832,130 @@ def test_failure_and_invalid_paths_carry_no_proof(monkeypatch):
     assert out2.proof is None and out2.not_duplicate_proof is None
 
 
+# ---------------------------------------------------------------- policy_v2 宪章对齐（2026-10-09 生效）
+
+def test_charter_time_difference_directly_blocks(monkeypatch):
+    """policy_v2 红测（宪章 §二-3）：无阶段词的日期差=不重复直接事由——
+    判"重复"被机检 P_TIME 直拦（旧"阶段限定"宽放已废）。"""
+    _proof_on(monkeypatch)
+    d_h = "某项目3月4日公告投产，投资总额5亿"
+    d_c = "某项目3月5日公告投产，投资总额5亿"
+    resp = {
+        (d_h, d_c): _jjson("重复", ("3月4日公告投产",), ("3月5日公告投产",),
+                           na=("5亿",), nb=("5亿",),
+                           ta=("3月4日",), tb=("3月5日",)),
+        (d_c, d_h): _jjson("重复", ("3月5日公告投产",), ("3月4日公告投产",),
+                           na=("5亿",), nb=("5亿",),
+                           ta=("3月5日",), tb=("3月4日",)),
+    }
+    out = _judge(_MockLLM(resp), mv_mode=lr.MV_GATE).judge_pair("p1", d_h, d_c)
+    assert out.cell == "doubtful"
+    ver = out.hc.proof_verification
+    assert jp.P_TIME in ver.failures
+    assert ver.time_check["machine_conflict"] is True
+    assert ver.stage_check["machine_conflict"] is False   # 阶段集相同（{投产}）
+
+
+def test_charter_relative_time_no_anchor_blocks_even_identical(monkeypatch):
+    """policy_v2 红测（C14/T-3）：相对时间无共同绝对锚点——即使两条正文
+    完全相同也不得签"重复"（P_REL_TIME 拦，按边界保守口径）。"""
+    _proof_on(monkeypatch)
+    r_t = "今日央行宣布降准0.5个百分点，释放流动性"
+    resp = {
+        (r_t, r_t): _jjson("重复", ("今日央行宣布降准0.5个百分点",),
+                           ("今日央行宣布降准0.5个百分点",),
+                           na=("0.5",), nb=("0.5",),
+                           ta=("今日",), tb=("今日",)),
+    }
+    out = _judge(_MockLLM(resp), mv_mode=lr.MV_GATE).judge_pair(
+        "p1", r_t, r_t)
+    assert out.cell == "doubtful"                       # 同文亦拦（T-3 字面）
+    ver = out.hc.proof_verification
+    assert jp.P_REL_TIME in ver.failures
+    assert ver.rel_time_check["relative_tokens_a"] == ["今日"]
+    assert ver.rel_time_check["shared_absolute_anchor"] is False
+    assert jp.P_TIME not in ver.failures                # 时间集均空不属时间冲突
+
+
+def test_charter_relative_time_with_shared_anchor_passes(monkeypatch):
+    """policy_v2 绿钉（C14）：相对时间在场但双侧共享绝对日期锚 → 不拦。"""
+    _proof_on(monkeypatch)
+    a_h = "某公司9月24日公告：新规今日起生效，营收100万"
+    a_c = "某公司9月24日公告新规今日起生效，营收100万元"
+    resp = {
+        (a_h, a_c): _jjson("重复", ("新规今日起生效，营收100万",),
+                           ("新规今日起生效，营收100万元",),
+                           na=("100万",), nb=("100万",),
+                           ta=("9月24日",), tb=("9月24日",)),
+        (a_c, a_h): _jjson("重复", ("新规今日起生效，营收100万元",),
+                           ("新规今日起生效，营收100万",),
+                           na=("100万",), nb=("100万",),
+                           ta=("9月24日",), tb=("9月24日",)),
+    }
+    out = _judge(_MockLLM(resp), mv_mode=lr.MV_GATE).judge_pair("p1", a_h, a_c)
+    assert out.cell == "signed"
+    ver = out.hc.proof_verification
+    assert ver.rel_time_check["machine_block"] is False
+    assert ver.rel_time_check["shared_absolute_anchor"] is True
+    assert out.proof is not None and out.proof.issued is True
+
+
+def test_charter_subject_missing_one_side_blocks(monkeypatch):
+    """policy_v2 红测（宪章 §三-1）：恰一侧机检可抽主体代码（另一侧抽不
+    出）→ 主体缺失进边界（P_SUBJECT_MISSING），判"重复"拦签。"""
+    _proof_on(monkeypatch)
+    m_h = "易天股份（300812）主力资金净流入5亿"
+    m_c = "易天股份主力资金净流入5亿元"
+    resp = {
+        (m_h, m_c): _jjson("重复", ("主力资金净流入5亿",),
+                           ("主力资金净流入5亿元",),
+                           na=("5亿",), nb=("5亿",), tcon="均无时间"),
+        (m_c, m_h): _jjson("重复", ("主力资金净流入5亿元",),
+                           ("主力资金净流入5亿",),
+                           na=("5亿",), nb=("5亿",), tcon="均无时间"),
+    }
+    out = _judge(_MockLLM(resp), mv_mode=lr.MV_GATE).judge_pair("p1", m_h, m_c)
+    assert out.cell == "doubtful"
+    ver = out.hc.proof_verification
+    assert jp.P_SUBJECT_MISSING in ver.failures
+    assert jp.P_SUBJECT not in ver.failures             # 非互斥（一侧空集）
+    assert ver.subject_check["machine_missing"] is True
+    assert ver.subject_check["codes_a"] == ["300812"]
+    assert ver.subject_check["codes_b"] == []
+
+
+def test_charter_stage_vocabulary_includes_dangri_ciri(monkeypatch):
+    """policy_v2 钉（宪章 §二-3 列员）：当日/次日 入证明路阶段词表——
+    判"重复"拦（P_STAGE），判"不重复"可作证伪轴签发。"""
+    _proof_on(monkeypatch)
+    e_h = "某债券当日上市交易，发行价100元"
+    e_c = "某债券次日上市交易，发行价100元"
+    dup_resp = {
+        (e_h, e_c): _jjson("重复", ("当日上市交易",), ("次日上市交易",),
+                           na=("100元",), nb=("100元",), tcon="均无时间"),
+        (e_c, e_h): _jjson("重复", ("次日上市交易",), ("当日上市交易",),
+                           na=("100元",), nb=("100元",), tcon="均无时间"),
+    }
+    out = _judge(_MockLLM(dup_resp), mv_mode=lr.MV_GATE).judge_pair(
+        "p1", e_h, e_c)
+    ver = out.hc.proof_verification
+    assert jp.P_STAGE in ver.failures
+    assert ver.stage_check["stage_a"] == ["当日"]
+    assert ver.stage_check["stage_b"] == ["次日"]
+    nd_resp = {
+        (e_h, e_c): _jjson("不重复", ("当日上市交易",), ("次日上市交易",),
+                           ncon="无关键数值", tcon="均无时间"),
+        (e_c, e_h): _jjson("不重复", ("次日上市交易",), ("当日上市交易",),
+                           ncon="无关键数值", tcon="均无时间"),
+    }
+    out2 = _judge(_MockLLM(nd_resp), mv_mode=lr.MV_GATE).judge_pair(
+        "p2", e_h, e_c)
+    nd = out2.not_duplicate_proof
+    assert nd is not None and nd.issued is True
+    assert "stage" in nd.axes_union
+    assert jp.verify_proof_dict(nd.to_dict(), e_h, e_c) is True
+
+
 # ---------------------------------------------------------------- 机检原语直钉
 
 def test_machine_primitives_direct_pins():
@@ -848,7 +977,17 @@ def test_machine_primitives_direct_pins():
     assert codes[0]["surface"] == "300812" and codes[0]["start"] == 5
     comp = mv.machine_time_stage_compare("初值3月4日公布", "终值3月5日公布")
     assert comp["time_conflict"] is True and comp["stage_conflict"] is True
+    # policy_v2（宪章 §二-3"时间/阶段可识别差异"=不重复直接事由）：无阶段
+    # 词的日期差亦为冲突（此前"阶段词在场"限定词超宪章放宽，已删除）
     comp2 = mv.machine_time_stage_compare("3月4日公告", "3月5日公告")
-    assert comp2["time_conflict"] is False       # 无阶段词在场的日期差宽放
+    assert comp2["time_conflict"] is True
+    comp3 = mv.machine_time_stage_compare("3月4日公告", "公告称营收增长")
+    assert comp3["time_conflict"] is False      # 一侧缺失放行=缺失≠冲突（§一-3）
+    # 相对时间无锚点机检（C14/T-3）
+    rel = mv.machine_relative_time_anchor_check("今日央行降准", "今日央行降准")
+    assert rel["block"] is True and rel["shared_absolute_anchor"] is False
+    rel2 = mv.machine_relative_time_anchor_check("9月24日公告今日生效",
+                                                 "9月24日公告：今日生效")
+    assert rel2["block"] is False and rel2["shared_absolute_anchor"] is True
     neg = mv.machine_negation_compare("公司否认指控", "公司公告称正常")
     assert neg["negation_asymmetry"] is True and neg["conflict"] is True
