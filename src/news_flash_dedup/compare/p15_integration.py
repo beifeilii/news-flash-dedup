@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -328,6 +329,72 @@ def _artifact_qualified(artifact: FactValidationReport) -> bool:
                 and artifact.extraction_status == "complete")
 
 
+# ---------- 2026-10-09（P0 收口包二②，主窗口派包）：剥信源壳判据 ----------
+#
+# 出处：判定链改造技术设计书-v2-定稿决议-外部评审-1009.md §二（同文对定案：
+# "剥信源壳+残文≥15 字（或裸长≥20）判据下 26 对可签、4 对进人工，完美二分；
+# min_len=50 将误杀 19 对真重复……照此施工"）+ v2 §4.1（"正文剥信源壳的
+# 规则须版本化、能回指原文；剥后为空……时返回未决；长度可作为候选警报
+# 而非唯一签发条件"）。
+#
+# 开关 DEDUP_EXACT_SHELL_STRIP（默认关=现役逐字节零效应）：开且
+# DEDUP_CERT_DECOUPLE 同开时，证书路最小长度闸改按剥壳判据求值——双侧
+# 归一文各剥版本化信源尾注壳，残文≥15 字或裸长≥20 字 → 长度闸放行
+# （解耦路签发）；判据不过（空壳/超短）→ 维持 DEDUP_EXACT_MIN_LEN 闸
+# （默认 50，不足回落老路双合格闸，空壳自然落未决）。开关关或
+# DEDUP_CERT_DECOUPLE 关 → 本判据零调用零效应（现役逐字节）。
+SHELL_STRIP_ENV = "DEDUP_EXACT_SHELL_STRIP"
+# 规则版本化（v2 §4.1）：v1 尾注闭表=T 冻结 30 对实测唯一样式"（产联社）"
+# （定稿决议 §二"裸信源尾注，无事实载体"；P0 验收一 26 组全带同一 5 字
+# 尾注实测）。闭表只按实测扩充，任何扩员/变形必升 SHELL_STRIP_RULE_VERSION。
+SHELL_STRIP_RULE_VERSION = "source-shell-v1-2026-10-09"
+SHELL_STRIP_RESIDUAL_MIN = 15
+SHELL_STRIP_BARE_MIN = 20
+_SOURCE_SHELL_TAILS_V1 = ("（产联社）",)
+
+
+def shell_strip_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """开关解析：精确 "1"=开；缺省/空串/其余一律关（fail-closed 默认关，
+    "true"/大小写变体等不放大——cert_decouple_enabled 同型纪律）。"""
+    source = os.environ if env is None else env
+    return source.get(SHELL_STRIP_ENV, "") == "1"
+
+
+def strip_source_shell(normalized_text: str) -> str:
+    """剥版本化信源尾注壳（SHELL_STRIP_RULE_VERSION 现行版）。
+
+    能回指原文（v2 §4.1）：确定性尾匹配剥除，剥除串恒为原文真后缀、
+    残文恒为原文真前缀，任何人可按版本规则复算；归一文尾无闭表壳 →
+    原文一字不动（不猜、不模糊匹配）。v1 至多剥一层尾注。
+    """
+    if not isinstance(normalized_text, str):
+        raise TypeError("normalized_text must be str")
+    for tail in _SOURCE_SHELL_TAILS_V1:
+        if normalized_text.endswith(tail):
+            return normalized_text[: len(normalized_text) - len(tail)]
+    return normalized_text
+
+
+def _shell_criterion_pass(normalized_text: str) -> bool:
+    """剥壳判据（定稿决议 §二原文）：剥信源壳后残文≥15 字、或裸长≥20 字。"""
+    if len(normalized_text) >= SHELL_STRIP_BARE_MIN:
+        return True
+    return len(strip_source_shell(normalized_text)) >= SHELL_STRIP_RESIDUAL_MIN
+
+
+def _relative_time_anchor_blocked(left_text: str, right_text: str) -> bool:
+    """相对时间无锚闸（宪章 C14/T-3 生效口径）：消费判官既有件
+    decide.machine_verify.machine_relative_time_anchor_check——同语义同词表
+    （字面值表 + 2026-10-10 policy_v2-C14 追认的"过去N小时/N天/N周"短语族），
+    别新造。block=True ⇔ 任一侧含相对词族且双侧无共同绝对锚点。
+
+    延迟导入：decide/__init__ 包初始化即拉 service→compare 本模块，静态
+    反向边成循环初始化；函数内导入只在真调用时解析，零初始化期边。
+    """
+    from news_flash_dedup.decide import machine_verify as _mv
+    return bool(_mv.machine_relative_time_anchor_check(left_text, right_text)["block"])
+
+
 # ---------- N24（D28-3 谨慎版，窗口Q）白名单填充豁免 ----------
 #
 # 裁定：用户 D28-3（谨慎版=逐类实测+fp 闸）+ 窗口I 一致性裁决 N24=一致
@@ -624,13 +691,24 @@ def extract_p15_results(
     # 不足长度回落旧路）。FACT_EQUIVALENT 通道完备性要求一字不动（下方
     # _fact_equivalence_provable 及其 _artifact_qualified 调用面零改动）。
     if text_mod.cert_decouple_enabled():
+        left_norm = text_mod.normalize_text(history_text)
+        right_norm = text_mod.normalize_text(current_text)
+        min_body = text_mod.exact_min_len()
+        if (shell_strip_enabled()
+                and _shell_criterion_pass(left_norm.normalized_text)
+                and _shell_criterion_pass(right_norm.normalized_text)):
+            # P0 收口包二②：剥壳判据双侧过 → 长度闸放行（min_body_length=0
+            # =解耦路无长度闸）；判据不过维持 DEDUP_EXACT_MIN_LEN 闸——
+            # 不过者裸长必 <20<50，默认闸必回落老路（空壳自然落未决，
+            # 与"判据不过仍走老路"语义合一，不另辟第三通道）。
+            min_body = 0
         certificate = text_mod.certify_text_equality(
-            text_mod.normalize_text(history_text),
-            text_mod.normalize_text(current_text),
+            left_norm,
+            right_norm,
             left_qualified=_artifact_qualified(history_artifact),
             right_qualified=_artifact_qualified(current_artifact),
             decouple_qualification=True,
-            min_body_length=text_mod.exact_min_len(),
+            min_body_length=min_body,
         )
     else:
         certificate = text_mod.certify_text_equality(
@@ -639,6 +717,21 @@ def extract_p15_results(
             left_qualified=_artifact_qualified(history_artifact),
             right_qualified=_artifact_qualified(current_artifact),
         )
+    if certificate is not None and _relative_time_anchor_blocked(
+            history_text, current_text):
+        # 2026-10-10（P0 收口包二③，主窗口裁定=选B）：宪章 C14/T-3 文本自证
+        # 闸——相对时间词族在场且双侧无共同绝对锚 → 即使原文/无损相等，证书
+        # 亦撤回、对落未决转边界（"即使两条正文完全相同也先出边界"生效宪法在
+        # 证书路的落实；与判官路 machine_relative_time_anchor_check 同语义同
+        # 词表，含 policy_v2-C14 追认的"过去N小时/N天/N周"短语族）。不分发布
+        # 日：异 business_date 对被 pair_compare._check_binding:221 拦在证书
+        # 路外，"同日可签"腿已由主窗口明文作废。具名 issue 留痕
+        # （TIME_RELATION_UNCERTAIN=注册未决码，fail-closed 不静默吞因）。
+        certificate = None
+        issues.append(PairIssue(
+            "TIME_RELATION_UNCERTAIN",
+            "相对时间词族在场且双侧无共同绝对锚（宪章 C14/T-3：即使同文亦不直签，"
+            "判官路 machine_relative_time_anchor_check 同语义）"))
     if certificate is not None:
         # 文本证书路径（23:4x 校准，fp 3139b94f 复盘）：不再要求 used_pairs——
         # EXACT/LOSSLESS 是字节级（或无损变换级）相等，确定性抽取下双侧 facts
@@ -685,5 +778,11 @@ def extract_p15_results(
 
 __all__ = [
     "P15IntegrationReport",
+    "SHELL_STRIP_BARE_MIN",
+    "SHELL_STRIP_ENV",
+    "SHELL_STRIP_RESIDUAL_MIN",
+    "SHELL_STRIP_RULE_VERSION",
     "extract_p15_results",
+    "shell_strip_enabled",
+    "strip_source_shell",
 ]

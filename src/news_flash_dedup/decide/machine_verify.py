@@ -369,6 +369,23 @@ PROOF_STAGE_WORDS = STAGE_WORDS + ("当日", "次日")
 # 宪章示例（今日/昨日/当年）+ §二-3 列员（当日/次日）+ 直系同族（明日/今年）。
 RELATIVE_TIME_TOKENS = ("今日", "昨日", "当年", "当日", "次日", "明日", "今年")
 
+# 相对时间短语族补员（2026-10-10 policy_v2-C14 追认；P0 收口包二③，主窗口
+# 裁定=选B）："过去N小时/N天/N周"窗短语族——T 生产实证语料真形态（G20 同文
+# 对"过去24小时内下跌1.88%"无绝对锚曾直达签发），闭合词表漏它=漏宪章 C14
+# 本意，补员属追认非新造。N=阿拉伯数字或中文数词（含两/半），粒度闭集=
+# 小时/天/周（月/年未呈裁不收，语义从严）。命中面以表面形入 relative_tokens
+# （与字面值表同槽出证，judge_proof 证据载荷纯增量）。
+RELATIVE_TIME_SPAN_RE = re.compile(
+    r"过去[0-9零〇一二两三四五六七八九十半]+(?:\.\d+)?\s*(?:小时|天|周)")
+
+
+def relative_time_tokens_in(text: str) -> tuple[str, ...]:
+    """单文本相对时间词族命中集（字面值表 RELATIVE_TIME_TOKENS + 过去N短语族
+    表面形），排序确定性出证；C14 机检与证书路自证闸共同消费（别新造）。"""
+    hits = {t for t in RELATIVE_TIME_TOKENS if t in text}
+    hits.update(m.group(0) for m in RELATIVE_TIME_SPAN_RE.finditer(text))
+    return tuple(sorted(hits))
+
 # 机器时间抽取（闭合形态：YYYY年M月D日[号]/M月D日[号]/YYYY-M-D/YYYY/M/D；
 # 归一复用 _norm_time 去\s年月日号）。阶段词复用 STAGE_WORDS 闭合词表。
 _TIME_DATE_RE = re.compile(
@@ -471,13 +488,14 @@ def machine_time_stage_compare(text_a: str, text_b: str) -> dict:
 def machine_relative_time_anchor_check(text_a: str, text_b: str) -> dict:
     """相对时间无锚点机检（宪章 C14 + T-3 生效处置，policy_v2 对齐）。
 
-    block=True 当且仅当：任一侧含相对时间词族（RELATIVE_TIME_TOKENS）
-    且双侧无共同绝对锚点（机抽日期集交集为空）——此时即使两条正文完全
-    相同也不得签"重复"（按边界保守口径）；不得用系统接收时间/发布时间/
-    另一条正文替其补日期（本函数只看正文，结构性合规）。
+    block=True 当且仅当：任一侧含相对时间词族（RELATIVE_TIME_TOKENS
+    字面值表 + RELATIVE_TIME_SPAN_RE"过去N小时/N天/N周"短语族，2026-10-10
+    policy_v2-C14 补员追认）且双侧无共同绝对锚点（机抽日期集交集为空）
+    ——此时即使两条正文完全相同也不得签"重复"（按边界保守口径）；不得用
+    系统接收时间/发布时间/另一条正文替其补日期（本函数只看正文，结构性合规）。
     """
-    ra = sorted({t for t in RELATIVE_TIME_TOKENS if t in text_a})
-    rb = sorted({t for t in RELATIVE_TIME_TOKENS if t in text_b})
+    ra = list(relative_time_tokens_in(text_a))
+    rb = list(relative_time_tokens_in(text_b))
     shared = bool(extract_time_set(text_a) & extract_time_set(text_b))
     return {"relative_tokens_a": ra, "relative_tokens_b": rb,
             "shared_absolute_anchor": shared,
@@ -512,4 +530,6 @@ __all__ = [
     "extract_time_set", "number_mentions", "subject_code_mentions",
     "machine_time_stage_compare", "machine_negation_compare",
     "machine_relative_time_anchor_check",
+    # 2026-10-10 policy_v2-C14 补员（P0 收口包二③追认）
+    "RELATIVE_TIME_SPAN_RE", "relative_time_tokens_in",
 ]

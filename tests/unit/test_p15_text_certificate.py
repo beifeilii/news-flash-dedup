@@ -329,7 +329,11 @@ def test_exact_certificate_with_fallback_facts():
             "key_object": missing, "numerics": [],
         }], record_id=record_id)
 
-    text = "今日天气晴朗无事件。"
+    # 2026-10-10（收口包二③）：夹具去"今日"——原稿"今日天气晴朗无事件。"
+    # 含相对时间词且无绝对锚，C14/T-3 生效宪法证书路自证闸必压（闸压即
+    # 宪法本意）；本用例测量 fallback 型全 missing facts 的 EXACT 证书机制，
+    # 去相对词保留原测量意图（无动词文本/全 missing/全同 三性质不变）。
+    text = "窗外天气晴朗无事件。"
     history = fallback_report(text, RECORD_ID_H)
     current = fallback_report(text, RECORD_ID_C)
     alignment = pair_alignment.build_aligned(

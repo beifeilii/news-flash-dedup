@@ -385,21 +385,30 @@ def test_p07_subject_missing_alignment():
 # ---------- P16-P08：时间相对词合法（同相对表达可重复） ----------
 
 def test_p08_relative_time_same():
-    """P16-P08：双方均"今日" + 无其他差异 → 等价。
+    """P16-P08：双方均"今日" + 无其他差异 + 无共同绝对锚 → 转边界不直签。
     （N29/D28 注：本行原意=同相对时间表达可比——时间槽以 present"今日"
-    真注入；缺失语义翻转与本行机制覆盖无关，归 test_n29_honest_missing。）"""
+    真注入；缺失语义翻转与本行机制覆盖无关，归 test_n29_honest_missing。）
+    2026-10-10 基线翻转（P0 收口包二③，主窗口裁定=选B）：D24 钉值"同相对
+    时间表达不阻断 EXACT 证书等价"**退役**——policy_v2 宪章 C14/T-3 生效
+    口径"即使两条正文完全相同也先出边界"在证书路实装（相对词族在场+无
+    共同绝对锚→证书撤回落未决，判官路 machine_relative_time_anchor_check
+    同语义同词表；异日对被 _check_binding:221 拦在证书路外，"同日可签"
+    腿明文作废）。本行新钉值=C14 生效口径本身。"""
     history_text = "甲公司今日实施回购。"
     current_text = "甲公司今日实施回购。"
-    pair, out, _, _ = _run_pipeline(
+    pair, out, _, p15 = _run_pipeline(
         history_text,
         current_text,
         history_time=_time_present_slot(history_text, "今日", record_id=RECORD_ID_H),
         current_time=_time_present_slot(current_text, "今日", record_id=RECORD_ID_C),
     )
-    # D24 钉值：同相对时间表达不阻断 EXACT 证书等价
-    assert pair.outcome == "equivalent"
-    assert pair.code == "EXACT_TEXT_MATCH"
-    assert out.decision == "重复"
+    # C14 钉值（2026-10-10 收口包二③）：同相对表达无共同绝对锚 → 证书
+    # 撤回 → 未决转边界（具名 TIME_RELATION_UNCERTAIN 留痕，fail-closed）
+    assert p15.p15_results.text_proof is None
+    assert p15.p15_results.equivalence_ready is False
+    assert pair.outcome == "unresolved"
+    assert pair.code == "TIME_RELATION_UNCERTAIN"
+    assert out.decision != "重复"
 
 
 # ---------- P16-P09：阶段差异冲突（今日/次日） ----------
