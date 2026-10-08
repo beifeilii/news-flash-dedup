@@ -348,6 +348,8 @@ def main() -> int:
                         help="逗号分隔：gold / t0909（缺省双轨，gold 先考）")
     parser.add_argument("--gold-mode", choices=("smoke", "full"),
                         default="smoke")
+    parser.add_argument("--chain-with-judge", action="store_true",
+                        help="gold 轨加跑链上回炉锚口径（harness 包②同款）")
     parser.add_argument("--gold-sample-size", type=int, default=50)
     parser.add_argument("--t-sample", type=int, default=1000)
     parser.add_argument("--t-max-pairs-per-item", type=int, default=1)
@@ -395,6 +397,7 @@ def main() -> int:
             workers=args.workers, token_budget=args.gold_token_budget,
             seed=args.seed, sample_size=args.gold_sample_size,
             out_dir=gold_dir, out_dir_exist_ok=args.resume,
+            chain_with_judge=args.chain_with_judge,
             progress=lambda *a: print(f"[EXAM-GOLD] {a}", flush=True))
         summary["tracks"]["gold"] = {
             "run_id": gold_run_id, "mode": args.gold_mode,

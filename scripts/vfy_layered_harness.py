@@ -15,9 +15,11 @@ full 模式 = 697 件全量（=355 考核对全量：306 重复 + 49 不重复�
   （工作进度 R315 铁案：药明康德对 f4df3e77 跨会话位级不确定性 ±1 对，
   两次全真同装跑 296 与 295 均实测）→ tp∈{295,296}∧fn∈{10,11}∧tn=49
   记 pass_r315_band（报告如实标带，不静默）；
-- smoke 模式（50 件分层抽样）：绝对数不可比 → 按比例抽断——fp==0 硬闸
-  同语义 + precision==1.0 + fn ≤ ⌈n_dup × 10/306⌉（锚 fn 率 3.27% 按样本
-  重复对数上取整折算；n=50→43 重复对→fn≤2），超出即 exit 4。
+- smoke 模式（50 件分层抽样）：fp==0 硬闸同语义 + precision==1.0 +
+  **新漏判零容忍**（样本 fn ⊆ 锚 10 对已知漏判集——合并口径重构自
+  golde2e-assessment-1008b.json；新漏判=判官漂移真信号。2026-10-09 起
+  替代比例折算上限：43 抽 10 中 ≥3 的超几何概率 ~16% 结构性误报，cj50
+  实测 fn=3 全在锚内却触发停跑为证；折算上限降级参考，锚件缺席才兜底）。
 
 链原生三态：每对经 decide_for_task（RuleFactSupply 规则抽取，判官进链
 开关关=链原生）产出 重复/不重复/边界case/疑难case，按指标计算器正例
@@ -32,9 +34,18 @@ CLI（p1int 仓根；venv 主树 .venv-v1）：
         --workers 6 --token-budget 200000
     python scripts\\vfy_layered_harness.py --mode full --run-id h1009f \
         --workers 8 --token-budget 2000000
+    python scripts\\vfy_layered_harness.py --mode smoke --run-id h1009cj \
+        --chain-with-judge --workers 6      # 链上回炉锚（包②）
 产物：--out-dir（缺省 workspace log\\temp\\vfy-layered-{run_id}\\）下
 verdicts.json / assessment.json / 输出数据-②格式-{口径}.jsonl /
-指标明细-{口径}.csv（计算器复算）。
+指标明细-{口径}.csv（计算器复算）/ chain-with-judge-verdicts.json（包②开时）。
+
+包②（2026-10-09 主窗口）：--chain-with-judge 增 chain_with_judge 口径——
+decide_for_task 注入真 judge_callable（judge_adapter 真件，相位域
+DEDUP_JUDGE_IN_CHAIN=1+DEDUP_JUDGE_PROOF=1，禁缓存令同款 cache_dir=None+
+hits==0 对拍）；期望"链上锚口径与离线一致、签发分布单列"——
+assessment.chain_consistency 列离线（judge_residual）vs 链上逐对一致率、
+分歧对明细、链上 decision/internal_code 分布；fp=0 硬闸对本口径同款生效。
 
 exit：0=pass（exact/r315_band/smoke 折算均过）；2=用法错；3=fp 硬闸停；
 4=锚断言失败；5=判官执行器红（预算/禁缓存/对账）。
@@ -60,7 +71,8 @@ sys.path.insert(0, str(_HERE))
 
 from judge_concurrent_executor import (  # noqa: E402  工装①复用
     JudgeExecutorError, JudgePairRequest, run_judge_batch,
-    VERDICT_DUP, VERDICT_NONDUP, VERDICT_UNSURE)
+    VERDICT_DUP, VERDICT_NONDUP, VERDICT_UNSURE,
+    _clamp_workers, _load_env_key)
 
 GOLD_DIR = _WORKSPACE_ROOT / "gold-交付"
 GOLDMAP_JSON = _WORKSPACE_ROOT / "news-flash-dedup" / "log" / "temp" / "golde2e-goldmap.json"
@@ -72,6 +84,28 @@ ANCHOR = {"tp": 296, "fp": 0, "fn": 10, "tn": 49}     # golde2e-assess.py:61 同
 ANCHOR_DUP_TOTAL = 306                                # 296+10（锚重复对基数）
 R315_TP = {295, 296}                                  # R315 判官边界不确定性带
 R315_FN = {10, 11}
+# 锚已知漏判集来源（smoke 新漏判零容忍闸）：1008b 锚跑 assessment 合并口径
+# （decision=="重复" or judge_cell=="signed" → 判正；2026-10-09 复核重构
+# 四格=296/0/10/49 逐字节吻合后取用）。
+ANCHOR_ASSESS_JSON = (_WORKSPACE_ROOT / "news-flash-dedup" / "log" / "temp"
+                      / "golde2e-assessment-1008b.json")
+
+
+def load_anchor_fn_set(path: Path = ANCHOR_ASSESS_JSON) -> frozenset | None:
+    """锚 10 对已知漏判 pair_id 集（合并口径）；锚件缺席返 None（调用侧
+    降级比例折算上限兜底）。"""
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    fn_ids = []
+    for pair in data["pairs"]:
+        if not pair.get("assessed") or pair.get("gold_label") != "重复":
+            continue
+        positive = (pair.get("decision") == "重复"
+                    or pair.get("judge_cell") == "signed")
+        if not positive:
+            fn_ids.append(pair["pair_id"])
+    return frozenset(fn_ids)
 
 
 class HarnessStop(RuntimeError):
@@ -133,12 +167,9 @@ def stratified_sample(assessed: list[dict], n: int, seed: int) -> list[dict]:
 
 # ---------------------------------------------------------------- 链原生三态
 
-def _chain_native_verdict(pair_id: str, text_a: str, text_b: str,
-                          fact_supply) -> str:
-    """对级链原生三态：decide_for_task（判官进链开关关=链原生规则链）。
-    重复/不重复直返；边界case/疑难case → 拿不准（转人工）（计算器词汇）。"""
-    from news_flash_dedup.decide import service as decide_service
-
+def _pair_records(pair_id: str, text_a: str, text_b: str,
+                  fact_supply) -> tuple[dict, dict]:
+    """金标对 → (history, current) 记录对（链原生/链上判官两相位共用）。"""
     def _record(side: str, text: str, seq: int) -> dict:
         rid = hashlib.sha256(f"{pair_id}|{side}".encode("utf-8")).hexdigest()
         return {"record_id": rid, "item_id": f"{pair_id[:12]}-{side}",
@@ -146,15 +177,158 @@ def _chain_native_verdict(pair_id: str, text_a: str, text_b: str,
                 "raw_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "scope_id": "exam", "business_date": "2026-09-09",
                 "arrival_seq": seq, "facts": fact_supply(rid, text)}
+    return _record("a", text_a, 1), _record("b", text_b, 2)
 
-    outcome = decide_service.decide_for_task(
-        _record("a", text_a, 1), [], current=_record("b", text_b, 2),
-        coverage_complete=True)
-    if outcome.decision == "重复":
+
+def _decision_to_verdict(decision: str) -> str:
+    """链三态 → 计算器词汇（正例口径仅"重复"判正）。"""
+    if decision == "重复":
         return VERDICT_DUP
-    if outcome.decision == "不重复":
+    if decision == "不重复":
         return VERDICT_NONDUP
     return VERDICT_UNSURE
+
+
+def _chain_native_verdict(pair_id: str, text_a: str, text_b: str,
+                          fact_supply) -> str:
+    """对级链原生三态：decide_for_task（判官进链开关关=链原生规则链）。"""
+    from news_flash_dedup.decide import service as decide_service
+
+    history, current = _pair_records(pair_id, text_a, text_b, fact_supply)
+    outcome = decide_service.decide_for_task(
+        history, [], current=current, coverage_complete=True)
+    return _decision_to_verdict(outcome.decision)
+
+
+# ---------------------------------------------------- 链上回炉锚（2026-10-09 主窗口包②）
+
+def run_chain_with_judge(exam_rows: list, texts: dict, *,
+                         workers: int = 6,
+                         usage_ledger_path: str | None = None,
+                         progress=None) -> dict:
+    """链上回炉锚相位：decide_for_task 注入真 judge_callable
+    （judge_adapter.build_judge_callable 真件接线，DEDUP_JUDGE_IN_CHAIN=1+
+    DEDUP_JUDGE_PROOF=1 相位域开关，首设末复不外溢）。
+
+    与离线判官相位的差异=判官走链内真路径（边界对触发 adjudicate_pair
+    双序证明件→严格聚合），规则直签/直否对零判官调用（链原生语义）。
+    禁缓存令同款：ResidualJudgeConfig(cache_dir=None) + 相位末台账
+    hits==0 对拍（hits>0 即 JudgeExecutorError 红）。usage 台账
+    pair_id 归属随落。
+
+    返 {"verdicts": {pid: 判定}, "details": {pid: {...}}, "usage": {...}}。
+    """
+    import os
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+
+    from news_flash_dedup.decide import judge_adapter
+    from news_flash_dedup.decide import service as decide_service
+    from news_flash_dedup.decide.llm_residual import (
+        ResidualJudgeConfig, SyncResidualJudge, _chat_once)
+    from news_flash_dedup.recall.service import RuleFactSupply
+    from news_flash_dedup.vector import qwen_bpe as qb
+
+    key = os.environ.get("QWEN_API_KEY", "") or _load_env_key("QWEN_API_KEY")
+    if not key:
+        raise JudgeExecutorError("QWEN_API_KEY 缺失（链上判官相位）")
+    cfg = ResidualJudgeConfig(cache_dir=None, mv_mode="audit")   # 禁缓存令钉死
+    assert cfg.cache_dir is None, "禁缓存令：链上判官 cache_dir 必须 None"
+    tokenizer = qb.QwenBpeTokenizer()
+
+    ledger_path = Path(usage_ledger_path) if usage_ledger_path else None
+    usage_lock = threading.Lock()
+    usage_seq = {"n": 0}
+    tls = threading.local()
+
+    def _logged_call_fn(*, model: str, system: str, user: str):
+        content, latency = _chat_once(
+            model=model, base_url=cfg.base_url, api_key=key,
+            system=system, user=user, timeout_s=cfg.timeout_s)
+        if ledger_path is not None:
+            with usage_lock:
+                usage_seq["n"] += 1
+                with ledger_path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "seq": usage_seq["n"],
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "kind": "chain_judge_arm",
+                        "pair_id": getattr(tls, "pair_id", None),
+                        "model": model, "latency_ms": round(latency * 1000, 1),
+                        "tokens_in": qb.count_tokens(tokenizer, system)
+                        + qb.count_tokens(tokenizer, user),
+                        "tokens_out": qb.count_tokens(tokenizer, content)},
+                        ensure_ascii=False) + "\n")
+        return content, latency
+
+    judge = SyncResidualJudge(cfg, api_key=key, call_fn=_logged_call_fn)
+    supply = RuleFactSupply()
+
+    # 相位域开关（保存/恢复）：DEDUP_JUDGE_PROOF=1（装配闸+证明层）+
+    # DEDUP_JUDGE_IN_CHAIN=1（判官进链）；decide_for_task 另以参数显式 True。
+    prior_proof = os.environ.get("DEDUP_JUDGE_PROOF")
+    prior_chain = os.environ.get("DEDUP_JUDGE_IN_CHAIN")
+    os.environ["DEDUP_JUDGE_PROOF"] = "1"
+    os.environ["DEDUP_JUDGE_IN_CHAIN"] = "1"
+    try:
+        judge_callable = judge_adapter.build_judge_callable(judge=judge)
+        if judge_callable is None:
+            raise JudgeExecutorError(
+                "链上判官装配闸 fail-closed：build_judge_callable 返 None"
+                "（DEDUP_JUDGE_PROOF 未生效）")
+
+        def _one(row: dict) -> tuple[str, dict]:
+            pid = row["pair_id"]
+            text_a, text_b = texts[pid]
+            history, current = _pair_records(pid, text_a, text_b, supply)
+            tls.pair_id = pid
+            try:
+                outcome = decide_service.decide_for_task(
+                    history, [], current=current, coverage_complete=True,
+                    judge_callable=judge_callable, judge_in_chain=True)
+            except Exception as error:  # noqa: BLE001 — 单对失败单列不拖批
+                return pid, {"decision": None,
+                             "verdict": VERDICT_UNSURE,
+                             "error": f"{type(error).__name__}: {error}"}
+            finally:
+                tls.pair_id = None
+            return pid, {"decision": outcome.decision,
+                         "internal_code": outcome.internal_code,
+                         "duplicate_ids": list(outcome.duplicate_ids),
+                         "verdict": _decision_to_verdict(outcome.decision)}
+
+        details: dict = {}
+        done = {"n": 0}
+        with ThreadPoolExecutor(max_workers=_clamp_workers(workers),
+                                thread_name_prefix="chain-judge") as pool:
+            for pid, detail in pool.map(_one, exam_rows):
+                details[pid] = detail
+                done["n"] += 1
+                if progress is not None:
+                    progress(f"chain-with-judge {done['n']}/{len(exam_rows)}")
+    finally:
+        if prior_proof is None:
+            os.environ.pop("DEDUP_JUDGE_PROOF", None)
+        else:
+            os.environ["DEDUP_JUDGE_PROOF"] = prior_proof
+        if prior_chain is None:
+            os.environ.pop("DEDUP_JUDGE_IN_CHAIN", None)
+        else:
+            os.environ["DEDUP_JUDGE_IN_CHAIN"] = prior_chain
+
+    ledger = judge.ledger.snapshot()
+    if ledger["cache_hits"] > 0:
+        raise JudgeExecutorError(
+            f"禁缓存令违例（链上判官相位）：cache_hits={ledger['cache_hits']}",
+            {"ledger": ledger})
+    usage = {"api_calls": ledger["api_calls"],
+             "cache_hits": ledger["cache_hits"],
+             "usage_rows": usage_seq["n"],
+             "note": "api=链上真判臂数（仅边界对触发，每对双臂；规则直签/直否"
+                     "对零调用=链原生语义）"}
+    return {"verdicts": {pid: d["verdict"] for pid, d in details.items()},
+            "details": details, "usage": usage}
 
 
 # ---------------------------------------------------------------- 四格（指标计算器逐行同构）
@@ -219,16 +393,34 @@ def assert_anchors(cells: dict, *, mode: str, caliber: str) -> str:
             4, f"full 锚断言失败（{caliber}）："
                f"{ {k: cells[k] for k in ANCHOR} } vs 锚 {ANCHOR}（R315 带外）",
             {"caliber": caliber, "cells": {k: cells[k] for k in ANCHOR}})
-    # smoke：按比例抽断折算（docstring 等效性论证）
+    # smoke：新漏判零容忍（2026-10-09 裁定级证据：cj50 跑 fn=3 超比例折算
+    # 上限 cap=2 触发停跑，复核 3 对全落锚 10 对已知漏判集内=与锚完全一致
+    # ——43 抽 10 中 ≥3 的超几何概率 ~16%，比例上限结构性误报，降级为参考
+    # 指标；等效原语义 = fp=0 硬闸 + precision=1.0 + 样本 fn ⊆ 锚已知漏判集
+    # （新漏判=判官漂移真信号，零容忍）；锚件缺席才回退比例折算上限）。
+    fn_pairs = sorted(d["pair_id"] for d in cells["detail"] if d["cell"] == "fn")
     n_dup = sum(1 for d in cells["detail"] if d["gold"] == "重复")
-    fn_cap = math.ceil(n_dup * ANCHOR["fn"] / ANCHOR_DUP_TOTAL)
+    fn_cap = math.ceil(n_dup * ANCHOR["fn"] / ANCHOR_DUP_TOTAL)   # 参考值
+    anchor_fn = load_anchor_fn_set()
+    if anchor_fn is not None:
+        new_misses = sorted(set(fn_pairs) - anchor_fn)
+        if cells["precision"] != 1.0 or new_misses:
+            raise HarnessStop(
+                4, f"smoke 锚失败（{caliber}）：precision={cells['precision']} "
+                   f"新漏判={new_misses}（不在锚已知漏判集）",
+                {"caliber": caliber, "cells": {k: cells[k] for k in ANCHOR},
+                 "fn_pairs": fn_pairs, "new_misses": new_misses,
+                 "anchor_fn_known": len(anchor_fn)})
+        return (f"pass_smoke(no_new_miss,fn={len(fn_pairs)}"
+                f"/anchor_known_{len(anchor_fn)},fn_cap_ref={fn_cap})")
+    # 锚件缺席兜底：比例折算上限（误报率见上注，仅供无锚环境）
     if cells["precision"] != 1.0 or cells["fn"] > fn_cap:
         raise HarnessStop(
             4, f"smoke 折算锚失败（{caliber}）：precision={cells['precision']} "
-               f"fn={cells['fn']} > cap={fn_cap}（n_dup={n_dup}）",
+               f"fn={cells['fn']} > cap={fn_cap}（n_dup={n_dup}，锚件缺席兜底档）",
             {"caliber": caliber, "cells": {k: cells[k] for k in ANCHOR},
              "fn_cap": fn_cap, "n_dup": n_dup})
-    return f"pass_smoke(fn_cap={fn_cap},n_dup={n_dup})"
+    return f"pass_smoke_fallback_cap(fn_cap={fn_cap},n_dup={n_dup})"
 
 
 # ---------------------------------------------------------------- 计算器复算（复用优先）
@@ -263,6 +455,7 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
                 goldmap_path: Path = GOLDMAP_JSON,
                 labels_path: Path = LABELS_JSONL,
                 chain_native: bool = True,
+                chain_with_judge: bool = False,
                 verdicts_in: Path | None = None,
                 out_dir_exist_ok: bool = False,
                 progress=None) -> dict:
@@ -338,7 +531,22 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
             if progress is not None:
                 progress(f"chain-native {i}/{len(exam_rows)}")
 
-    # 三口径评分（判官合并=锚口径 residual；证明口径 proof；链原生）分列
+    # 链上回炉锚相位（2026-10-09 主窗口包②；--chain-with-judge 开）
+    chain_judge_result: dict | None = None
+    if chain_with_judge:
+        chain_judge_result = run_chain_with_judge(
+            exam_rows, texts, workers=workers,
+            usage_ledger_path=str(out_dir / "chain-judge-usage.jsonl"),
+            progress=progress)
+        # 证据先行同款：链上判毕即落盘（评分/锚闸之前）
+        (out_dir / "chain-with-judge-verdicts.json").write_text(json.dumps(
+            {"schema": "chain-with-judge-verdicts-v1", "run_id": run_id,
+             "usage": chain_judge_result["usage"],
+             "details": chain_judge_result["details"]},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 口径评分（判官合并=锚口径 residual；证明口径 proof；链原生；
+    # 链上回炉锚 chain_with_judge）分列
     calibers = {
         "judge_residual": {pid: v["verdict_residual"]
                            for pid, v in by_pair.items()},
@@ -346,6 +554,8 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
     }
     if chain_native:
         calibers["chain_native"] = chain_preds
+    if chain_judge_result is not None:
+        calibers["chain_with_judge"] = chain_judge_result["verdicts"]
     scores: dict = {}
     anchor_verdicts: dict = {}
     pending_stop: HarnessStop | None = None   # 先落证后停（assessment 必写）
@@ -374,6 +584,30 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
         scores[name]["calculator_rc"] = rc
         scores[name]["detail"] = cells["detail"]
 
+    # 链上回炉锚一致性对拍（包②期望：链上锚口径与离线一致、签发分布单列）
+    chain_consistency: dict | None = None
+    if chain_judge_result is not None:
+        offline = calibers["judge_residual"]
+        online = chain_judge_result["verdicts"]
+        mismatches = [
+            {"pair_id": pid, "offline": offline.get(pid),
+             "chain": online.get(pid),
+             "chain_decision": chain_judge_result["details"][pid].get("decision"),
+             "chain_internal_code": chain_judge_result["details"][pid]
+             .get("internal_code")}
+            for pid in online if offline.get(pid) != online.get(pid)]
+        chain_consistency = {
+            "compared": len(online),
+            "agree": len(online) - len(mismatches),
+            "disagree": len(mismatches),
+            "mismatch_pairs": mismatches,
+            "chain_decision_dist": dict(Counter(
+                d.get("decision") for d in chain_judge_result["details"].values())),
+            "chain_internal_code_dist": dict(Counter(
+                d.get("internal_code") for d in chain_judge_result["details"].values())),
+            "chain_judge_usage": chain_judge_result["usage"],
+        }
+
     assessment = {
         "schema": "vfy-layered-assessment-v1", "run_id": run_id, "mode": mode,
         "seed": seed, "sample_size": len(exam_rows) if mode == "smoke" else None,
@@ -385,6 +619,7 @@ def run_harness(*, mode: str, run_id: str, workers: int = 6,
         "scores": scores,
         "counters": dict(Counter(v["verdict_residual"]
                                  for v in by_pair.values())),
+        "chain_consistency": chain_consistency,
     }
     (out_dir / "assessment.json").write_text(json.dumps(
         assessment, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -405,6 +640,10 @@ def main() -> int:
     parser.add_argument("--labels", default=str(LABELS_JSONL))
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--no-chain-native", action="store_true")
+    parser.add_argument("--chain-with-judge", action="store_true",
+                        help="链上回炉锚（包②）：decide_for_task 注入真 "
+                             "judge_callable（DEDUP_JUDGE_IN_CHAIN=1+"
+                             "DEDUP_JUDGE_PROOF=1），签发分布单列+离线一致性对拍")
     parser.add_argument("--verdicts-in", default=None,
                         help="断点复跑：复用既有 verdicts.json（零 API）")
     args = parser.parse_args()
@@ -415,6 +654,7 @@ def main() -> int:
         out_dir=Path(args.out_dir) if args.out_dir else None,
         goldmap_path=Path(args.goldmap), labels_path=Path(args.labels),
         chain_native=not args.no_chain_native,
+        chain_with_judge=args.chain_with_judge,
         verdicts_in=Path(args.verdicts_in) if args.verdicts_in else None,
         progress=lambda *a: print(f"[VFY] {a}", flush=True))
     av = assessment["anchor_verdicts"]
