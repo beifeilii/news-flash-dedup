@@ -88,8 +88,10 @@ _STAGE_CONFLICTS = {
 _RELATIVE_CONFLICTS = {
     frozenset(("day_0", "day_plus_1")),
     frozenset(("year_0", "year_plus_1")),
-    # N26③：无年期间 symbol 冲突注册（设计稿 §3.2——同文年假设下成立，与
-    # _YEAR_LESS_DEFAULT_YEAR 同纪律声明；异粒度异词 half_i vs quarter_j
+    # N26③：无年期间 symbol 冲突注册（设计稿 §3.2——同文年假设下成立；
+    # 2026-10-09 P2① 注：_YEAR_LESS_DEFAULT_YEAR 已按宪章 v2 §三-2 拆除，
+    # 本注册按"可识别阶段差异→不重复"安全向保留——conflict=不误删方向，
+    # 与 §二-3 开盘/收盘、当年/次年列举同族；异粒度异词 half_i vs quarter_j
     # 不注册 → 落尾部 unresolved 安全向，3102a5b3/D19 §5.9 先例）。
     frozenset(("half_1", "half_2")),
     frozenset(("quarter_1", "quarter_2")),
@@ -410,13 +412,17 @@ class TimeComparison:
     reason_code: str | None = None
 
 
-_MD_ONLY_DATE = re.compile(r"([0-9]{1,2})月([0-9]{1,2})日\Z")
-# D19 C 包：'M月D日' 缺年形态的补全年。**声明式假设**：V1 金标语料统一报道年
-# （两本工作簿全部样本落在 2026-09）；缺年补全年使"9月10日"↔"9月10日"及
-# "2026年9月10日"↔"9月10日"可比。跨年语料场景（如 12 月报道次年 1 月事件）
-# 不在本假设覆盖内——失败方向是 TIME_RELATION_UNCERTAIN（安全方向），
-# 二期以上下文 business_date 补全替代本常量（归属待裁定项）。
-_YEAR_LESS_DEFAULT_YEAR = 2026
+# 2026-10-09（P2 先行件①；宪章《判定宪章-草案-v2-1009.md》policy_v2 §三-2 +
+# §〇-4，终裁令《判定链改造-终裁令-正典-1009.md》§五-3 同纪律）：拆除 D19 C 包
+# '_YEAR_LESS_DEFAULT_YEAR=2026' 缺年补全年（原 V1 金标 2026-09 语料声明式
+# 假设）——无年份时间（'9月10日' 形）**不得靠默认年份解析**；解析层不命中即
+# 落 normalize_time 的 TIME_RELATION_UNCERTAIN（时间未决→边界），禁止以系统
+# 日期/接收日期/另一条文或任何正文外来源替正文补日期（判定唯一输入=正文）。
+# 红测钉死：tests/unit/test_p2_yearless_time.py。二期如需"无年日期可判"，
+# 须以显式锚定通道（正文自供锚或经审签的 business_date 通道）重提审批，不得
+# 以常量形态复活；decide/service.py 默认 business_date="2026-09-26" 同属本
+# 纪律留账项（该文件为 P2 禁区，本批仅审计注明、不改，见
+# log/temp/p2-backup-1009/p2-business-date-audit-1009.md）。
 
 
 def _parse_absolute(raw: str) -> date | clock_time | None:
@@ -430,11 +436,9 @@ def _parse_absolute(raw: str) -> date | clock_time | None:
         if re.fullmatch(r"(?:[01]?[0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?", raw):
             parts = [int(part) for part in raw.split(":")]
             return clock_time(*parts)
-        # D19 C 包：'M月D日' 缺年补全（假设见 _YEAR_LESS_DEFAULT_YEAR 注释）。
-        md_match = _MD_ONLY_DATE.fullmatch(raw)
-        if md_match:
-            return date(_YEAR_LESS_DEFAULT_YEAR,
-                        int(md_match.group(1)), int(md_match.group(2)))
+        # 2026-10-09（P2①）：原 'M月D日' 缺年补 2026 分支已拆除（见上方
+        # 纪律注记）——无年形态一律 None（fail-closed，宁未决不静默错值，
+        # 与本函数 ValueError 纪律同款）。
     except ValueError:
         return None
     return None

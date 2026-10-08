@@ -26,6 +26,7 @@ from news_flash_dedup.compare.aggregate import (
     CoverageStatus,
     FrozenRecallPlan,
 )
+from news_flash_dedup.decide import judge_pair as judge_pair_module
 from news_flash_dedup.decide.extra_event import detect_extra_event
 from news_flash_dedup.decide.types import DecideOutcome
 from news_flash_dedup.facts import FactValidationReport
@@ -196,7 +197,10 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                      visible_seq: int | None = 10,
                      prepared_seq: int | None = 10,
                      dictionary=None,
-                     budget=None) -> DecideOutcome:
+                     budget=None,
+                     judge_callable=None,
+                     judge_in_chain: bool | None = None,
+                     judge_timeout_s: float | None = None) -> DecideOutcome:
     """集合级决策（P17 03:57 修订 §6.1）：当前条 vs 全部 `required` 候选。
 
     流水线（窗口V 实述勘正：旧述第 3 步 `detect_extra_event(history,
@@ -217,6 +221,17 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
        必须同时见全部 pair_results + 完整 required 集（L01/L02/L08 不变量基础）；
     7. 返回 `DecideOutcome`（`unresolved_fields` = 首对 uncovered + 候选
        uncovered + `aggregate_outcome.internal_code`）。
+
+    P1-b（2026-10-09，合同 log/temp/p1-interface-contract-v1.md §四/§五 +
+    工程正文 判定链改造最终方案-Codex-20261008 §3.2）：判官进主链段——
+    开关 `DEDUP_JUDGE_IN_CHAIN`（judge_pair.JUDGE_IN_CHAIN_ENV）默认关，
+    关=上述老行为逐字节；开=初聚合（仅用于定位未决对，不写主记录）产出
+    "边界且存在未决对"时，按候选序对未决对逐对过 judge_pair 适配层
+    （judge_callable(pair_context)->VerifiedJudgeProof；None=默认
+    fail-closed 未决），再以 strict 口径做提交前唯一最终聚合——
+    decide_for_task 的返回即终聚合结果，commit_one 只接本结果。
+    `judge_in_chain` 显式 True/False 覆盖 env；`judge_timeout_s` 为单顺序
+    判官调用硬超时（None=judge_pair.DEFAULT_JUDGE_TIMEOUT_S）。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -281,6 +296,11 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     # H-03（外审+四轮，窗口J）：候选逐对 extra_event 的 uncovered id 累积器
     # （首对 history vs current 仍由循环外 detect_extra_event 记账，见下）。
     extra_uncovered: list = []
+    # P1-b（2026-10-09）：extra_event 来源 issue 平行账——判官进主链段重建
+    # 终聚合 issue 集时只保留本账（对级未决 issue 由 aggregate 按终态对自动
+    # 重记，初态 stale issue 不得污染终聚合）；开关关时本账零消费、老行为
+    # 逐字节不变。
+    extra_event_issues: list = []
 
     # W2Fα2-8④：原死局部变量（自 re_freeze_required 取 history 侧 ctx 后
     # 零读取，原 L196-197）拆除；aggregate 只消费 current_ctx/plan。
@@ -367,20 +387,24 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         # 固定候选回放形态）本循环不执行，行为逐字节不变。
         cand_extra = detect_extra_event(cand_report, current_report)
         if cand_extra.has_extra_event:
-            new_text_issues.append(pair_compare.PairIssue(
+            cand_extra_issue = pair_compare.PairIssue(
                 "RULE_UNCOVERED",
                 f"重合事件之外存在 {len(cand_extra.uncovered_fact_ids)} 个未覆盖的独立事件。",
-            ))
+            )
+            new_text_issues.append(cand_extra_issue)
+            extra_event_issues.append(cand_extra_issue)  # P1-b 平行账（开关关零消费）
             extra_uncovered.extend(cand_extra.uncovered_fact_ids)
 
     # extra_event：history vs current 首对（与原单对一致；H-03 起候选对
     # 在循环内逐对检测，见上）
     extra = detect_extra_event(history_report, current_report)
     if extra.has_extra_event:
-        new_text_issues.append(pair_compare.PairIssue(
+        first_extra_issue = pair_compare.PairIssue(
             "RULE_UNCOVERED",
             f"重合事件之外存在 {len(extra.uncovered_fact_ids)} 个未覆盖的独立事件。",
-        ))
+        )
+        new_text_issues.append(first_extra_issue)
+        extra_event_issues.append(first_extra_issue)  # P1-b 平行账（开关关零消费）
 
     # re_freeze（P17 03:57 修订 §6.3）：按 arrival_seq 升序构造 FrozenRecallPlan
     plan = FrozenRecallPlan(
@@ -414,6 +438,60 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
             and aggregate_outcome.decision == "边界case/疑难case"):
         aggregate_outcome = replace(aggregate_outcome,
                                     internal_code=budget_attribution)
+
+    # ------------------------------------------------------------------
+    # P1-b（2026-10-09，施工窗 P1-b）：判官进主链 + 提交前唯一最终聚合。
+    # 依据：log/temp/p1-interface-contract-v1.md §四/§五 + 工程正文
+    # 判定链改造最终方案-Codex-20261008 §3.2（"在 decide/service.py 中对
+    # 未决对补判，然后把完整 PairResult 集合交给 compare/aggregate.py 做
+    # 提交前的唯一最终聚合；若先做一次初聚合，它仅用于定位未决，不能写
+    # 主记录"）。开关 DEDUP_JUDGE_IN_CHAIN 默认关（judge_in_chain=None→
+    # 读 env）：关=上方初聚合结果原样下行，老行为逐字节。
+    judge_active = (judge_pair_module.judge_in_chain_enabled()
+                    if judge_in_chain is None else bool(judge_in_chain))
+    if judge_active:
+        # ① 聚合后判官段：初聚合产出"边界且存在未决对"时，按候选序
+        # （pair_results 顺序=首对+候选到达序）对未决对逐对过判官适配层；
+        # judge_callable 未注入即默认实现 fail-closed 未决（绝不冒签）。
+        if aggregate_outcome.decision == "边界case/疑难case":
+            for index, pair in enumerate(pair_results):
+                if pair.outcome != "unresolved":
+                    continue
+                pair_context = judge_pair_module.build_pair_context(
+                    pair,
+                    history_text=re_freeze_required[pair.history_record_id]["text"],
+                    current_text=current_text)
+                judged = judge_pair_module.adjudicate_pair(
+                    judge_callable, pair_context, timeout_s=judge_timeout_s)
+                if judged.outcome == "unresolved":
+                    # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
+                    # 原对级证据字段不动。
+                    pair_results[index] = replace(
+                        pair, code=judged.code, detail=judged.detail)
+                else:
+                    # ② 对级映射（合同 §四）产物落成标准 PairResult：
+                    # equivalent/conflict 携判官证明转化的真证据入列。
+                    pair_results[index] = replace(
+                        pair, outcome=judged.outcome, code=judged.code,
+                        detail=judged.detail,
+                        used_evidence=tuple(judged.used_evidence),
+                        verified_conflicts=tuple(judged.verified_conflicts))
+                pair_codes[pair.history_record_id] = judged.code
+        # ③ 件级最终聚合（合同 §五 strict 口径）：本结果才是 decide_for_task
+        # 的返回、才进 commit_one 写入计划；上方初聚合仅用于定位未决对，
+        # 不写主记录。issue 集重建=extra_event 平行账（对级未决 issue 由
+        # aggregate 按终态对自动重记，初态 stale issue 不得污染终聚合）。
+        aggregate_outcome = aggregate_module.aggregate(
+            current_ctx, plan, pair_results,
+            new_text_issues=list(extra_event_issues),
+            coverage=coverage,
+            strict_required_coverage=True,
+        )
+        # 预算件归因覆盖闸同款逻辑对终聚合复用（T011 决议口径不变）。
+        if (budget_attribution is not None
+                and aggregate_outcome.decision == "边界case/疑难case"):
+            aggregate_outcome = replace(aggregate_outcome,
+                                        internal_code=budget_attribution)
 
     unresolved_fields = list(extra.uncovered_fact_ids) + extra_uncovered
     if aggregate_outcome.internal_code:

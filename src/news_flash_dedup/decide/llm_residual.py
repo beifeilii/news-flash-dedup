@@ -32,6 +32,22 @@ log/temp/d32-llm-judge/）：
   score = 0.5×(w(hc)+w(ch)) − 0.05×|两顺序触发规则并集|，
   w(重复)=1.0 / w(存疑)=0.5 / w(不重复)=0.0；任一顺序非 ok → None（单列）。
 
+P1-a 判官可签发证明（2026-10-09 增量，decide/judge_proof.py；出处
+log\判定链改造最终方案-Codex-20261008.md §4 P1-a + 终裁令-正典-1009 §五-2/3）：
+- 生效面：仅 DEDUP_JUDGE_PROOF=1 开关开启的证明路（judge_proof.
+  judge_proof_enabled，逐请求读 env）；开关关=本模块逐字节现役（旧缓存键、
+  旧 R0-R6 audit/gate、无证明产物）。开关开时 audit 只观测不降级、gate
+  按 P_* 触发降级存疑（含"不重复无机器可证伪轴"降级，任务书⑥⑦）。
+- 缓存键加固（①）：证明路用 residual_cache_key_hardened（双序恒书
+  order + 双文 sha256 按 文本A/文本B 角色绑位 + model/prompt/policy
+  版本）；现役 residual_cache_key 布局一字不动供旧路原位复用。同
+  pair_id 换文本→键必异→miss 重判；旧键缓存证明路天然 miss=旧缓存
+  不升级为签发凭证；缓存命中只省 LLM 调用、不省证明核验。
+- 证明装配（⑤⑥）：双序原判均"重复"→VerifiedJudgeProof；均"不重复"
+  →NotDuplicateProof（双侧证伪轴+失败状态枚举，证据不足→未决）。
+  证明对象挂在 ResidualOutcome.proof / .not_duplicate_proof（开关关恒
+  None，to_audit_dict 不含对应键=旧审计负载逐字节）。
+
 生产异步形态（09 §3.3.4，本批只落接口骨架+设计注记；同步形态回放可测）：
 - 提交在临界区外：boundary 条目先按现役链路提交（五字段契约不动），残判
   候选以 ResidualTask 入队——提交点位于 commit 临界区之外，绝不阻塞
@@ -58,6 +74,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from . import judge_proof
 from . import machine_verify
 
 _log = logging.getLogger(__name__)
@@ -259,6 +276,39 @@ def residual_cache_key(model: str, prompt_version: str, pair_id: str,
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+def residual_cache_key_hardened(model: str, prompt_version: str, pair_id: str,
+                                prompt_sha: str, order: str,
+                                text_a_sha256: str, text_b_sha256: str,
+                                policy_version: str = judge_proof.PROOF_POLICY_VERSION,
+                                arm: str = JUDGE_ARM) -> str:
+    """P1-a ① 证明路加固缓存键（2026-10-09，§4 P1-a"缓存键补双文 hash、
+    双序、模型/提示词/策略版本"）。
+
+    = sha256(model|prompt_version|arm|order|pair_id|prompt_sha|
+             text_a_sha256|text_b_sha256|policy_version)
+
+    与现役 residual_cache_key 并存不替（旧键 hc 省 order、无文本 hash——
+    audit 旧路原位复用 D32 缓存的兼容纪律一字不动）；本键仅
+    DEDUP_JUDGE_PROOF 开关开启的证明路消费：
+    - 双序恒书 order 维度（hc 不省）——双序各自绑定本顺序 文本A/文本B 角色；
+    - 双文 sha256 绑位——同 pair_id 换文本 → 键必异 → miss 重判（现役同键
+      换文本吃陈判的病灶切除）；文本 hash 非法（非 64 位小写 hex）fail-closed；
+    - policy 版本闭隔证明策略演进（judge_proof.PROOF_POLICY_VERSION）；
+    - 旧键缓存在证明路天然 miss=旧缓存不升级为签发凭证。
+    """
+    if order not in ("hc", "ch"):
+        raise ValueError(f"order 非法：{order!r}")
+    for name, sha in (("text_a_sha256", text_a_sha256),
+                      ("text_b_sha256", text_b_sha256)):
+        if not (isinstance(sha, str) and len(sha) == 64
+                and all(c in "0123456789abcdef" for c in sha)):
+            raise ValueError(
+                f"{name} 非法（须 64 位小写 hex sha256）：{sha!r}")
+    parts = [model, prompt_version, arm, order, pair_id, prompt_sha,
+             text_a_sha256, text_b_sha256, policy_version]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------- 台账 / 异常
 
 class ResidualJudgeLedger:
@@ -320,7 +370,12 @@ class ResidualJudgeConfig:
 
 @dataclass(frozen=True)
 class ResidualOrderOutcome:
-    """单顺序判定结果。fired_rules=机验触发规则名（仅 decision=="重复" 时计算，R0）。"""
+    """单顺序判定结果。fired_rules=机验触发规则名（audit 旧路仅
+    decision=="重复" 时计算，R0；证明路 重复/不重复 均核，P_* 规则 id）。
+
+    proof_verification（2026-10-09 P1-a）：judge_proof.OrderVerification，
+    仅 DEDUP_JUDGE_PROOF 开且 decision ∈ {重复,不重复} 时非 None；开关关
+    恒 None（旧行为逐字节）。"""
     order: str                          # "hc" | "ch"
     status: str                         # "ok" | "invalid" | "failure"
     decision: str | None = None         # 裁判原判（结构合法时）
@@ -332,11 +387,17 @@ class ResidualOrderOutcome:
     attempts: int = 0
     struct_error: str | None = None
     error: str | None = None
+    proof_verification: "judge_proof.OrderVerification | None" = None
 
 
 @dataclass(frozen=True)
 class ResidualOutcome:
-    """双向装配结果。cell：signed/not_duplicate/doubtful/invalid/failure。"""
+    """双向装配结果。cell：signed/not_duplicate/doubtful/invalid/failure。
+
+    proof / not_duplicate_proof（2026-10-09 P1-a）：judge_proof 证明件，
+    仅 DEDUP_JUDGE_PROOF 开时构造（双序原判均"重复"→proof；均"不重复"
+    →not_duplicate_proof）；开关关恒 None，to_audit_dict 不含对应键
+    （旧审计负载逐字节锚不动）。"""
     pair_id: str
     cell: str
     signed: bool
@@ -345,10 +406,13 @@ class ResidualOutcome:
     hc: ResidualOrderOutcome
     ch: ResidualOrderOutcome
     order_flip_signed: bool = False
+    proof: "judge_proof.VerifiedJudgeProof | None" = None
+    not_duplicate_proof: "judge_proof.NotDuplicateProof | None" = None
 
     def to_audit_dict(self) -> dict:
         """确定性审计负载（不含 cache_hit/latency/attempts 运行元数据——
-        双腿制逐字节对拍锚；运行元数据只进 ledger）。"""
+        双腿制逐字节对拍锚；运行元数据只进 ledger）。证明键仅开关开构造
+        出证明件时出现（旧路恒无=逐字节）。"""
         def _order(o: ResidualOrderOutcome) -> dict:
             return {"status": o.status, "decision": o.decision,
                     "final_decision": o.final_decision,
@@ -356,11 +420,16 @@ class ResidualOutcome:
                     "interceptions": [json.loads(json.dumps(i, ensure_ascii=False))
                                       for i in o.interceptions],
                     "struct_error": o.struct_error, "error": o.error}
-        return {"pair_id": self.pair_id, "cell": self.cell, "signed": self.signed,
-                "suspicion_score": self.suspicion_score,
-                "fired_rules_union": list(self.fired_rules_union),
-                "order_flip_signed": self.order_flip_signed,
-                "hc": _order(self.hc), "ch": _order(self.ch)}
+        d = {"pair_id": self.pair_id, "cell": self.cell, "signed": self.signed,
+             "suspicion_score": self.suspicion_score,
+             "fired_rules_union": list(self.fired_rules_union),
+             "order_flip_signed": self.order_flip_signed,
+             "hc": _order(self.hc), "ch": _order(self.ch)}
+        if self.proof is not None:
+            d["proof"] = self.proof.to_dict()
+        if self.not_duplicate_proof is not None:
+            d["not_duplicate_proof"] = self.not_duplicate_proof.to_dict()
+        return d
 
 
 @dataclass(frozen=True)
@@ -538,12 +607,35 @@ class SyncResidualJudge(ResidualJudgePort):
         return key
 
     def _call_cached(self, *, pair_id: str, order: str, system: str,
-                     user: str) -> tuple[str, float, bool, int]:
-        """返 (raw_content, latency_s, cache_hit, attempts)。缓存 miss → 调用+重试+落盘。"""
+                     user: str, proof_mode: bool = False,
+                     text_a_sha256: str | None = None,
+                     text_b_sha256: str | None = None
+                     ) -> tuple[str, float, bool, int]:
+        """返 (raw_content, latency_s, cache_hit, attempts)。缓存 miss → 调用+重试+落盘。
+
+        proof_mode（2026-10-09 P1-a ①）：开关开的证明路——加固键（双文
+        hash+双序+policy 版本）；读侧对拍条目 key_material 双文 hash（不符
+        按 miss，复用"损坏条目 fail-closed"纪律）；写侧 key_material 补双文
+        hash+policy_version。proof_mode=False=现役逐字节（旧键、旧读写面）。
+        """
         cfg = self.config
         prompt_sha = judge_prompt_for_version(cfg.prompt_version)[1]
-        key = residual_cache_key(cfg.model, cfg.prompt_version, pair_id,
-                                 prompt_sha, order)
+        if proof_mode:
+            key = residual_cache_key_hardened(
+                cfg.model, cfg.prompt_version, pair_id, prompt_sha, order,
+                text_a_sha256, text_b_sha256)
+        else:
+            key = residual_cache_key(cfg.model, cfg.prompt_version, pair_id,
+                                     prompt_sha, order)
+        key_material = {"model": cfg.model,
+                        "prompt_version": cfg.prompt_version,
+                        "arm": JUDGE_ARM, "order": order,
+                        "pair_id": pair_id,
+                        "prompt_sha256": prompt_sha}
+        if proof_mode:
+            key_material["text_a_sha256"] = text_a_sha256
+            key_material["text_b_sha256"] = text_b_sha256
+            key_material["policy_version"] = judge_proof.PROOF_POLICY_VERSION
         path: Path | None = None
         if cfg.cache_dir is not None:
             path = Path(cfg.cache_dir) / f"{key}.json"
@@ -553,6 +645,15 @@ class SyncResidualJudge(ResidualJudgePort):
                     raw = entry["raw_content"]
                     if not isinstance(raw, str):
                         raise TypeError("raw_content 非 str")
+                    if proof_mode:
+                        # 旧缓存不升级为签发凭证：条目双文 hash 必须与本对
+                        # 绑位一致（键本身已绑定，此为纵深对拍——键外维度
+                        # 被手工搬入同键文件时仍按 miss 重判）。
+                        km = entry.get("key_material") or {}
+                        if (km.get("text_a_sha256") != text_a_sha256
+                                or km.get("text_b_sha256") != text_b_sha256):
+                            raise ValueError(
+                                "key_material 双文 hash 与本对不符")
                     self.ledger.bump(cache_hits=1)
                     return raw, 0.0, True, 0
                 except (OSError, UnicodeDecodeError, ValueError, KeyError,
@@ -607,11 +708,7 @@ class SyncResidualJudge(ResidualJudgePort):
                         tmp = path.with_name(
                             f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
                         tmp.write_text(json.dumps({
-                            "key_material": {"model": cfg.model,
-                                              "prompt_version": cfg.prompt_version,
-                                              "arm": JUDGE_ARM, "order": order,
-                                              "pair_id": pair_id,
-                                              "prompt_sha256": prompt_sha},
+                            "key_material": key_material,
                             "request": {"model": cfg.model, "temperature": 0,
                                         "seed": 42,
                                         "system": system, "user": user},
@@ -664,11 +761,7 @@ class SyncResidualJudge(ResidualJudgePort):
                     tmp = path.with_name(
                         f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
                     tmp.write_text(json.dumps({
-                        "key_material": {"model": cfg.model,
-                                          "prompt_version": cfg.prompt_version,
-                                          "arm": JUDGE_ARM, "order": order,
-                                          "pair_id": pair_id,
-                                          "prompt_sha256": prompt_sha},
+                        "key_material": key_material,
                         "request": {"model": cfg.model, "temperature": 0, "seed": 42,
                                     "system": system, "user": user},
                         "raw_content": raw,
@@ -687,12 +780,18 @@ class SyncResidualJudge(ResidualJudgePort):
     # ---------- 单顺序判定 ----------
 
     def _judge_order(self, pair_id: str, *, order: str, text_a: str,
-                     text_b: str) -> ResidualOrderOutcome:
+                     text_b: str, proof_mode: bool = False
+                     ) -> ResidualOrderOutcome:
         user_msg = f"【文本A】\n{text_a}\n\n【文本B】\n{text_b}"
         prompt_text = judge_prompt_for_version(self.config.prompt_version)[0]
         try:
             raw, latency, hit, attempts = self._call_cached(
-                pair_id=pair_id, order=order, system=prompt_text, user=user_msg)
+                pair_id=pair_id, order=order, system=prompt_text,
+                user=user_msg, proof_mode=proof_mode,
+                text_a_sha256=(judge_proof.text_sha256(text_a)
+                               if proof_mode else None),
+                text_b_sha256=(judge_proof.text_sha256(text_b)
+                               if proof_mode else None))
         except LlmResidualError as exc:
             return ResidualOrderOutcome(order=order, status="failure",
                                         error=str(exc)[:300])
@@ -708,11 +807,23 @@ class SyncResidualJudge(ResidualJudgePort):
                 order=order, status="invalid", struct_error=struct_err,
                 cache_hit=hit, latency_s=round(latency, 3), attempts=attempts)
         decision = judgment["decision"]
-        # R0 闸门纪律：机器验仅闸/验判"重复"的判定（不重复/存疑本已保守）
+        verification: "judge_proof.OrderVerification | None" = None
         fired: tuple[dict, ...] = ()
-        if decision == "重复":
-            fired = tuple(machine_verify.verify_signed_judgment(
-                judgment, text_a, text_b))
+        if proof_mode:
+            # P1-a 证明路（②③④⑥）：重复/不重复均证明级核验（存疑本已保守
+            # 不送核）；触发 P_* 入审计槽，gate 降级与现役同构（:下 final）。
+            # 缓存命中只省 LLM 调用——本核验每跑必从判定+原文现算，旧缓存
+            # 不升级为签发凭证。
+            if decision in ("重复", "不重复"):
+                verification = judge_proof.verify_order_judgment(
+                    order=order, judgment=judgment,
+                    text_a=text_a, text_b=text_b)
+                fired = verification.to_interceptions()
+        else:
+            # R0 闸门纪律：机器验仅闸/验判"重复"的判定（不重复/存疑本已保守）
+            if decision == "重复":
+                fired = tuple(machine_verify.verify_signed_judgment(
+                    judgment, text_a, text_b))
         final = decision
         if self.config.mv_mode == MV_GATE and fired:
             final = "存疑"                # gate 模式：拦截→降级存疑（D32 §10 字面）
@@ -720,17 +831,26 @@ class SyncResidualJudge(ResidualJudgePort):
             order=order, status="ok", decision=decision, final_decision=final,
             fired_rules=tuple(f["rule"] for f in fired),
             interceptions=fired, cache_hit=hit,
-            latency_s=round(latency, 3), attempts=attempts)
+            latency_s=round(latency, 3), attempts=attempts,
+            proof_verification=verification)
 
     # ---------- 双向装配（D32 终版：两顺序 final 均"重复"才签） ----------
 
     def judge_pair(self, pair_id: str, text_history: str,
                    text_current: str) -> ResidualOutcome:
-        """残判主入口：hc（history→current）+ ch（current→history）双向判。"""
+        """残判主入口：hc（history→current）+ ch（current→history）双向判。
+
+        P1-a（2026-10-09）：proof_mode=judge_proof.judge_proof_enabled()
+        逐请求读 env（P0 开关同型纪律）；开关开→加固缓存键+证明级核验+
+        证明装配（audit 只观测不降级，gate 按 P_* 降级存疑）；开关关→
+        现役逐字节。"""
+        proof_mode = judge_proof.judge_proof_enabled()
         hc = self._judge_order(pair_id, order="hc",
-                               text_a=text_history, text_b=text_current)
+                               text_a=text_history, text_b=text_current,
+                               proof_mode=proof_mode)
         ch = self._judge_order(pair_id, order="ch",
-                               text_a=text_current, text_b=text_history)
+                               text_a=text_current, text_b=text_history,
+                               proof_mode=proof_mode)
         fired_union = tuple(sorted(set(hc.fired_rules) | set(ch.fired_rules)))
         if hc.status == "failure" or ch.status == "failure":
             return ResidualOutcome(pair_id=pair_id, cell="failure", signed=False,
@@ -750,10 +870,35 @@ class SyncResidualJudge(ResidualJudgePort):
             cell = "doubtful"             # 双存疑或混合（含恰一顺序签=顺序翻案）
         suspicion = round(0.5 * (_DECISION_W[hc.decision] + _DECISION_W[ch.decision])
                           - 0.05 * len(fired_union), 4)
+        # P1-a ⑤⑥ 证明装配（开关开且双序结构合法）：按裁判原判（demotion
+        # 前）选证明型——audit 下证明如实记录核验结果（issued=False 可观测）；
+        # gate 下触发 P_* 的顺序已降级存疑（cell 自然非 signed/not_duplicate），
+        # 幸存 cell 与 proof.issued 同向不变式成立。
+        proof: "judge_proof.VerifiedJudgeProof | None" = None
+        nd_proof: "judge_proof.NotDuplicateProof | None" = None
+        if proof_mode:
+            prompt_sha = judge_prompt_for_version(self.config.prompt_version)[1]
+            if hc.decision == "重复" and ch.decision == "重复":
+                proof = judge_proof.build_duplicate_proof(
+                    pair_id=pair_id, text_history=text_history,
+                    text_current=text_current,
+                    hc=hc.proof_verification, ch=ch.proof_verification,
+                    model=self.config.model,
+                    prompt_version=self.config.prompt_version,
+                    prompt_sha256=prompt_sha)
+            elif hc.decision == "不重复" and ch.decision == "不重复":
+                nd_proof = judge_proof.build_not_duplicate_proof(
+                    pair_id=pair_id, text_history=text_history,
+                    text_current=text_current,
+                    hc=hc.proof_verification, ch=ch.proof_verification,
+                    model=self.config.model,
+                    prompt_version=self.config.prompt_version,
+                    prompt_sha256=prompt_sha)
         return ResidualOutcome(
             pair_id=pair_id, cell=cell, signed=signed,
             suspicion_score=suspicion, fired_rules_union=fired_union, hc=hc, ch=ch,
-            order_flip_signed=((f_hc == "重复") != (f_ch == "重复")))
+            order_flip_signed=((f_hc == "重复") != (f_ch == "重复")),
+            proof=proof, not_duplicate_proof=nd_proof)
 
     # ---------- ResidualJudgePort 骨架（同步形态：submit 即判，票据=pair_id） ----------
 
@@ -793,6 +938,7 @@ __all__ = [
     "JUDGE_PROMPT_VERSION_V3", "JUDGE_PROMPT_V3", "PROMPT_SHA256_V3",
     "DEFAULT_MODEL", "DEFAULT_BASE_URL", "DECISIONS", "MV_AUDIT", "MV_GATE",
     "judge_prompt_sha256", "judge_prompt_for_version", "residual_cache_key",
+    "residual_cache_key_hardened",
     "ResidualJudgeLedger", "LlmResidualError",
     "ResidualJudgeConfig", "ResidualOrderOutcome", "ResidualOutcome",
     "ResidualTask", "ResidualJudgePort", "SyncResidualJudge",

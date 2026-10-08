@@ -230,13 +230,22 @@ def test_symbol_vs_legacy_relative_word_unresolved():
 
 # ---------- 既有路径零漂移回归（date/clock/stage/relative 旧语义） ----------
 
-def test_legacy_date_paths_unchanged():
+def test_legacy_date_paths_repinned_p2_yearless_undecided():
+    """2026-10-09（P2 先行件①重钉；宪章《判定宪章-草案-v2-1009.md》§三-2 +
+    §〇-4）：本用例原名 test_legacy_date_paths_unchanged，旧钉值系 D19 C 包
+    '_YEAR_LESS_DEFAULT_YEAR=2026' 缺年补全行为（同 '9月20日' compatible /
+    异日 conflict）——该常量已按宪章拆除（无年不得靠默认年份解析、禁用正文
+    外来源补日期），无年 'M月D日' 双腿重钉为时间未决（红能力证据见
+    tests/unit/test_p2_yearless_time.py，拆除前本重钉全红）；带年 date vs
+    clock 型别未决腿零漂移（前后均绿）。"""
     same = _compare(_time("甲9月20日公告。", "9月20日"),
                     _time("乙9月20日公告。", "9月20日"))
-    assert same.relation == "compatible"
+    assert same.relation == "unresolved"       # P2①：年不可证 → 未决（旧=compatible）
+    assert same.reason_code == "TIME_RELATION_UNCERTAIN"
     diff = _compare(_time("甲9月20日公告。", "9月20日"),
                     _time("乙9月21日公告。", "9月21日"))
-    assert diff.relation == "conflict" and diff.reason_code == "VERIFIED_CONFLICT"
+    assert diff.relation == "unresolved"       # P2①：年不可证 → 未决（旧=conflict）
+    assert diff.reason_code == "TIME_RELATION_UNCERTAIN"
     mixed = _compare(_time("甲2026年9月20日公告。", "2026年9月20日"),
                      _time("乙09:30盘中。", "09:30"))
     assert mixed.relation == "unresolved"      # date vs clock 型别不同维持未决
