@@ -17,9 +17,15 @@
 
 无现役消费点（live 装配根接入前 additive 新件；读侧红测 G10-G12 钉
 快照读取契约，本模块按同一契约产出快照）。
+
+2026-10-09（P0-a 修订二，主窗口修订令 / log\判定链改造技术设计书-v1-1009.md
+§②）：首个消费点落地——vector/milvus_store.py upsert_chunks 写确认尾段
+经 COVERAGE_FRONTIER_ENV 开关（默认关）驱动本模块推进器；读侧
+fail-closed 求值语义（vector_store.py:430-447）不变。
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +38,20 @@ from .vector_store import VectorFrontierProvider
 
 SNAPSHOT_SCHEMA = VectorFrontierProvider.SNAPSHOT_SCHEMA   # "vector-prepared-v1"
 SNAPSHOT_KEY = VectorFrontierProvider.SNAPSHOT_KEY         # "vector_prepared"
+
+
+# 2026-10-09（P0-a 修订二，主窗口修订令）：覆盖闸 frontier 写侧接线开关
+# DEDUP_COVERAGE_FRONTIER——默认关=现役逐字节（vector_prepared 快照零写者，
+# 读侧恒 unproven 形态不动）；开=写侧真件在 Milvus 写入 ack 后推进。
+COVERAGE_FRONTIER_ENV = "DEDUP_COVERAGE_FRONTIER"
+
+
+def coverage_frontier_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """开关解析：精确 "1"=开；缺省/空串/其余一律关（fail-closed 默认关，
+    "true"/大小写变体等不放大——service.py 模式闸 mode_from_environment
+    同型纪律）。"""
+    source = os.environ if env is None else env
+    return source.get(COVERAGE_FRONTIER_ENV, "") == "1"
 
 
 class VectorFrontierConflict(RuntimeError):
@@ -270,6 +290,7 @@ class VectorReconciler:
 
 
 __all__ = [
+    "COVERAGE_FRONTIER_ENV",
     "SNAPSHOT_KEY",
     "SNAPSHOT_SCHEMA",
     "VectorFrontierAdvanceReport",
@@ -277,4 +298,5 @@ __all__ = [
     "VectorFrontierConflict",
     "VectorReconcileReport",
     "VectorReconciler",
+    "coverage_frontier_enabled",
 ]

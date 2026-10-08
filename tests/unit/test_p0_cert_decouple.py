@@ -224,3 +224,145 @@ def test_fact_equivalent_completeness_requirement_untouched(monkeypatch, switch)
     assert pair.outcome == "unresolved"
     assert out.decision != "重复"
     assert out.duplicate_ids == ()
+
+
+# ---------- ⑥ 修订一（2026-10-09 主窗口修订令）：pair_compare 判定序——
+# 开关开时 冲突→有效 EXACT/LOSSLESS 证书→直接 equivalent→issues→
+# equivalence_ready（修复前旧序让未决 issue 对证书通道一票否决）。
+# 夹具：真抽取+真对齐（LONG 同文对），p15 产物按 test_pair_compare.py
+# _empty_p15 先例以真 P15PairResults/PairIssue/VerifiedConflict 类构造——
+# 钉的是判定序本身（真链无法稳定复现"证书+未决 issue 并存"，时间未决
+# issue 依赖抽取形态），构造面与既有测试同先例 ----------
+
+from news_flash_dedup.compare.value_time import EvidenceRef
+
+
+def _reports_alignment(history_text, current_text):
+    """真规则抽取 + 真校验包装 + 真 build_aligned（对齐件全真）。"""
+    history = _wrap_facts_as_report(
+        RECORD_ID_H, history_text,
+        facts_rule.extract_facts(RECORD_ID_H, history_text))
+    current = _wrap_facts_as_report(
+        RECORD_ID_C, current_text,
+        facts_rule.extract_facts(RECORD_ID_C, current_text))
+    alignment = pair_alignment.build_aligned(
+        history, current, history_text, current_text,
+        dictionary_version="dict_v1", alignment_version="alignment_v1",
+    )
+    return history, current, alignment
+
+
+def _p15_cert_with_issue(proof, *, ready=True):
+    """证书+未决 issue 并存的 p15 产物（真类构造，同 _empty_p15 先例）。"""
+    return pair_compare.P15PairResults(
+        verified_conflicts=(), time_pairs=(),
+        equivalence_ready=ready, text_proof=proof,
+        uncovered_independent_relation=False,
+        issues=(pair_compare.PairIssue(
+            "RULE_UNCOVERED", "模拟未决 issue（钉判定序用，真类构造）"),))
+
+
+def _compare_with_p15(p15_results, history_text=LONG, current_text=LONG,
+                      *, history_scope="default", current_scope="default"):
+    history, current, alignment = _reports_alignment(history_text, current_text)
+    history_ctx = _ctx(record_id=RECORD_ID_H, item_id="item-H",
+                       text=history_text, arrival_seq=1)
+    history_ctx["scope_id"] = history_scope
+    current_ctx = _ctx(record_id=RECORD_ID_C, item_id="item-C",
+                       text=current_text, arrival_seq=2)
+    current_ctx["scope_id"] = current_scope
+    pair = pair_compare.compare_pair(
+        history_ctx, current_ctx,
+        history_artifact=history, current_artifact=current,
+        alignment=alignment, pipeline_version="dedup_v1",
+        p15_results=p15_results,
+    )
+    return pair, history_ctx, current_ctx
+
+
+def test_order_off_certificate_vetoed_by_unresolved_issue(monkeypatch):
+    """⑥a 开关关=旧序逐字节：有效 EXACT 证书被未决 issue veto → unresolved
+    （修订一修复的旧形态钉——证书会被未决 issue 一票否决）。"""
+    monkeypatch.delenv("DEDUP_CERT_DECOUPLE", raising=False)
+    pair, _, _ = _compare_with_p15(_p15_cert_with_issue("EXACT_TEXT_MATCH"))
+    assert pair.outcome == "unresolved"
+    assert pair.code == "RULE_UNCOVERED"
+
+
+def test_order_on_exact_certificate_signs_before_issues(monkeypatch):
+    """⑥b 开关开=新序：有效 EXACT 证书在 issues 之前直接 equivalent。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    pair, history_ctx, current_ctx = _compare_with_p15(
+        _p15_cert_with_issue("EXACT_TEXT_MATCH"))
+    assert pair.outcome == "equivalent"
+    assert pair.code == "EXACT_TEXT_MATCH"
+    # 全链端到端：对级 equivalent → aggregate 重复（decide 链同判）
+    plan = FrozenRecallPlan(version="rrf_v1", required={RECORD_ID_H: history_ctx})
+    out = aggregate_module.aggregate(
+        current_ctx, plan, [pair],
+        coverage=CoverageStatus(visible_seq=10, prepared_seq=10, complete=True),
+    )
+    assert out.decision == "重复"
+    assert out.duplicate_ids == ("item-H",)
+    assert out.internal_code == "EXACT_TEXT_MATCH"
+
+
+def test_order_on_lossless_certificate_signs_before_issues(monkeypatch):
+    """⑥c 开关开：LOSSLESS 证书同序直接 equivalent。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    pair, _, _ = _compare_with_p15(_p15_cert_with_issue("LOSSLESS_TEXT_MATCH"))
+    assert pair.outcome == "equivalent"
+    assert pair.code == "LOSSLESS_TEXT_MATCH"
+
+
+def test_order_on_fact_equivalent_not_bypassed(monkeypatch):
+    """⑥d 开关开：FACT_EQUIVALENT 不在直签码集——完备性通道仍受 issues
+    veto（修订边界：只解 EXACT/LOSSLESS 文本证书，不洗白事实等价通道）。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    pair, _, _ = _compare_with_p15(_p15_cert_with_issue("FACT_EQUIVALENT"))
+    assert pair.outcome == "unresolved"
+    assert pair.code == "RULE_UNCOVERED"
+
+
+def test_order_on_malformed_proof_without_ready_not_bypassed(monkeypatch):
+    """⑥e 开关开：equivalence_ready=False 却携证书码（外部畸形构造）→
+    不直签（"有效证书"要求 equivalence_ready 同真，不放大畸形输入）。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    pair, _, _ = _compare_with_p15(
+        _p15_cert_with_issue("EXACT_TEXT_MATCH", ready=False))
+    assert pair.outcome == "unresolved"
+
+
+def test_order_on_conflict_retains_veto_over_certificate(monkeypatch):
+    """⑥f 冲突保留一票否决：开关开+证书+充分冲突并存 → conflict（修订令
+    原文：LOSSLESS 归一后的场景保留冲突优先更安全；证据锚真文本切片）。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    quote = "1200万"
+    start = LONG.index(quote)
+    conflict = pair_compare.VerifiedConflict(
+        field_path="facts.f1.numerics.n1.value", basis="NUMERIC_SAME_DECIMAL",
+        history_evidence=EvidenceRef(
+            record_id=RECORD_ID_H, field="facts.f1.numerics.n1.value",
+            quote=quote, start=start, end=start + len(quote)),
+        current_evidence=EvidenceRef(
+            record_id=RECORD_ID_C, field="facts.f1.numerics.n1.value",
+            quote=quote, start=start, end=start + len(quote)),
+        detail="冲突模拟（钉冲突优先级）")
+    p15 = pair_compare.P15PairResults(
+        verified_conflicts=(conflict,), time_pairs=(),
+        equivalence_ready=True, text_proof="EXACT_TEXT_MATCH",
+        uncovered_independent_relation=False,
+        issues=(pair_compare.PairIssue("RULE_UNCOVERED", "模拟未决 issue"),))
+    pair, _, _ = _compare_with_p15(p15)
+    assert pair.outcome == "conflict"
+    assert pair.code == "VERIFIED_CONFLICT"
+
+
+def test_order_on_cross_scope_pair_binding_gate_intact(monkeypatch):
+    """⑥g 作用域边界：开关开+同文+异 scope_id → PairBindingError（同文
+    签发与正常签发同等 scope/date 窗口——_check_binding :204-212 入口闸
+    不被新判定序绕过）。"""
+    monkeypatch.setenv("DEDUP_CERT_DECOUPLE", "1")
+    with pytest.raises(pair_compare.PairBindingError):
+        _compare_with_p15(_p15_cert_with_issue("EXACT_TEXT_MATCH"),
+                          history_scope="scope-a", current_scope="scope-b")

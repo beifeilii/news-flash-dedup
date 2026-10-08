@@ -55,19 +55,6 @@ def mode_from_environment(env: Mapping[str, str] | None = None) -> str:
     return raw
 
 
-# 2026-10-09（P0-a，log\temp\判定链修复方案-P0施工单-呈外部评审.md §一-P0-a）：
-# 覆盖闸 frontier 接线开关 DEDUP_COVERAGE_FRONTIER（默认关=现役逐字节，
-# vector_prepared 快照零写者、vector_store.py:430-447 恒 unproven 形态不动）。
-COVERAGE_FRONTIER_ENV = "DEDUP_COVERAGE_FRONTIER"
-
-
-def coverage_frontier_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """2026-10-09（P0-a）开关解析：精确 "1"=开；缺省/空串/其余一律关
-    （fail-closed 默认关，"true"/大小写变体等不放大——上方模式闸同型纪律）。"""
-    source = os.environ if env is None else env
-    return source.get(COVERAGE_FRONTIER_ENV, "") == "1"
-
-
 # ---------- VectorSearcher 鸭式端口 + 过渡态（§2.4） ----------
 
 
@@ -193,8 +180,7 @@ class RecallService:
                  fact_supply: Callable[[str, str], list[dict]] | None = None,
                  clock: Callable[[], datetime] | None = None,
                  channels: Mapping[str, Any] | None = None,
-                 allowed_namespaces: tuple[str, ...] = ("p01-batch-",),
-                 vector_frontier_advancer: Any = None) -> None:
+                 allowed_namespaces: tuple[str, ...] = ("p01-batch-",)) -> None:
         self.client = client
         self.index_prefix = index_prefix
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -203,11 +189,6 @@ class RecallService:
                                 else NullVectorSearcher(clock=self.clock))
         self.fact_supply = (fact_supply if fact_supply is not None
                             else IdentityFactSupply())
-        # 2026-10-09（P0-a）：vector_prepared 前沿推进器端口（additive，
-        # 显式注入同五通道风格；None+开关开+client 在场→懒装配真件，
-        # 开关关→本字段零消费，现役逐字节）。
-        self.vector_frontier_advancer = vector_frontier_advancer
-        self._frontier_advancer_cache: Any = None
         if channels is not None:
             unknown = set(channels) - set(_ES_CHANNELS)
             if unknown:
@@ -250,13 +231,6 @@ class RecallService:
             return (channel.search(*args, timeout_s=channel_timeout)
                     if channel_timeout is not None else channel.search(*args))
 
-        # 2026-10-09（P0-a，log\temp\判定链修复方案-P0施工单-呈外部评审.md
-        # §一-P0-a）：覆盖闸 frontier 接线点=build_plan 五通道扇出前（融合段
-        # 入口）。覆盖求值发生在向量通道 search 内部（vector_store.py:430-447，
-        # 扇出并行体内）——融合完成后再推进对本请求恒无效且按单飞升序链
-        # 结构性滞后一件（当日首件永 False，"让不重复能签出"落空），故推进
-        # 必须先于扇出。开关关→零调用（现役逐字节）。
-        self._advance_vector_frontier(request)
         # B+ 第一步（2026-10-08）：五通道扇出并行化——通道间无依赖（融合层
         # 只做结果汇总），I/O 等待互相重叠。行为与串行逐字节等价：
         # ① responses 顺序恒为 [hash, near, bm25, vector, entity]（future
@@ -276,72 +250,6 @@ class RecallService:
                        for channel, args in calls]
             responses = [future.result() for future in futures]
         return freeze_recall_plan(request, responses)
-
-    # ---------- P0-a 覆盖闸 frontier 接线（2026-10-09，开关默认关） ----------
-
-    def _advance_vector_frontier(self, request: RecallRequest) -> None:
-        """推进 vector_prepared 前沿快照证据（开关关=零效应，现役逐字节）。
-
-        证据纪律（施工单 §一-P0-a 防护①"接线只认真实快照证据"）：
-        - NullVectorSearcher 过渡态=无向量通道 → 不推进（无通道而写覆盖
-          快照=伪造向量证据，后接真 store 即成假 True，结构性禁绝）；
-        - ready 证据=request.prepared_seq 已证准备前沿（live 路径 worker.py:
-          488-490 已闸 prepared≥arrival_seq-1）——装配方负责"prepared⟹向量
-          写确认"不变式（T 跑/回放管线语料先验全量播种；实时管线 P19 双写
-          先于准备就绪），本服务只中继水印证据、不新造；
-        - 推进经 VectorFrontierAdvancer 孔洞/单调/CAS 纪律（无证明不跳洞、
-          单调不回退、混空间拒写、冲突有界放弃）；
-        - 推进失败=维持停摆（覆盖求值由 vector_store.py:430-447 独立
-          fail-closed 执法——快照缺席/有孔/前沿滞后（时序倒错）恒 False，
-          宁缺毋滥；快照 generation/advanced_at 停滞即可观测面，E 批 R2
-          对冲同口径）。
-        """
-        if not coverage_frontier_enabled():
-            return
-        if isinstance(self.vector_searcher, NullVectorSearcher):
-            return
-        space_id = request.embedding_space_id
-        if not isinstance(space_id, str) or not space_id:
-            return
-        prepared = request.prepared_seq
-        if type(prepared) is not int or prepared < 1:
-            return
-        advancer = self.vector_frontier_advancer
-        if advancer is None:
-            advancer = self._self_assembled_frontier_advancer()
-            if advancer is None:
-                return
-        try:
-            advancer.advance(request.scope_id, request.business_date, space_id,
-                             range(1, prepared + 1))
-        except Exception:
-            # 推进失败=维持停摆（fail-closed 安全向）：本请求覆盖求值独立
-            # 执法，快照缺席/陈旧恒 False，绝不以失败推进冒充证据。
-            pass
-
-    def _self_assembled_frontier_advancer(self) -> Any:
-        """懒装配真 VectorFrontierAdvancer（开关开+未显式注入+client 在场）。
-
-        ElasticsearchBatchStore 前缀闸不符/client 缺席 → None（fail-closed
-        不推进）；懒导入——默认关路径零新依赖（RuleFactSupply 同纪律）；
-        成功装配后缓存复用（CAS 有界重试参数/时钟同源）。
-        """
-        if self._frontier_advancer_cache is not None:
-            return self._frontier_advancer_cache
-        if self.client is None:
-            return None
-        try:
-            from news_flash_dedup.batch_es_store import ElasticsearchBatchStore
-
-            from .vector_frontier import VectorFrontierAdvancer
-
-            self._frontier_advancer_cache = VectorFrontierAdvancer(
-                ElasticsearchBatchStore(self.client,
-                                        index_prefix=self.index_prefix),
-                clock=self.clock)
-        except Exception:
-            return None
-        return self._frontier_advancer_cache
 
     # ---------- decide/commit 输入映射（F1③） ----------
 
@@ -414,7 +322,6 @@ class RecallService:
 
 __all__ = [
     "COMMIT_INPUT_KEYS",
-    "COVERAGE_FRONTIER_ENV",
     "IdentityFactSupply",
     "NullVectorSearcher",
     "RECALL_MODE_DEFAULT",
@@ -423,6 +330,5 @@ __all__ = [
     "RecallModeInvalid",
     "RecallService",
     "RuleFactSupply",
-    "coverage_frontier_enabled",
     "mode_from_environment",
 ]

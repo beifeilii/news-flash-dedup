@@ -5,6 +5,10 @@
 scope_id / business_date / arrival_seq 早序。
 
 设计依据：`log/P14-16-Fact精判集成设计.md` §3.3（PairResult、PairBindingError、对级预算）。
+
+2026-10-09（P0-b 修订一，主窗口修订令）：DEDUP_CERT_DECOUPLE 开时判定序
+改为 冲突→有效 EXACT/LOSSLESS 证书→直接 equivalent→issues→equivalence_ready
+（冲突一票否决保留；开关关=旧序逐字节）。详见 compare_pair 判定段注释。
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from news_flash_dedup.facts import FactValidationReport
+from news_flash_dedup.text import cert_decouple_enabled
 
 from .pair_alignment import AlignedPair, PairAlignmentOutcome
 from .value_time import EvidenceRef
@@ -27,6 +32,14 @@ EQUIVALENT_CODES = frozenset({
     "EXACT_TEXT_MATCH",
     "LOSSLESS_TEXT_MATCH",
     "FACT_EQUIVALENT",
+})
+# 2026-10-09（P0-b 修订一，主窗口修订令）：开关 DEDUP_CERT_DECOUPLE 开时
+# 可直接签发的有效文本证书码集——EXACT/LOSSLESS 双码（代码可复核通道）；
+# FACT_EQUIVALENT 不在其列，仍走旧序 issues→equivalence_ready 闸（完备性
+# 约束不被本修订触碰）。
+_TEXT_CERT_PROOF_CODES = frozenset({
+    "EXACT_TEXT_MATCH",
+    "LOSSLESS_TEXT_MATCH",
 })
 CONFLICT_CODES = frozenset({
     "VERIFIED_CONFLICT",
@@ -259,7 +272,9 @@ def compare_pair(
     p15_results: P15PairResults | None = None,
     budget_at: int = 0,
 ) -> PairResult:
-    """对级精判：先 VerifiedConflict，再关键未解，最后等价。
+    """对级精判：先 VerifiedConflict，再关键未解，最后等价（2026-10-09
+    P0-b 修订一：DEDUP_CERT_DECOUPLE 开时有效 EXACT/LOSSLESS 证书在关键
+    未解之前直接等价，冲突一票否决保留；关=旧序逐字节）。
 
     参数：
         history / current：PairRecordContext-like mapping，含
@@ -426,7 +441,28 @@ def compare_pair(
     else:
         if p15.uncovered_independent_relation:
             issues.append(PairIssue("RULE_UNCOVERED", "重合事件之外存在未覆盖的独立事件组合。"))
-        if issues:
+        # 2026-10-09（P0-b 修订一，主窗口修订令 / log\temp\判定链修复方案
+        # -P0施工单-呈外部评审.md §一修订稿）：开关 DEDUP_CERT_DECOUPLE 开时
+        # 判定序改为 冲突→有效 EXACT/LOSSLESS 证书→直接 equivalent→issues
+        # →equivalence_ready——修复前旧序（冲突→issues→equivalence_ready）
+        # 让未决 issue 对证书通道一票否决，同文对恒落边界（T 冻结件 30/30
+        # 逐字节同文对全边界实证在案）。
+        # 冲突保留一票否决（本分支仅在 conflicts 为空时可达）：逐字节同文
+        # 在确定性抽取下同文同出，真数值/时间冲突结构性不可能；LOSSLESS
+        # 归一仅差布局字符，冲突若出现=抽取发散或数据损坏信号——宁严勿宽，
+        # 冲突优先于一切等价主张。
+        # 作用域边界：同文签发与正常签发同等窗口——_check_binding :204-212
+        # 入口闸已强制同 scope_id+business_date（异窗 PairBindingError，
+        # 本分支结构性不可达）；模板/超短文本由 p15_integration 的
+        # min_body_length 闸在证书签发前挡（本层不复闸）。
+        # 开关关=旧序逐字节（本分支不成立，直下 issues 判定）。
+        if (cert_decouple_enabled()
+                and p15.equivalence_ready
+                and p15.text_proof in _TEXT_CERT_PROOF_CODES):
+            outcome = "equivalent"
+            code = p15.text_proof
+            detail = "主体和核心事件一致，差异属于已允许的表达或信息差异。"
+        elif issues:
             primary = _primary_issue(issues)
             outcome = "unresolved"
             code = primary.code

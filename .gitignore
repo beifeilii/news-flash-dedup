@@ -6,3 +6,5 @@ __pycache__/
 .env*
 tmp/
 .pytest_cache/
+
+.venv-p06/

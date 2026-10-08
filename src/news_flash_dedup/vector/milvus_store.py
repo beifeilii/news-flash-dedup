@@ -37,6 +37,7 @@ from news_flash_dedup.milvus_client import (
     assert_test_milvus_environment,
     partition_name,
 )
+from news_flash_dedup.recall.vector_frontier import coverage_frontier_enabled
 from news_flash_dedup.recall.vector_space import EmbeddingSpace
 from news_flash_dedup.recall.vector_store import (
     VECTOR_FIELDS,
@@ -189,14 +190,25 @@ class RealMilvusP19Store:
     # 配置漏接=live 无闸，装配期硬断言）。
     lease_authority: Any = None
 
+    # 2026-10-09（P0-a 修订二，主窗口修订令）：覆盖前沿推进器配置位——
+    # 类级默认 None=未注入（现役行为逐字节不变）；开关注入后 upsert_chunks
+    # 写确认尾段经真 VectorFrontierAdvancer 推进 vector_prepared 快照。
+    # 只接受显式注入：本仓储的 ES 控制索引是 p19-batch- 隔离面（
+    # RealMilvusP19Config.control_index），与 ElasticsearchBatchStore 的
+    # p01-batch- 前缀硬闸不兼容，自装配会洗前缀纪律，故不自装配。
+    vector_frontier_advancer: Any = None
+
     def __init__(self, milvus: Any, es: Any, config: RealMilvusP19Config, *,
-                 lease_authority: Any = None) -> None:
+                 lease_authority: Any = None,
+                 vector_frontier_advancer: Any = None) -> None:
         assert_p19_uat_open()
         self.milvus = milvus
         self.es = es
         self.config = config
         if lease_authority is not None:
             self.lease_authority = lease_authority
+        if vector_frontier_advancer is not None:
+            self.vector_frontier_advancer = vector_frontier_advancer
         # 约束 a 类比：集合显式创建/核验（不凭重读冒充新 owner，§5.2）
         self._ensure_collection()
         # 约束 a：ES 集群 action.auto_create_index=-*，显式幂等建索引（19:16 先例）
@@ -602,6 +614,9 @@ class RealMilvusP19Store:
         否则 VectorWriteUnknown——确认前绝不上抛成功（INV-1）。
         幂等（约束 b 类比）：同 vector_id 同内容 → "reused" 零改写；
         同 vector_id 异内容 → VectorIdentityConflict（INV-2 不可覆盖）。
+        尾段（2026-10-09 P0-a 修订二）：DEDUP_COVERAGE_FRONTIER 开且
+        vector_frontier_advancer 显式注入时，写确认毕推进覆盖前沿快照
+        （默认关/未注入=零效应，现役逐字节）。
         """
         if not chunks:
             raise P19VectorError("chunks must be non-empty")
@@ -659,6 +674,26 @@ class RealMilvusP19Store:
         if self.lease_authority is not None:
             self._journal_write_confirmation(
                 record_id, rows=confirmed_rows, lease=lease, authority=authority)
+        # 2026-10-09（P0-a 修订二，主窗口修订令 / log\判定链改造技术设计书
+        # -v1-1009.md §②）：覆盖前沿推进接线点=向量写入获确认的持久化侧。
+        # 执行至此=全 chunk upsert_count==1 + Strong 回读逐字段相等
+        # （+ M-09 写确认日志落毕）——arrival_seq 的向量在 Milvus 在场已被
+        # 写路径自身证明（修订令废止的 P0-a 初稿错点：读侧/融合时推进=拿
+        # 查询当证据，证明不了写已发生）。开关默认关→零调用零快照写
+        # （现役无写者=行为逐字节）；开+显式注入→真件推进
+        # ready_seqs=[arrival_seq]（无证明不跳洞/单调不回退/CAS 有界——
+        # vector_frontier.py 纪律全继承；hole_count/foreign_proofs 不动，
+        # 对账侧职权）。推进异常吞掉=维持停摆：写入本已确认，快照故障不得
+        # 反咬写成功；读侧 vector_store.py:430-447 求值一字未动，快照缺席
+        # 恒 False（fail-closed）。
+        if (self.vector_frontier_advancer is not None
+                and coverage_frontier_enabled()):
+            try:
+                self.vector_frontier_advancer.advance(
+                    scope_id, business_date, self.config.space.space_id,
+                    [arrival_seq])
+            except Exception:
+                pass
         return report
 
     def search_strong(self, *, query_vector: list[float], scope_id: str,
