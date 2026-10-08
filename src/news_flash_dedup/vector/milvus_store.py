@@ -580,7 +580,7 @@ class RealMilvusP19Store:
         except Exception as error:
             # 窗口W2Fβ（WA3b 条66 写路径裸逃逸①，W1Fγ 同类延伸）：
             # get 抛错原裸逃逸——包 VectorWriteUnknown（读确认未知，
-            # fail-closed，与 recall/vector_store.py:272-278 同口径——
+            # fail-closed，与 recall/vector_store.py:287-293 同口径——
             # W2 修复波 2 (a)-2 锚勘正）。
             raise VectorWriteUnknown(
                 "vector read confirmation is unknown"
@@ -658,7 +658,7 @@ class RealMilvusP19Store:
             except Exception as error:
                 # 窗口W2Fβ（WA3b 条66 写路径裸逃逸②，W1Fγ 同类延伸）：
                 # upsert 抛错原裸逃逸——包 VectorWriteUnknown（写确认未知，
-                # fail-closed，与 recall/vector_store.py:285-291 同口径——
+                # fail-closed，与 recall/vector_store.py:300-306 同口径——
                 # W2 修复波 2 (a)-2 锚勘正）。
                 raise VectorWriteUnknown(
                     "vector upsert confirmation is unknown"
@@ -750,7 +750,7 @@ class RealMilvusP19Store:
                 raise VectorWriteUnknown("Milvus hit identity is invalid")
             # 窗口Z2（外部审计三轮确认）：distance 非 (int,float) 或非有限
             # 原以裸 TypeError/ValueError 逃逸（float(None)/float("x")）——
-            # 包 VectorWriteUnknown（vector_store.py:376 type+isfinite 同口径——
+            # 包 VectorWriteUnknown（vector_store.py:391 type+isfinite 同口径——
             # W2 修复波 2 (a)-2 锚勘正）。
             distance = hit.get("distance")
             if type(distance) not in (int, float) or not math.isfinite(distance):

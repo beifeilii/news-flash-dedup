@@ -167,3 +167,112 @@ def test_invalid_authority_expiry_fails_closed_before_vector_write(expiry):
     with pytest.raises(VectorWriteUnknown):
         store(milvus, FakeES([authority])).upsert(row())
     assert milvus.upserts == []
+
+
+# ---------- P2 确定性破序（2026-10-09 主窗口派活）----------
+
+def _rid(i):
+    """定宽 64hex record_id：字典序==数值序（i≥1，十六进制定宽）。"""
+    return f"{i:064x}"
+
+
+def scored_hit(record_id, chunk_id, seq, score):
+    return {**hit(record_id, chunk_id, seq), "distance": score}
+
+
+def tied_layout(n, chunks_per, *, rotate=0):
+    """n 件记录各 chunks_per 块、全部同分 0.9（hit 夹具硬编 0.9）；
+    rotate 模拟段物理布局差异（chunk 行序旋转）。"""
+    ids = [_rid(i) for i in range(1, n + 1)]
+    rows = [hit(rid, c, i + 1)
+            for i, rid in enumerate(ids) for c in range(chunks_per)]
+    if rotate:
+        rows = rows[rotate:] + rows[:rotate]
+    es = FakeES([doc(rid, f"item-{i}", i + 1) for i, rid in enumerate(ids)])
+    return rows, es, ids
+
+
+def test_tie_overfetch_deterministic_across_layouts_and_calls():
+    """P2-① 同分 45 件（90 块，页界并列）跨布局/跨调用逐字节一致：
+    首页 80 块仅覆 40 件（第 K 名分==页界分）→ 过取扩页 → 45 全入池 →
+    (分数 DESC, record_id ASC) 整排截断 40——与段物理布局无关。"""
+    for rotate in (0, 37):
+        rows, es, ids = tied_layout(45, 2, rotate=rotate)
+        milvus = FakeMilvus()
+        milvus.search_rows = rows
+        adapter = store(milvus, es)
+        first = adapter.search(request(), [1.0, 0.0, 0.0, 0.0])
+        second = adapter.search(request(), [1.0, 0.0, 0.0, 0.0])
+        assert first.status == "complete"
+        # 过取实证：每次调用首页 80 块不满 45 件且页界并列 → 扩 160 穷尽
+        # （searches 跨两次调用累计=[80,160]×2）
+        assert [call["limit"] for call in milvus.searches] == [80, 160, 80, 160]
+        got = [c.record_id for c in first.candidates]
+        assert got == [c.record_id for c in second.candidates]  # 跨调用
+        assert got == ids[:40]              # record_id ASC 前 40（全序确定）
+        assert first.topk_excluded == 5     # 边距内并列 5 件入池后定序落选
+        if rotate == 0:
+            baseline = got
+        else:
+            assert got == baseline          # 跨布局逐字节
+
+
+def test_tie_within_margin_all_retained_displaces_by_record_id():
+    """P2-② 边距内并列全保留不丢：首页 80 块只装 record_id 较大的
+    r6..r45（40 件），r1..r5（字典序最小）未取——过取后 r1..r5 入池
+    并凭 record_id ASC 挤入 top-40，落选者=r41..r45 而非布局牺牲品。"""
+    ids = [_rid(i) for i in range(1, 46)]
+    rows = ([hit(rid, c, i + 1) for i, rid in enumerate(ids) if i >= 5
+             for c in range(2)]                       # r6..r45 共 80 块先回
+            + [hit(rid, c, i + 1) for i, rid in enumerate(ids) if i < 5
+               for c in range(2)])                    # r1..r5 共 10 块殿后
+    milvus = FakeMilvus()
+    milvus.search_rows = rows
+    es = FakeES([doc(rid, f"item-{i}", i + 1) for i, rid in enumerate(ids)])
+    result = store(milvus, es).search(request(), [1.0, 0.0, 0.0, 0.0])
+    assert [call["limit"] for call in milvus.searches] == [80, 160]
+    got = [c.record_id for c in result.candidates]
+    assert got[:5] == ids[:5]               # r1..r5 保留且居前
+    assert got == ids[:40]                  # 落选=r41..r45（record_id 定序）
+    assert result.topk_excluded == 5
+
+
+def test_non_tie_path_byte_identical_single_page():
+    """P2-③ 非同分路径逐字节不动：45 件各异分，第 K 名严格高于页界分
+    → 首页即停（pages=1/单次检索/集合与序与施工前一致）。"""
+    ids = [_rid(i) for i in range(1, 46)]
+    rows = []
+    for i, rid in enumerate(ids):
+        base = 1.0 - (i + 1) * 0.001        # 记录 i 最高分（各异、递减）
+        rows.append(scored_hit(rid, 0, i + 1, base))
+        rows.append(scored_hit(rid, 1, i + 1, base - 0.00001))
+    milvus = FakeMilvus()
+    milvus.search_rows = rows               # 首页 80 块=r1..r40 两两块
+    es = FakeES([doc(rid, f"item-{i}", i + 1) for i, rid in enumerate(ids)])
+    result = store(milvus, es).search(request(), [1.0, 0.0, 0.0, 0.0])
+    assert result.status == "complete"
+    assert [call["limit"] for call in milvus.searches] == [80]   # 单页即停
+    assert result.pages == 1
+    got = [c.record_id for c in result.candidates]
+    assert got == ids[:40]                  # 分降序=id 序（分各异）
+    scores = [c.score for c in result.candidates]
+    assert all(a > b for a, b in zip(scores, scores[1:]))   # 严格降序
+    assert result.topk_excluded == 0        # 池恰 40，与施工前同形
+
+
+def test_tie_storm_beyond_margin_idempotent_documented():
+    """P2-④ 边距尽钉（登记风险边界文档化）：同分组 100 件>边距 10——
+    首页 80 块池即≥K+边距 → 停；给定布局两次调用逐字节一致（幂等），
+    top-40=已取 80 件中 record_id ASC 前 40。跨布局发散=同分组>边距
+    的登记接受风险（组更大需 bump 边距版本），此钉防静默漂移。"""
+    rows, es, ids = tied_layout(100, 1)
+    milvus = FakeMilvus()
+    milvus.search_rows = rows
+    adapter = store(milvus, es)
+    first = adapter.search(request(), [1.0, 0.0, 0.0, 0.0])
+    second = adapter.search(request(), [1.0, 0.0, 0.0, 0.0])
+    assert [call["limit"] for call in milvus.searches] == [80, 80]  # 边距停
+    got = [c.record_id for c in first.candidates]
+    assert got == [c.record_id for c in second.candidates]
+    assert got == ids[:40]                  # 已取 80 件（r1..r80）中前 40
+    assert first.topk_excluded == 40        # 80-40（池截于边距，非穷尽）

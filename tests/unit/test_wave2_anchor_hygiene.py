@@ -61,22 +61,23 @@ def test_real_store_none_query_vector_degrades_not_typeerror():
 # ---- 锚钉（行窗含镜像构造；窗号=修复波 2 终态亲读回填）----
 
 @pytest.mark.parametrize(("rel", "start", "end", "needles"), [
-    # A5-02① milvus_store.py:571 注释→vector_store.py:272-278 get 包装段
-    ("recall/vector_store.py", 272, 278, ["milvus.get", "VectorWriteUnknown"]),
-    # A5-02② :645→vector_store.py:285-291 upsert 包装段
-    ("recall/vector_store.py", 285, 291, ["milvus.upsert", "VectorWriteUnknown"]),
-    # A5-02③ :672→vector_store.py:173-174 prepare_vector_row scope 正则
-    ("recall/vector_store.py", 173, 174, ["fullmatch", "scope_id"]),
-    # A5-02③′ :672→vector_store.py:310-313 search SCOPE_INVALID
-    ("recall/vector_store.py", 310, 313, ["fullmatch", "SCOPE_INVALID"]),
-    # A5-02④ :714→vector_store.py:376 score type+isfinite 判型
-    ("recall/vector_store.py", 376, 376, ["isfinite", "(int, float)"]),
-    # A5-03 es_gateway.py:41→vector_store.py:266 replace("Z") 定点化（注释 :263-265）
-    ("recall/vector_store.py", 263, 266, ['endswith("Z")', "+00:00"]),
-    # A5-01① service.py:61→vector_store.py:306-309 SPACE_UNCONFIRMED 拒收段
-    ("recall/vector_store.py", 306, 309, ["SPACE_UNCONFIRMED", "unavailable"]),
-    # A5-01② service.py:65-66→vector_store.py:314-324 EMBEDDING_INVALID 捕获段
-    ("recall/vector_store.py", 314, 324, ["ValueError", "EMBEDDING_INVALID"]),
+    # A5-02① milvus_store.py:571 注释→vector_store.py:287-293 get 包装段
+    # （P2 确定性破序增件致 +15 漂移，B1 机械锚先例勘正）
+    ("recall/vector_store.py", 287, 293, ["milvus.get", "VectorWriteUnknown"]),
+    # A5-02② :645→vector_store.py:300-306 upsert 包装段
+    ("recall/vector_store.py", 300, 306, ["milvus.upsert", "VectorWriteUnknown"]),
+    # A5-02③ :672→vector_store.py:188-189 prepare_vector_row scope 正则
+    ("recall/vector_store.py", 188, 189, ["fullmatch", "scope_id"]),
+    # A5-02③′ :672→vector_store.py:325-328 search SCOPE_INVALID
+    ("recall/vector_store.py", 325, 328, ["fullmatch", "SCOPE_INVALID"]),
+    # A5-02④ :714→vector_store.py:391 score type+isfinite 判型
+    ("recall/vector_store.py", 391, 391, ["isfinite", "(int, float)"]),
+    # A5-03 es_gateway.py:41→vector_store.py:281 replace("Z") 定点化（注释 :278-280）
+    ("recall/vector_store.py", 278, 281, ['endswith("Z")', "+00:00"]),
+    # A5-01① service.py:61→vector_store.py:321-324 SPACE_UNCONFIRMED 拒收段
+    ("recall/vector_store.py", 321, 324, ["SPACE_UNCONFIRMED", "unavailable"]),
+    # A5-01② service.py:65-66→vector_store.py:329-339 EMBEDDING_INVALID 捕获段
+    ("recall/vector_store.py", 329, 339, ["ValueError", "EMBEDDING_INVALID"]),
 ])
 def test_comment_anchor_windows(rel, start, end, needles):
     """注释引用行窗必须含镜像构造关键词（锚漂移→红）。"""
