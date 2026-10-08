@@ -12,16 +12,16 @@ embedding_query.py」过闸稿 §2.4 L140 全形）。装配零改动面 =
 
 失败语义（§2.5 查询径 + §4.6 错误码分立）：
 - 嵌入 API 终败 → ChannelResult("embedding","unavailable",(),"embedding_v1",
-  error_code="EMBEDDING_QUERY_FAILED")——不裸抛（对齐 vector_store.py:302-324
+  error_code="EMBEDDING_QUERY_FAILED")——不裸抛（对齐 vector_store.py:317-339
   错误面）；与过渡态 SPACE_UNCONFIRMED（未接线）语义分立，两码不混；
 - 响应畸形/维度漂移 → 同上 unavailable + EMBEDDING_QUERY_FAILED；
 - 空文本：查询编码层不前置拦截——直接委托 store 既有 not_applicable/
-  EMPTY_BODY 分支（vector_store.py:302-305，空文本不耗 API）；
+  EMPTY_BODY 分支（vector_store.py:317-320，空文本不耗 API）；
 - 铁律：任何失败路径不产出零向量/均值向量冒充成功。
 
 对称编码（§4.1）：query 与 document 同一编码路径（root 09 §6.4 L424：
 托管 v3 不使用 query 指令；N11 §三 query/document 一致性 ✅）。
-prepared_seq 直传（vector_store.py:455 既有；fusion.py:123-126
+prepared_seq 直传（vector_store.py:338 既有；fusion.py:123-126
 VECTOR_FRONTIER_UNPROVEN 依赖）。
 
 （W-R3c 散项 h 锚勘误：本 docstring vector_store.py 三处锚原 192-202
@@ -32,7 +32,10 @@ VECTOR_FRONTIER_UNPROVEN 依赖）。
 （tests/unit/test_winr3c_repairs.py h 族）；fusion.py:123-126 锚实测
 仍准不动。W2 ⑩①-5 预算接线向 vector_store.py search 签名/timeout
 透传增件致三锚再漂移、F-4 包络窄修（A+B）再移 1-5 行——同 B1 机械
-锚先例再勘正为 302-324 / 302-305 / 455，内容钉语义逐字不动。）
+锚先例再勘正为 302-324 / 302-305 / 455，内容钉语义逐字不动。
+P2 确定性破序（2026-10-09）向 vector_store.py 模块头/检索环增件致
+三锚再漂移（+15/+15/+9）——同 B1 先例再勘正为 317-339 / 317-320 /
+338，内容钉语义仍逐字不动。）
 """
 
 from __future__ import annotations

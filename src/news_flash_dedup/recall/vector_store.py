@@ -26,6 +26,21 @@ VECTOR_FIELDS = frozenset({
     "embedding_space_id", "chunk_id", "embedding",
 })
 
+# P2 确定性破序（2026-10-09 主窗口派活，风险登记在案）：业务 K=40 不动；
+# 过取边距版本化常量。背景——Milvus top-K 截断遇同分并列按段物理布局
+# 破序（seq47 两轨 rank-9/10 同分 0.589575 实证），decide 时点生长态下
+# 41 件候选尾件跨轨互换；签发世界真重复恰坐截断边界可翻转 tp→fn。
+# 施工语义（search 检索环）：①池过取——第 K 名分数不严格高于本页页界
+# 分时（未取块可能同分并列）继续扩页，直至池≥K+边距或空间穷尽或页数
+# 上限；②(分数 DESC, record_id ASC) 全序整排（record_id 主键唯一=全序
+# 无歧义；同分=浮点逐比特等值，同向量同库计算路径产物）；③截断 K。
+# 边距语义：K 边界同分组>边距=登记风险接受（组更大需 bump 版本扩边距），
+# 整排全序兜底给定池内输出确定。非同分路径（第 K 名严格高于页界分）
+# 首页即停——pages/候选集/topk_excluded 与施工前逐字节一致。
+VECTOR_TOPK = 40
+VECTOR_TIE_OVERFETCH_MARGIN_V1 = 10
+_VECTOR_POOL_TARGET = VECTOR_TOPK + VECTOR_TIE_OVERFETCH_MARGIN_V1
+
 # B5/E2 §4.5 闸扩展（F1 修复，设计指定唯一既有改动面）：集合/ES 前缀二态闭集
 # 词表——现役 replay 形态或 P19 形态；两族均维持 endswith(space.space_id) 执法。
 # P19 形态正则为 vector/milvus_store.py:46-49 P19_COLLECTION_PATTERN /
@@ -390,7 +405,22 @@ class MilvusVectorStore:
             except Exception:
                 status, error_code = "unavailable", "MILVUS_HIT_INVALID"
                 break
-            if len(by_record) >= 40 or len(hits) < limit:
+            # P2 确定性破序（过取语义，常量注记见模块头）：
+            # - 空间穷尽（hits<limit）→ 停（现役语义不动）；
+            # - 池≥K 且第 K 名严格高于本页页界分 → 未取块分数≤页界分<K-th
+            #   分，不可能同分挤占 K 位 → 停（非同分路径 pages/集合逐字节）；
+            # - 否则继续扩页过取（页界分与 K-th 分并列=同分组可能未全入池），
+            #   直至池≥K+边距（边距尽=登记风险，全序破序兜底）。
+            if len(hits) < limit:
+                break
+            if len(by_record) >= VECTOR_TOPK:
+                kth_score = sorted((match["score"] for match in
+                                    by_record.values()),
+                                   reverse=True)[VECTOR_TOPK - 1]
+                # hits 非空（len==limit>0）；distance 已于上方逐 hit 校验
+                if kth_score > float(hits[-1]["distance"]):
+                    break
+            if len(by_record) >= _VECTOR_POOL_TARGET:
                 break
             if limit >= self.max_search_limit:
                 status, error_code = "truncated", "VECTOR_CHUNK_LIMIT"
@@ -419,7 +449,11 @@ class MilvusVectorStore:
                 ))
             except Exception:
                 orphan = True
-        candidates.sort(key=lambda item: (-item.score, item.arrival_seq, item.record_id))
+        # P2 确定性破序②：(分数 DESC, record_id ASC) 全序整排——record_id
+        # 主键唯一=全序无歧义（主窗口派活字面键）；原 middle 键 arrival_seq
+        # 于非同分路径不影响序（分数唯一即定），于同分路径被 record_id
+        # 取代（同分原系 Milvus 布局破序病灶，无稳定行为需兼容）。
+        candidates.sort(key=lambda item: (-item.score, item.record_id))
         # 窗口W2Fβ（WA3b 条66，原 L282-283）：孤儿信号在截断态同样降级——
         # truncated 不吞 ORPHAN_VECTOR（向量命中无 ES 权威=已知不完整）。
         if orphan and status in ("complete", "truncated"):
@@ -446,10 +480,11 @@ class MilvusVectorStore:
             except (TypeError, AttributeError, ValueError):
                 coverage_complete = False
         return ChannelResult(
-            "embedding", status, tuple(candidates[:40]), VECTOR_QUERY_VERSION,
+            "embedding", status, tuple(candidates[:VECTOR_TOPK]),
+            VECTOR_QUERY_VERSION,
             pages=pages, visible_seq=request.visible_seq, error_code=error_code,
             coverage_complete=coverage_complete,
-            topk_excluded=max(0, len(candidates) - 40),
+            topk_excluded=max(0, len(candidates) - VECTOR_TOPK),
             # 窗口W2Fβ（WB2-M3 条54）：prepared_seq 直传（融合
             # VECTOR_FRONTIER_UNPROVEN 报告路径依赖；None 直传不捏造）。
             prepared_seq=request.prepared_seq,
