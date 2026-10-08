@@ -1,4 +1,4 @@
-﻿"""P1 联调装配包：真件 judge_callable 接线（2026-10-09，施工窗 P1-a，
+"""P1 联调装配包：真件 judge_callable 接线（2026-10-09，施工窗 P1-a，
 合流树 p1-integrated）。
 
 依据（冻结件）：
@@ -359,10 +359,10 @@ def test_adapter_proof_passes_validate_and_cache_key(monkeypatch):
 
 
 def test_adapter_falsification_dimension_mapping(monkeypatch):
-    """维度映射钉：subject→subject（合同原生）；time→stage、polarity→event
-    （宪章族最近邻，合同四维闭表）。"""
+    """维度原生直发钉（D7 裁定：合同 v2 词表=实现五族 subject/numeric/
+    time/stage/polarity，event 删）：三族原生维直发过 validate_proof 闭表。"""
     _switches_on(monkeypatch)
-    # subject 轴（合同原生维）
+    # subject 轴（原生维）
     cb = _real_callable(SUB_RESP)
     ctx = _order_ctx("p1", SUB_H, SUB_C, "ab")
     proof = cb(ctx)
@@ -370,7 +370,7 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     validated = judge_pair.validate_proof(proof, ctx)
     assert validated["falsification"]["dimension"] == "subject"
     assert validated["falsification"]["evidence_a"]["text"] == "600001"
-    # time 轴 → 合同 stage（宪章 §二-3 时间/阶段同族）
+    # time 轴原生直发（宪章 §二-3；合同 v1 曾最近邻并入 stage，v2 原生）
     t_h, t_c = "甲公司3月4日公告投产。", "乙公司3月5日公告投产。"
     resp = {
         (t_h, t_c): _jjson("不重复", ("3月4日公告投产",), ("3月5日公告投产",),
@@ -383,10 +383,12 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     cb2 = _real_callable(resp)
     ctx2 = _order_ctx("p2", t_h, t_c, "ab")
     proof2 = cb2(ctx2)
-    assert proof2["falsification"]["dimension"] == "stage"
+    assert proof2["falsification"]["dimension"] == "time"
     assert proof2["falsification"]["evidence_a"]["text"] == "3月4日"
     assert proof2["time_check"]["conclusion"] == "不一致"
-    # polarity 轴 → 合同 event（宪章 §二-5 方向冲突=事件族）
+    assert judge_pair.validate_proof(proof2, ctx2)[
+        "falsification"]["dimension"] == "time"
+    # polarity 轴原生直发（宪章 §二-5 方向冲突；v1 曾并入 event，v2 原生）
     p_h, p_c = "甲公司主力净流入5亿。", "乙公司主力净流出5亿。"
     resp3 = {
         (p_h, p_c): _jjson("不重复", ("净流入5亿",), ("净流出5亿",),
@@ -399,8 +401,10 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     cb3 = _real_callable(resp3)
     ctx3 = _order_ctx("p3", p_h, p_c, "ab")
     proof3 = cb3(ctx3)
-    assert proof3["falsification"]["dimension"] == "event"
+    assert proof3["falsification"]["dimension"] == "polarity"
     assert proof3["falsification"]["evidence_a"]["text"] == "净流入"
+    assert judge_pair.validate_proof(proof3, ctx3)[
+        "falsification"]["dimension"] == "polarity"
 
 
 def test_adapter_verdict_failure_and_invalid(monkeypatch):

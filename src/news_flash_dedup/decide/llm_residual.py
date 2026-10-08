@@ -38,11 +38,14 @@ log\判定链改造最终方案-Codex-20261008.md §4 P1-a + 终裁令-正典-10
   judge_proof_enabled，逐请求读 env）；开关关=本模块逐字节现役（旧缓存键、
   旧 R0-R6 audit/gate、无证明产物）。开关开时 audit 只观测不降级、gate
   按 P_* 触发降级存疑（含"不重复无机器可证伪轴"降级，任务书⑥⑦）。
-- 缓存键加固（①）：证明路用 residual_cache_key_hardened（双序恒书
-  order + 双文 sha256 按 文本A/文本B 角色绑位 + model/prompt/policy
-  版本）；现役 residual_cache_key 布局一字不动供旧路原位复用。同
-  pair_id 换文本→键必异→miss 重判；旧键缓存证明路天然 miss=旧缓存
-  不升级为签发凭证；缓存命中只省 LLM 调用、不省证明核验。
+- 缓存键加固（①）：证明路用 residual_cache_key_hardened——D5 裁定
+  （主窗口 D1-D10 逐条 2026-10-09）按合同 §一 公式 sha256(model|
+  prompt_sha|policy|order|text_a_sha|text_b_sha)，双序恒书 order 维度
+  （内部词表 hc/ch）、双文 sha256 按 文本A/文本B 角色绑位、policy
+  版本闭隔；pair_id/arm/prompt_version 三维出键（内容寻址）。现役
+  residual_cache_key 布局一字不动供旧路原位复用。同 pair_id 换文本→
+  键必异→miss 重判；旧键缓存证明路天然 miss=旧缓存不升级为签发
+  凭证；缓存命中只省 LLM 调用、不省证明核验。
 - 证明装配（⑤⑥）：双序原判均"重复"→VerifiedJudgeProof；均"不重复"
   →NotDuplicateProof（双侧证伪轴+失败状态枚举，证据不足→未决）。
   证明对象挂在 ResidualOutcome.proof / .not_duplicate_proof（开关关恒
@@ -276,25 +279,28 @@ def residual_cache_key(model: str, prompt_version: str, pair_id: str,
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def residual_cache_key_hardened(model: str, prompt_version: str, pair_id: str,
-                                prompt_sha: str, order: str,
+def residual_cache_key_hardened(model: str, prompt_sha: str, order: str,
                                 text_a_sha256: str, text_b_sha256: str,
-                                policy_version: str = judge_proof.PROOF_POLICY_VERSION,
-                                arm: str = JUDGE_ARM) -> str:
-    """P1-a ① 证明路加固缓存键（2026-10-09，§4 P1-a"缓存键补双文 hash、
-    双序、模型/提示词/策略版本"）。
+                                policy_version: str = judge_proof.PROOF_POLICY_VERSION) -> str:
+    """P1-a ① 证明路加固缓存键（2026-10-09 D5 裁定：按合同 §一 公式改）。
 
-    = sha256(model|prompt_version|arm|order|pair_id|prompt_sha|
-             text_a_sha256|text_b_sha256|policy_version)
+    = sha256(model|prompt_sha|policy|order|text_a_sha|text_b_sha)
+    （合同 §一 cache_key 逐字公式；内部 order 词表 hc/ch 维度位同构，
+    证明体内嵌 cache_key=适配层同公式+合同词表 ab/ba）
 
+    D5 裁定（主窗口 D1-D10 逐条 2026-10-09，合同 v2 追认实现）：
+    - pair_id 出键：LLM 只见双文不见 pair_id——同文同序同判=内容寻址
+      合法命中；同 pair_id 换文本→双文 hash 必异→miss 重判（病灶切除
+      纪律不变）；
+    - prompt_version 出键：prompt_sha 内容寻址覆盖提示词版本演进；
+    - arm 出键：恒 A 占位维度不再书；
+    - policy 版本闭隔证明策略演进（judge_proof.PROOF_POLICY_VERSION=
+      "policy_v2" 宪章版本）。
     与现役 residual_cache_key 并存不替（旧键 hc 省 order、无文本 hash——
     audit 旧路原位复用 D32 缓存的兼容纪律一字不动）；本键仅
-    DEDUP_JUDGE_PROOF 开关开启的证明路消费：
-    - 双序恒书 order 维度（hc 不省）——双序各自绑定本顺序 文本A/文本B 角色；
-    - 双文 sha256 绑位——同 pair_id 换文本 → 键必异 → miss 重判（现役同键
-      换文本吃陈判的病灶切除）；文本 hash 非法（非 64 位小写 hex）fail-closed；
-    - policy 版本闭隔证明策略演进（judge_proof.PROOF_POLICY_VERSION）；
-    - 旧键缓存在证明路天然 miss=旧缓存不升级为签发凭证。
+    DEDUP_JUDGE_PROOF 开关开启的证明路消费；旧键缓存在证明路天然
+    miss=旧缓存不升级为签发凭证；文本 hash 非法（非 64 位小写 hex）
+    fail-closed。
     """
     if order not in ("hc", "ch"):
         raise ValueError(f"order 非法：{order!r}")
@@ -304,8 +310,8 @@ def residual_cache_key_hardened(model: str, prompt_version: str, pair_id: str,
                 and all(c in "0123456789abcdef" for c in sha)):
             raise ValueError(
                 f"{name} 非法（须 64 位小写 hex sha256）：{sha!r}")
-    parts = [model, prompt_version, arm, order, pair_id, prompt_sha,
-             text_a_sha256, text_b_sha256, policy_version]
+    parts = [model, prompt_sha, policy_version, order,
+             text_a_sha256, text_b_sha256]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -622,8 +628,7 @@ class SyncResidualJudge(ResidualJudgePort):
         prompt_sha = judge_prompt_for_version(cfg.prompt_version)[1]
         if proof_mode:
             key = residual_cache_key_hardened(
-                cfg.model, cfg.prompt_version, pair_id, prompt_sha, order,
-                text_a_sha256, text_b_sha256)
+                cfg.model, prompt_sha, order, text_a_sha256, text_b_sha256)
         else:
             key = residual_cache_key(cfg.model, cfg.prompt_version, pair_id,
                                      prompt_sha, order)

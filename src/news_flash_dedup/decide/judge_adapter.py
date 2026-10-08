@@ -1,4 +1,4 @@
-﻿"""P1 联调真件适配器（2026-10-09，施工窗 P1-a，合流树 p1-integrated）。
+"""P1 联调真件适配器（2026-10-09，施工窗 P1-a，合流树 p1-integrated）。
 
 定位：P1-a 证明组件（judge_proof.py 证明级核验 + llm_residual.py 双序判官）
 → P1-b 合同 `judge_callable(pair_context) -> VerifiedJudgeProof`（合同
@@ -31,13 +31,13 @@
   （证据充分性问题，走合同 §二 降级通道，见下）。
 - 不重复证伪（合同 §二 falsification）：内部首条证伪轴（定序）→
   {dimension, evidence_a/evidence_b{text, offset_start, offset_end},
-  relation=内部 correspondence}。dimension 映射（合同四维 ⊆ 内部五轴）：
-  subject→subject、numeric→numeric、stage→stage、**time→stage**（宪章
-  §二-3 时间/阶段同族）、**polarity→event**（宪章 §二-5 方向冲突=事件族
-  差异；合同无 direction 维，最近邻映射，已呈主窗口备案）。无机检轴
-  （P_NO_AXIS）→ 不携 falsification、passed=true——合同 §二 空口
-  not_duplicate 由 validate_proof 降级 doubtful（未决同义），与内部
-  "证据不足→未决"同义。
+  relation=内部 correspondence}。dimension=内部轴原生直发（D7 裁定
+  2026-10-09：合同 v2 词表=实现五族 subject/numeric/time/stage/
+  polarity，"event" 无机检判据删除——不再最近邻映射；内部轴不在
+  合同词表=组件漂移，fail-closed 抛错归 JUDGE_EXCEPTION 未决）。
+  无机检轴（P_NO_AXIS）→ 不携 falsification、passed=true——合同 §二
+  空口 not_duplicate 由 validate_proof 降级 doubtful（未决同义），
+  与内部"证据不足→未决"同义。
 - 版本四维：model_version=cfg.model、prompt_sha256=judge_prompt_for_version
   的 sha、policy_version=judge_proof.PROOF_POLICY_VERSION（="policy_v2"
   宪章版本）、judged_at=UTC ISO（合同必填；内部审计负载的确定性纪律不
@@ -62,12 +62,6 @@ from typing import Any, Callable, Mapping
 from . import judge_pair, judge_proof, llm_residual, machine_verify as _mv
 
 __all__ = ["build_judge_callable", "proof_for_order"]
-
-# 内部轴 → 合同 dimension（见模块 docstring 映射表；time/polarity 最近邻）
-_DIMENSION_MAP = {
-    "subject": "subject", "numeric": "numeric", "stage": "stage",
-    "time": "stage", "polarity": "event",
-}
 
 # 合同 order → 内部顺序（"ab" a=history 先=hc 同向）
 _ORDER_TO_INTERNAL = {"ab": "hc", "ba": "ch"}
@@ -164,8 +158,15 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
         }
         if verdict == "not_duplicate" and verification.axes:
             ax = verification.axes[0]       # 内部定序首轴（确定性）
+            dimension = ax["axis"]
+            if dimension not in judge_pair.FALSIFICATION_DIMENSIONS:
+                # 内部轴漂移出合同 v2 词表（D7 五族）——fail-closed，
+                # adjudicate_pair 收容为 JUDGE_EXCEPTION 未决，不冒充。
+                raise ValueError(
+                    f"证伪轴 {dimension!r} 不在合同词表 "
+                    f"{judge_pair.FALSIFICATION_DIMENSIONS}")
             falsification = {
-                "dimension": _DIMENSION_MAP[ax["axis"]],
+                "dimension": dimension,
                 "evidence_a": {"text": ax["quote_a"],
                                "offset_start": ax["start_a"],
                                "offset_end": ax["end_a"]},

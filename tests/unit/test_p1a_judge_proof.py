@@ -159,43 +159,40 @@ def test_switch_parse_discipline():
 
 
 def test_hardened_key_layout_and_dimensions():
-    model, pid, sha = "qwen-turbo", "pair-x", "s" * 64
+    """① 键布局钉（D5 裁定 2026-10-09：按合同 §一 公式——pair_id/arm/
+    prompt_version 三维出键，内容寻址）。"""
+    model, sha = "qwen-turbo", "s" * 64
     ta, tb = "a" * 64, "b" * 64
-    key_hc = lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                            "hc", ta, tb)
+    key_hc = lr.residual_cache_key_hardened(model, sha, "hc", ta, tb)
     expect = hashlib.sha256(
-        f"{model}|judge_v1|A|hc|{pid}|{sha}|{ta}|{tb}|"
-        f"{jp.PROOF_POLICY_VERSION}".encode("utf-8")).hexdigest()
-    assert key_hc == expect                     # 布局逐字节钉（双序恒书 order）
-    legacy = lr.residual_cache_key(model, "judge_v1", pid, sha, "hc")
+        f"{model}|{sha}|{jp.PROOF_POLICY_VERSION}|hc|{ta}|{tb}"
+        .encode("utf-8")).hexdigest()
+    assert key_hc == expect                     # 布局逐字节钉（合同 §一 公式）
+    legacy = lr.residual_cache_key(model, "judge_v1", "pair-x", sha, "hc")
     assert key_hc != legacy                     # 与旧键空间隔离
     # 双序维度：hc/ch 必异（旧键 hc 省 order 的兼容布局不影响本键）
-    assert lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                          "ch", tb, ta) != key_hc
-    # 双文 hash 维度：同 pair_id 换任一文本 → 键必异（同键换文本吃陈判切除）
-    assert lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                          "hc", "c" * 64, tb) != key_hc
-    assert lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                          "hc", ta, "d" * 64) != key_hc
+    assert lr.residual_cache_key_hardened(model, sha, "ch", tb, ta) != key_hc
+    # 双文 hash 维度：换任一文本 → 键必异（同键换文本吃陈判病灶切除照承）
+    assert lr.residual_cache_key_hardened(model, sha, "hc",
+                                          "c" * 64, tb) != key_hc
+    assert lr.residual_cache_key_hardened(model, sha, "hc",
+                                          ta, "d" * 64) != key_hc
     # policy 版本维度
-    assert lr.residual_cache_key_hardened(model, "judge_v1", pid, sha, "hc",
-                                          ta, tb,
-                                          policy_version="p1a-proof-v2") != key_hc
-    # model/prompt 维度（现役纪律照承）
-    assert lr.residual_cache_key_hardened("other", "judge_v1", pid, sha,
-                                          "hc", ta, tb) != key_hc
-    assert lr.residual_cache_key_hardened(model, "judge_v2", pid, sha,
-                                          "hc", ta, tb) != key_hc
+    assert lr.residual_cache_key_hardened(model, sha, "hc", ta, tb,
+                                          policy_version="policy_v3") != key_hc
+    # model/prompt_sha 维度（prompt_sha 内容寻址覆盖提示词版本演进）
+    assert lr.residual_cache_key_hardened("other", sha, "hc", ta, tb) != key_hc
+    assert lr.residual_cache_key_hardened(model, "t" * 64, "hc",
+                                          ta, tb) != key_hc
+    # D5 内容寻址语义：pair_id 出键——签名已不含 pair_id（LLM 只见双文，
+    # 同文同序同判=合法命中；跨 pair_id 同文对共享条目）。
     # fail-closed：order/文本 hash 非法拒识
     with pytest.raises(ValueError):
-        lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                       "xx", ta, tb)
+        lr.residual_cache_key_hardened(model, sha, "xx", ta, tb)
     with pytest.raises(ValueError):
-        lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                       "hc", "not-a-sha", tb)
+        lr.residual_cache_key_hardened(model, sha, "hc", "not-a-sha", tb)
     with pytest.raises(ValueError):
-        lr.residual_cache_key_hardened(model, "judge_v1", pid, sha,
-                                       "hc", None, tb)
+        lr.residual_cache_key_hardened(model, sha, "hc", None, tb)
 
 
 def test_proof_mode_same_pair_id_changed_texts_rejudges(monkeypatch, tmp_path):
@@ -229,7 +226,7 @@ def test_legacy_cache_entry_not_consumed_in_proof_mode(monkeypatch, tmp_path):
     assert ledger2.snapshot()["cache_hits"] == 0
     assert out.proof is not None and out.proof.issued is True
     hardened_key = lr.residual_cache_key_hardened(
-        lr.DEFAULT_MODEL, lr.JUDGE_PROMPT_VERSION, "p1", lr.PROMPT_SHA256,
+        lr.DEFAULT_MODEL, lr.PROMPT_SHA256,
         "hc", jp.text_sha256(G_H), jp.text_sha256(G_C))
     assert (tmp_path / f"{hardened_key}.json").exists()  # 新键条目另立
 
@@ -813,7 +810,7 @@ def test_switch_off_legacy_behavior_byte_identical(monkeypatch, tmp_path):
                                        lr.JUDGE_PROMPT_VERSION, "p3",
                                        lr.PROMPT_SHA256, "hc")
     hardened_key = lr.residual_cache_key_hardened(
-        lr.DEFAULT_MODEL, lr.JUDGE_PROMPT_VERSION, "p3", lr.PROMPT_SHA256,
+        lr.DEFAULT_MODEL, lr.PROMPT_SHA256,
         "hc", jp.text_sha256(G_H), jp.text_sha256(G_C))
     assert (tmp_path / f"{legacy_key}.json").exists()
     assert not (tmp_path / f"{hardened_key}.json").exists()
