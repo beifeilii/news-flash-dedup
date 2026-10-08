@@ -339,11 +339,147 @@ def verify_signed_judgment(judgment: Mapping[str, Any],
     return fired
 
 
+# ---------------------------------------------------------------- P1-a 证明级机检原语
+#
+# 2026-10-09 新增（P1-a 施工窗）。出处：log\判定链改造最终方案-Codex-20261008.md
+# §4 P1-a（"引文绑定原文 offset；机器独立核关键时间/数值及判定与分项结论"）+
+# log\判定链改造-终裁令-正典-1009.md §五-2/3。本区全部为**增量**函数——上方
+# R1-R6 现役规则一字未动（audit 旧路逐字节锚）；证明级核验只在
+# DEDUP_JUDGE_PROOF 开关开启的新路上消费（decide/judge_proof.py）。
+#
+# 与现役口径的三处原则差异（任务书②③）：
+# - 引文定位=精确逐字子串的 Unicode 码点 offset；现役 quote_in_text 的去空白
+#   模糊匹配在证明路上**拒签**（去空白伪匹配不得充当签发证据）。
+# - 时间/阶段由机器从原文独立抽取比对（extract_time_mentions/extract_stage_set），
+#   不信判官 time_check 供数；判官声称一致处须机器无冲突背书（judge_proof 侧
+#   backed 字段）。一侧缺失放行=缺失≠冲突（金标口径照承 R2/R3 纪律）。
+# - 数值复用现役 filtered_number_set/rule_r3_numeric_conflict（本就是机侧
+#   从原文抽取），仅补表面形+offset 抽取（number_mentions）供证明引用定位。
+
+NEGATION_TOKENS = ("否认", "不予", "不再", "并无", "并未", "未有", "取消",
+                   "终止", "否决")
+
+# 机器时间抽取（闭合形态：YYYY年M月D日[号]/M月D日[号]/YYYY-M-D/YYYY/M/D；
+# 归一复用 _norm_time 去\s年月日号）。阶段词复用 STAGE_WORDS 闭合词表。
+_TIME_DATE_RE = re.compile(
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r"|\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+
+
+def find_quote_spans(quote: str, text: str) -> tuple[tuple[int, int], ...]:
+    """精确逐字子串的全部 Unicode 码点 offset 区间 (start, end)；无命中返空元组。
+
+    P1-a ②：证明路只认精确逐字——去空白归一后的伪匹配在本函数无通道（拒签由
+    judge_proof 侧按空命中落实）。offset 为 Python str 码点下标（左闭右开）。
+    """
+    if not quote:
+        return ()
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        pos = text.find(quote, start)
+        if pos < 0:
+            break
+        spans.append((pos, pos + len(quote)))
+        start = pos + 1
+    return tuple(spans)
+
+
+def extract_stage_set(text: str) -> set[str]:
+    """机器独立抽取阶段词集（STAGE_WORDS 闭合词表，不信判官供数）。"""
+    return {w for w in STAGE_WORDS if w in text}
+
+
+def extract_time_mentions(text: str) -> tuple[dict, ...]:
+    r"""机器独立抽取日期型时间表述：({"surface","start","end","norm"},...)。
+
+    norm=_norm_time(surface)（去\s年月日号）。顺序=文中出现顺序（确定性）。
+    """
+    out: list[dict] = []
+    for m in _TIME_DATE_RE.finditer(text):
+        surface = m.group(0)
+        out.append({"surface": surface, "start": m.start(), "end": m.end(),
+                    "norm": _norm_time(surface)})
+    return tuple(out)
+
+
+def extract_time_set(text: str) -> set[str]:
+    """机器时间集（归一化规范串集合）。"""
+    return {m["norm"] for m in extract_time_mentions(text)}
+
+
+def number_mentions(text: str) -> tuple[dict, ...]:
+    """数值 token 表面形+offset+归一：({"surface","start","end","norm"},...)。
+
+    过滤口径与 filtered_number_set 同款（剔除日期型=后随年月日、编号/序数型=
+    前邻"第"、后随号届版）——证明路数值引用的 offset 定位与证伪轴取词用；
+    现役 filtered_number_set 本体一字未动。
+    """
+    out: list[dict] = []
+    for rex in (_NUM_ARABIC, _NUM_CN):
+        for m in rex.finditer(text):
+            s, e = m.span()
+            after = text[e] if e < len(text) else ""
+            before = text[s - 1] if s > 0 else ""
+            if after in "年月日" or before == "第" or after in "号届版":
+                continue
+            v = norm_number_token(m.group(0))
+            if v is not None:
+                out.append({"surface": m.group(0), "start": s, "end": e,
+                            "norm": v})
+    return tuple(out)
+
+
+def subject_code_mentions(text: str) -> tuple[dict, ...]:
+    """主体锚代码（R1 同口径 6 位数字）表面形+offset：证明引用定位用。"""
+    return tuple({"surface": m.group(0), "start": m.start(), "end": m.end()}
+                 for m in _CODE_RE.finditer(text))
+
+
+def machine_time_stage_compare(text_a: str, text_b: str) -> dict:
+    """R2 证明级替代：时间/阶段由机器从原文独立抽取比对（P1-a ③）。
+
+    - time_conflict：双侧机器时间集均非空、归一不等、且双侧阶段词集并集
+      非空（R2"阶段限定"判据移植到机抽集合——日期差须落在讨论阶段事实
+      的文本中才算事件时间冲突，如无阶段词的发布日时差宽放，避免假冲突）；
+      一侧缺失放行（缺失≠冲突）。
+    - stage_conflict：双侧机抽阶段词集均非空且不等（如 初值 vs 终值、
+      开盘 vs 收盘——同事件链不同阶段不得签同事实）。
+    """
+    ta, tb = extract_time_set(text_a), extract_time_set(text_b)
+    sa, sb = extract_stage_set(text_a), extract_stage_set(text_b)
+    time_conflict = bool(ta and tb and ta != tb and (sa or sb))
+    stage_conflict = bool(sa and sb and sa != sb)
+    return {"times_a": sorted(ta), "times_b": sorted(tb),
+            "stage_a": sorted(sa), "stage_b": sorted(sb),
+            "time_conflict": time_conflict, "stage_conflict": stage_conflict}
+
+
+def machine_negation_compare(text_a: str, text_b: str) -> dict:
+    """否定/方向证明级机检：R6 极性词对 + 否定词族（NEGATION_TOKENS 闭合
+    多字词表）单侧不对称 → conflict（P1-a"否定"检查族；判"重复"须两侧
+    极性/否定态势一致）。"""
+    na = sorted({t for t in NEGATION_TOKENS if t in text_a})
+    nb = sorted({t for t in NEGATION_TOKENS if t in text_b})
+    pol = [list(p) for p in POLARITY_PAIRS
+           if (p[0] in text_a and p[1] in text_b)
+           or (p[1] in text_a and p[0] in text_b)]
+    asymmetry = set(na) != set(nb)
+    return {"polarity_pairs": pol, "negation_a": na, "negation_b": nb,
+            "negation_asymmetry": asymmetry,
+            "conflict": bool(pol) or asymmetry}
+
+
 __all__ = [
-    "STAGE_WORDS", "POLARITY_PAIRS",
+    "STAGE_WORDS", "POLARITY_PAIRS", "NEGATION_TOKENS",
     "norm_number_token", "extract_number_set", "filtered_number_set",
     "quote_in_text",
     "rule_r1_subject_codes", "rule_r2_time_anchor", "rule_r3_numeric_conflict",
     "rule_r4_ungrounded_claims", "rule_r5_evidence_verbatim",
     "rule_r6_polarity_conflict", "verify_signed_judgment",
+    # 2026-10-09 P1-a 证明级机检原语（增量；旧 audit 路径零消费）
+    "find_quote_spans", "extract_stage_set", "extract_time_mentions",
+    "extract_time_set", "number_mentions", "subject_code_mentions",
+    "machine_time_stage_compare", "machine_negation_compare",
 ]
