@@ -10,9 +10,11 @@
   candidate_count>0 的 committed 行=真实召回对；正文经
   tdata-stream-2026-09-09.json item_id 回指）→ 判官并发执行器（①）+
   链原生三态（decide_for_task，候选=冻结决策行的真实候选集）。
-  派单所指冻结目录 log\\temp\\tdata-frozen-1009-tdata0909\\ 若在场优先
-  （--t-frozen-dir 覆盖），缺省回退主树冻结件（路径见 --t-stream/
-  --t-decisions 默认值，本件 docstring 尾部在案）。
+  主窗口裁定（2026-10-09）：冻结目录=主树 log\\temp\\tdata-frozen-1009\\
+  tdata0909\\（22:38 接管停跑亲冻，MANIFEST-sha256.txt 钉 decisions
+  sha256=1C90AB61…，对拍不符 fail-closed exit 4）；stream 不入冻结包，
+  正文源=主树 tdata-stream-2026-09-09.json 原件（--t-frozen-dir/--t-stream/
+  --t-decisions 可覆盖；原散装件回退作废备案，仅冻结目录缺席时兜底）。
 
 评分 = 判官合并口径（verdict_residual，锚口径）+ 证明口径（verdict_proof）
 + 链原生三态（decide_for_task 三态）**分列**：
@@ -62,7 +64,10 @@ from vfy_layered_harness import (  # noqa: E402  工装②复用
 MAIN_TREE_TEMP = (_WORKSPACE_ROOT / "news-flash-dedup" / "log" / "temp")
 DEFAULT_T_STREAM = MAIN_TREE_TEMP / "tdata-stream-2026-09-09.json"
 DEFAULT_T_DECISIONS = MAIN_TREE_TEMP / "tdata-exec-tdata0909-decisions.jsonl"
-DEFAULT_T_FROZEN_DIR = _WORKSPACE_ROOT / "log" / "temp" / "tdata-frozen-1009-tdata0909"
+# 主窗口裁定（2026-10-09）：冻结目录=主树 log\temp\tdata-frozen-1009\tdata0909\
+# （22:38 接管停跑亲冻，MANIFEST 钉 decisions sha256=1C90AB61…）；原回退路径
+# （主树 log\temp 散装件）作废备案——仅冻结目录不在场时才作最后兜底。
+DEFAULT_T_FROZEN_DIR = MAIN_TREE_TEMP / "tdata-frozen-1009" / "tdata0909"
 DEFAULT_OUT_ROOT = _WORKSPACE_ROOT / "log" / "temp"
 T_BUSINESS_DATE = "2026-09-09"
 T_SCOPE = "tdata0909"
@@ -81,20 +86,60 @@ def _now() -> str:
 
 # ---------------------------------------------------------------- T 轨数据面
 
+def _sha256_file(path: Path) -> str:
+    import hashlib as _hashlib
+    digest = _hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _verify_manifest(frozen_dir: Path, decisions_path: Path) -> str | None:
+    """冻结完整性对拍：MANIFEST-sha256.txt（冻结根，即 frozen_dir.parent）钉
+    decisions 行 sha256；在场必对拍，不符 → RunnerStop(4)（冻结件被改动=
+    考试基准失效，fail-closed）。返实算 sha（对拍过或未钉则 None）。"""
+    manifest = frozen_dir.parent / "MANIFEST-sha256.txt"
+    if not manifest.exists():
+        return None
+    pinned = None
+    # utf-8-sig：MANIFEST 亲冻件带 BOM（EF BB BF 实测），不剥则首行键名失配
+    for line in manifest.read_text(encoding="utf-8-sig").splitlines():
+        parts = [p.strip() for p in line.split("\t")]
+        if len(parts) == 3 and parts[0] == frozen_dir.name:
+            pinned = parts[2].upper()
+    if pinned is None:
+        return None
+    actual = _sha256_file(decisions_path)
+    if actual != pinned:
+        raise RunnerStop(
+            4, f"冻结对拍失败：{decisions_path.name} sha256={actual[:16]}… "
+               f"!= MANIFEST 钉值 {pinned[:16]}…（冻结件已变，考试基准失效）",
+            {"decisions": str(decisions_path), "actual": actual,
+             "pinned": pinned})
+    return actual
+
+
 def _resolve_t_paths(frozen_dir: Path | None, stream: Path | None,
-                     decisions: Path | None) -> tuple[Path, Path]:
-    """冻结目录优先（在场时取其 stream/decisions 同名件），缺省回退主树
-    冻结件。两侧缺一 → RunnerStop(4)。"""
+                     decisions: Path | None) -> tuple[Path, Path, str | None]:
+    """主窗口裁定形：冻结目录在场 → decisions 必取冻结件（MANIFEST 对拍），
+    stream 不入冻结包（MANIFEST 只钉 decisions；0909 流件主树原件=唯一权威
+    正文源）；冻结目录不在场才回退主树散装件（作废备案，仅兜底）。
+    返 (stream, decisions, manifest_sha|None)。两侧缺一 → RunnerStop(4)。"""
     frozen_dir = frozen_dir or DEFAULT_T_FROZEN_DIR
-    if frozen_dir.exists():
-        stream = stream or (frozen_dir / "tdata-stream-2026-09-09.json")
-        decisions = decisions or (frozen_dir / "tdata-exec-tdata0909-decisions.jsonl")
+    frozen_live = frozen_dir.exists()
+    if frozen_live:
+        decisions = decisions or (frozen_dir
+                                  / "tdata-exec-tdata0909-decisions.jsonl")
     stream = stream or DEFAULT_T_STREAM
     decisions = decisions or DEFAULT_T_DECISIONS
     for path in (stream, decisions):
         if not path.exists():
             raise RunnerStop(4, f"T 冻结件缺失：{path}")
-    return stream, decisions
+    manifest_sha = None
+    if frozen_live and decisions.resolve().parent == frozen_dir.resolve():
+        manifest_sha = _verify_manifest(frozen_dir, decisions)
+    return stream, decisions, manifest_sha
 
 
 def _load_stream_texts(path: Path) -> dict:
@@ -320,7 +365,7 @@ def main() -> int:
         if t_dir.exists() and not args.resume:
             raise RunnerStop(6, f"撞名：{t_dir} 已在场")
         t_dir.mkdir(parents=True, exist_ok=True)
-        stream_path, decisions_path = _resolve_t_paths(
+        stream_path, decisions_path, manifest_sha = _resolve_t_paths(
             Path(args.t_frozen_dir) if args.t_frozen_dir else None,
             Path(args.t_stream) if args.t_stream else None,
             Path(args.t_decisions) if args.t_decisions else None)
@@ -342,7 +387,8 @@ def main() -> int:
             "failure_rate": assessment["failure_rate"],
             "stopped_reason": assessment["stopped_reason"],
             "frozen_sources": {"stream": str(stream_path),
-                               "decisions": str(decisions_path)}}
+                               "decisions": str(decisions_path),
+                               "manifest_sha256": manifest_sha}}
         registry["tracks"].append({
             "run_id": t_run_id, "kind": "t0909", "dir": str(t_dir),
             "artifacts": ["assessment.json", "judge-usage.jsonl"]})
