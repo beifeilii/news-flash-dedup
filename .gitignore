@@ -1,0 +1,8 @@
+﻿log/
+.venv-v1/
+.python-v1/
+__pycache__/
+*.pyc
+.env*
+tmp/
+.pytest_cache/

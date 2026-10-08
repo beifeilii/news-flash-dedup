@@ -1,0 +1,54 @@
+{
+  "no_real_callback": true,
+  "no_model": true,
+  "no_real_model": true,
+  "deployment_fencing_verified": false,
+  "server_inflight_absence_proven": false,
+  "g0_passed": false,
+  "clock_mode": "trusted_simulated_business_clock",
+  "ack_mode": "local_simulation_only",
+  "artifact_mode": "fixed_fixture_no_recall_or_fact",
+  "http_202_measured": false,
+  "physical_deletion_verified": false,
+  "run_id": "safe",
+  "status": "completed_with_unresolved",
+  "scenarios": [
+    {
+      "no_real_callback": true,
+      "no_model": true,
+      "no_real_model": true,
+      "deployment_fencing_verified": false,
+      "server_inflight_absence_proven": false,
+      "g0_passed": false,
+      "clock_mode": "trusted_simulated_business_clock",
+      "ack_mode": "local_simulation_only",
+      "artifact_mode": "fixed_fixture_no_recall_or_fact",
+      "http_202_measured": false,
+      "physical_deletion_verified": false,
+      "scenario": "main",
+      "prefix": "p01-batch-recovery-safe-main-",
+      "status": "unresolved",
+      "old_process_exited": false,
+      "new_owner_started": false,
+      "old_process_expected_exit": false,
+      "counts": {
+        "input_planned": 2,
+        "accepted_returns": null,
+        "lost_accepted": null,
+        "accepted_unverified": null,
+        "initial_unknown": null,
+        "unknown_unresolved": null,
+        "four_documents_verified": null
+      },
+      "rto_seconds": null,
+      "errors": [
+        "io_unconfirmed"
+      ],
+      "processes": {},
+      "whole_case_seconds": 0.0
+    }
+  ],
+  "storage_mode": "real_elasticsearch",
+  "process_mode": "own_subprocesses_with_timeouts",
+  "errors": []
+}

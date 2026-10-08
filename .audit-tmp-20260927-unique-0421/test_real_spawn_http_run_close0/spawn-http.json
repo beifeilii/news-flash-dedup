@@ -1,0 +1,457 @@
+{
+  "run_id": "offline",
+  "prefix": "p01-batch-offline-",
+  "es_version": "8.19.3",
+  "config": {
+    "rate": 20,
+    "duration": 0.1,
+    "run_id": "offline",
+    "confirm_uat": true,
+    "probe_only": false,
+    "entry_mode": "http",
+    "output": "C:\\Users\\ASUS\\Desktop\\文本去重\\workspace-dedup\\news-flash-dedup\\.audit-tmp-20260927-unique-0421\\test_real_spawn_http_run_close0\\spawn-http.json",
+    "max_batch_items": 8,
+    "max_batch_bytes": 524288,
+    "max_log_items": 64,
+    "max_log_bytes": 4194304,
+    "queue_items": 64,
+    "queue_bytes": 4194304,
+    "entry_workers": 64,
+    "mget_batch_size": 128,
+    "max_http_bytes": 262144,
+    "max_text_codepoints": 20000,
+    "max_drain": 0.8,
+    "reconcile_timeout": 0.8,
+    "collector_wait": 0.01,
+    "request_timeout": 0.2,
+    "http_timeout": 0.4,
+    "close_timeout": 0.2,
+    "startup_timeout": 5.0,
+    "sample_interval": 0.01,
+    "drain_window_seconds": 0.0,
+    "materializer_mode": "polling",
+    "materializer_poll_floor": 0.01,
+    "materializer_loop_cap": 16
+  },
+  "source_sha256": {
+    "scripts\\bench_batch_admission.py": "ee4466e1f40dd189cceb67a8a1092a795760a1d20fa2cbc08bc4a983acd3af70",
+    "scripts\\bench_admission.py": "03d29e06c497544355671bd66fb28fa9b496fa76609359e0e0e1ce1a9ef99947",
+    "src\\news_flash_dedup\\admission.py": "90a05f281ae6c6d0c9f44bf0c83092c07bd7bd17a596664ceab15b76256ab945",
+    "src\\news_flash_dedup\\admission_schema.py": "d05154c735f473fecb78165f6ca37bba2f2147cdb2da8a6a55f7a428d47f11fe",
+    "src\\news_flash_dedup\\batch_admission.py": "0edb95b6b35c83b162aa50f0ced16cba1863e993f6cc1cbdeaf1918e10f6b98c",
+    "src\\news_flash_dedup\\batch_collector.py": "021cb94bea4e63ebbb10c4179f105a6322534f6f132097372637fb6ad3e84bb9",
+    "src\\news_flash_dedup\\batch_es_store.py": "3914278df50cd62ec6bcabf0000692ca1b60ea9e19c3936fade611470e393cca",
+    "src\\news_flash_dedup\\es_admission_schema.py": "94729a4db07722d145a52d8c8d56d9a6a6915be533990edac5a9b8285b0104a9",
+    "src\\news_flash_dedup\\api\\http.py": "ec744d6ac86b7008edc79486fe6e84cbc7af9fb681d36bceaa940f972a3e5a9f",
+    "src\\news_flash_dedup\\api\\contract.py": "4d85365b49154f1f2904ad616b20a78219142c2213587a9f884f0236cb9b45af"
+  },
+  "g0_passed": false,
+  "external_requirements_remain": [
+    "UAT two load tiers",
+    "recovery and deployment write fencing",
+    "real callback receipt",
+    "external review and sign-off"
+  ],
+  "entry_mode": "http",
+  "http_202_measured": true,
+  "environment": {
+    "python": "3.11.9",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "cpu_count": 18,
+    "clock": "UTC wall / monotonic intervals"
+  },
+  "es_transport": {
+    "request_timeout_seconds": 5,
+    "max_retries": 0,
+    "retry_on_timeout": false,
+    "connections_per_node": null
+  },
+  "fixture": {
+    "scope": "default",
+    "pipeline_version": "batch-fixed-v1",
+    "schema_version": "1",
+    "embedding_space_id": "none",
+    "callback_sent": false,
+    "algorithm_executed": false,
+    "cache_state": "fresh isolated indices; shared cluster cache uncontrolled"
+  },
+  "configuration_sha256": "9287cc5afc4cb0f6ac081ce0e4973c6c820934f757f484f624cd3358692f04b3",
+  "source_and_configuration_sha256": "b981d707adeab15d50dfa3909309a16fe6e93797f293ce46aa73dab9074ff088",
+  "http_bind": "127.0.0.1:55029",
+  "started_utc": "2026-09-26T18:16:27.549930+00:00",
+  "durable_pending": 0,
+  "four_document_complete": 2,
+  "lost_confirmed": 0,
+  "unknown_pending": 0,
+  "unknown_settled": 0,
+  "unresolved": 0,
+  "reconcile_complete": true,
+  "errors": {},
+  "watermarks": {
+    "allocated": 2,
+    "materialized": 2
+  },
+  "reconciled": [
+    {
+      "request_hash": "badae0bcc6f2a827f53c953ec374b457f7be9dbfa0ebe3f281e04f369e27810d",
+      "state": "four_documents",
+      "arrival_seq": 1,
+      "text_sha256": "04d0075dc6b6c434c4762dad170fa5cc0e9dee5f1f0ed3d6e1da522ab892729a"
+    },
+    {
+      "request_hash": "08175a5a50d65ad4f4005146e57606b471217fc47e5d1930a3cbb366c032cdea",
+      "state": "four_documents",
+      "arrival_seq": 2,
+      "text_sha256": "d3a88879fdcc2464071d258be443744ec7d56ec808599ffb19b41a9203093b00"
+    }
+  ],
+  "sequence_complete": true,
+  "head_version": {
+    "seq_no": 4,
+    "primary_term": 1
+  },
+  "sequence_scope": "all allocated + own attempted keys + next sequence; exclusive fresh prefix",
+  "reconcile_worker_alive": false,
+  "reconcile_attempts": 1,
+  "reconcile_resolved": true,
+  "index_topology": {
+    "p01-batch-offline-news-dedup-control-v1": {
+      "shards": 3,
+      "replicas": 2
+    },
+    "p01-batch-offline-news-dedup-requests-v1": {
+      "shards": 3,
+      "replicas": 2
+    },
+    "p01-batch-offline-news-dedup-items-v1-2026.09.27": {
+      "shards": 3,
+      "replicas": 2
+    },
+    "p01-batch-offline-news-dedup-items-v1-2026.09.28": {
+      "shards": 3,
+      "replicas": 2
+    }
+  },
+  "counts": {
+    "input": 2,
+    "accepted": 2
+  },
+  "latency_by_outcome": {
+    "accepted": {
+      "planned_to_response": {
+        "count": 2,
+        "p50_ms": 27.999999991152436,
+        "p95_ms": 27.999999991152436,
+        "p99_ms": 27.999999991152436,
+        "max_ms": 30.999999959021807,
+        "mean_ms": 29.49999997508712
+      },
+      "sent_to_response": {
+        "count": 2,
+        "p50_ms": 15.000000013969839,
+        "p95_ms": 15.000000013969839,
+        "p99_ms": 15.000000013969839,
+        "max_ms": 30.999999959021807,
+        "mean_ms": 22.999999986495823
+      },
+      "schedule_lateness": {
+        "count": 2,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 12.999999977182597,
+        "mean_ms": 6.4999999885912985
+      }
+    }
+  },
+  "input_complete": true,
+  "response_complete": true,
+  "drain_seconds": 0.0,
+  "drain_timed_out": false,
+  "drain_head_realtime_confirmed": true,
+  "drain_read_errors": {},
+  "worker_alive": false,
+  "reconcile_seconds": 0.0,
+  "collector_snapshot": {
+    "waiting_items": 0,
+    "waiting_bytes": 0,
+    "inflight_items": 0,
+    "inflight_bytes": 0,
+    "peak_waiting_items": 1,
+    "peak_waiting_bytes": 1271,
+    "peak_inflight_items": 1,
+    "peak_inflight_bytes": 1271,
+    "peak_total_items": 1,
+    "peak_total_bytes": 1271,
+    "oldest_waiting_seconds": 0.0,
+    "flushed_batches": 2,
+    "flushed_items": 2,
+    "flushed_bytes": 2542,
+    "last_batch_items": 1,
+    "last_batch_bytes": 1271,
+    "max_batch_items": 1,
+    "max_batch_bytes": 1271,
+    "queue_wait_count": 2,
+    "queue_wait_seconds_total": 0.029999999969732016,
+    "queue_wait_seconds_max": 0.015000000013969839,
+    "closed": true,
+    "failed": false,
+    "worker_alive": false,
+    "flushed_signal": 2
+  },
+  "collector_samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "waiting_items": 0,
+      "waiting_bytes": 0,
+      "inflight_items": 0,
+      "inflight_bytes": 0,
+      "peak_waiting_items": 0,
+      "peak_waiting_bytes": 0,
+      "peak_inflight_items": 0,
+      "peak_inflight_bytes": 0,
+      "peak_total_items": 0,
+      "peak_total_bytes": 0,
+      "oldest_waiting_seconds": 0.0,
+      "flushed_batches": 0,
+      "flushed_items": 0,
+      "flushed_bytes": 0,
+      "last_batch_items": 0,
+      "last_batch_bytes": 0,
+      "max_batch_items": 0,
+      "max_batch_bytes": 0,
+      "queue_wait_count": 0,
+      "queue_wait_seconds_total": 0.0,
+      "queue_wait_seconds_max": 0.0,
+      "closed": false,
+      "failed": false,
+      "worker_alive": true,
+      "flushed_signal": 0
+    },
+    {
+      "elapsed_seconds": 0.06299999996554106,
+      "waiting_items": 0,
+      "waiting_bytes": 0,
+      "inflight_items": 0,
+      "inflight_bytes": 0,
+      "peak_waiting_items": 1,
+      "peak_waiting_bytes": 1271,
+      "peak_inflight_items": 1,
+      "peak_inflight_bytes": 1271,
+      "peak_total_items": 1,
+      "peak_total_bytes": 1271,
+      "oldest_waiting_seconds": 0.0,
+      "flushed_batches": 1,
+      "flushed_items": 1,
+      "flushed_bytes": 1271,
+      "last_batch_items": 1,
+      "last_batch_bytes": 1271,
+      "max_batch_items": 1,
+      "max_batch_bytes": 1271,
+      "queue_wait_count": 1,
+      "queue_wait_seconds_total": 0.014999999955762178,
+      "queue_wait_seconds_max": 0.014999999955762178,
+      "closed": false,
+      "failed": false,
+      "worker_alive": true,
+      "flushed_signal": 1
+    },
+    {
+      "elapsed_seconds": 0.10999999998603016,
+      "waiting_items": 0,
+      "waiting_bytes": 0,
+      "inflight_items": 0,
+      "inflight_bytes": 0,
+      "peak_waiting_items": 1,
+      "peak_waiting_bytes": 1271,
+      "peak_inflight_items": 1,
+      "peak_inflight_bytes": 1271,
+      "peak_total_items": 1,
+      "peak_total_bytes": 1271,
+      "oldest_waiting_seconds": 0.0,
+      "flushed_batches": 2,
+      "flushed_items": 2,
+      "flushed_bytes": 2542,
+      "last_batch_items": 1,
+      "last_batch_bytes": 1271,
+      "max_batch_items": 1,
+      "max_batch_bytes": 1271,
+      "queue_wait_count": 2,
+      "queue_wait_seconds_total": 0.029999999969732016,
+      "queue_wait_seconds_max": 0.015000000013969839,
+      "closed": false,
+      "failed": false,
+      "worker_alive": true,
+      "flushed_signal": 2
+    },
+    {
+      "elapsed_seconds": 0.125,
+      "waiting_items": 0,
+      "waiting_bytes": 0,
+      "inflight_items": 0,
+      "inflight_bytes": 0,
+      "peak_waiting_items": 1,
+      "peak_waiting_bytes": 1271,
+      "peak_inflight_items": 1,
+      "peak_inflight_bytes": 1271,
+      "peak_total_items": 1,
+      "peak_total_bytes": 1271,
+      "oldest_waiting_seconds": 0.0,
+      "flushed_batches": 2,
+      "flushed_items": 2,
+      "flushed_bytes": 2542,
+      "last_batch_items": 1,
+      "last_batch_bytes": 1271,
+      "max_batch_items": 1,
+      "max_batch_bytes": 1271,
+      "queue_wait_count": 2,
+      "queue_wait_seconds_total": 0.029999999969732016,
+      "queue_wait_seconds_max": 0.015000000013969839,
+      "closed": false,
+      "failed": false,
+      "worker_alive": true,
+      "flushed_signal": 2
+    }
+  ],
+  "max_waiting_age_seconds": 0.0,
+  "store_metrics": {
+    "stages": {
+      "get": {
+        "count": 23,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      },
+      "create": {
+        "count": 1,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      },
+      "mget": {
+        "count": 5,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      },
+      "append": {
+        "count": 2,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      },
+      "bulk": {
+        "count": 2,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      },
+      "shrink": {
+        "count": 2,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "mean_ms": 0.0
+      }
+    },
+    "errors": {},
+    "peak_head_items": 1,
+    "peak_head_serialized_bytes": 961,
+    "peak_log_bytes": 762,
+    "max_pending_age_seconds": 0.017208
+  },
+  "materialization_errors": {},
+  "client_errors": {},
+  "server_responses": {
+    "accepted": 2
+  },
+  "client_responses": {
+    "202": 2
+  },
+  "inputs": [
+    {
+      "request_hash": "badae0bcc6f2a827f53c953ec374b457f7be9dbfa0ebe3f281e04f369e27810d",
+      "text_sha256": "04d0075dc6b6c434c4762dad170fa5cc0e9dee5f1f0ed3d6e1da522ab892729a",
+      "text_codepoints": 11,
+      "text_bytes": 29,
+      "planned_seconds": 0.0,
+      "sent_seconds": 0.0,
+      "finished_seconds": 0.030999999959021807,
+      "outcome": "accepted",
+      "server_outcome": "accepted",
+      "client_error": null,
+      "server_duration_ms": 14.999999955762178,
+      "http_status": 202,
+      "response_sha256": "ef56657d5544086021f20d61b6eb5521f349da97775fa0f505702d4d7a48d496"
+    },
+    {
+      "request_hash": "08175a5a50d65ad4f4005146e57606b471217fc47e5d1930a3cbb366c032cdea",
+      "text_sha256": "d3a88879fdcc2464071d258be443744ec7d56ec808599ffb19b41a9203093b00",
+      "text_codepoints": 11,
+      "text_bytes": 29,
+      "planned_seconds": 0.04999999998835847,
+      "sent_seconds": 0.06299999996554106,
+      "finished_seconds": 0.0779999999795109,
+      "outcome": "accepted",
+      "server_outcome": "accepted",
+      "client_error": null,
+      "server_duration_ms": 15.000000013969839,
+      "http_status": 202,
+      "response_sha256": "f47b3f001dd4cb7e29c6b4682b08e9845e033704fc8b7184d1af12ce2877162b"
+    }
+  ],
+  "local_writer_isolation_only": true,
+  "deployment_write_fencing": false,
+  "local_performance": {
+    "passed": true,
+    "criteria": {
+      "certain_admission_percent": 100,
+      "p95_ms": 300,
+      "drain_seconds": 60,
+      "lost": 0
+    },
+    "scope": "local HTTP to isolated storage"
+  },
+  "resources_alive": {
+    "batch-client-start:0": false,
+    "batch-provision:1": false,
+    "batch-http-start:2": false,
+    "batch-materializer:3": false,
+    "batch-entry:4": false,
+    "batch-entry:5": false,
+    "batch-drain-head:6": false,
+    "batch-drain-head:7": false,
+    "batch-collector-close:8": false,
+    "batch-reconcile:9": false,
+    "batch-es-client-close:10": false,
+    "batch-loopback-server:0": false,
+    "batch-http-client-close:1": false,
+    "http_active_requests": false,
+    "collector": false
+  },
+  "close_errors": {},
+  "finished_utc": "2026-09-26T18:16:27.889076+00:00",
+  "watchdog": {
+    "budget_seconds": 7.299999999999999,
+    "terminated": false,
+    "interrupted": false,
+    "child_alive": false,
+    "pid": 4404,
+    "exitcode": 0,
+    "local_process_reaped": true,
+    "server_inflight_writes_unresolved": true,
+    "server_write_fencing_proven": false,
+    "deployment_write_fencing": false
+  }
+}

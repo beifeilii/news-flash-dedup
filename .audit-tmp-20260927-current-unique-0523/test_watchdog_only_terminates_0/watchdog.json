@@ -1,0 +1,78 @@
+{
+  "run_id": "offline",
+  "input_complete": false,
+  "reconcile_complete": false,
+  "lost_confirmed": 0,
+  "unknown_pending": 2,
+  "drain_timed_out": true,
+  "worker_alive": false,
+  "g0_passed": false,
+  "local_performance": {
+    "passed": false
+  },
+  "errors": {
+    "child_incomplete": 1,
+    "watchdog_timeout": 1
+  },
+  "external_requirements_remain": [
+    "UAT two load tiers",
+    "recovery and deployment write fencing",
+    "real callback receipt",
+    "external review and sign-off"
+  ],
+  "config": {
+    "rate": 20,
+    "duration": 0.1,
+    "run_id": "offline",
+    "confirm_uat": true,
+    "probe_only": false,
+    "entry_mode": "function",
+    "output": "C:\\Users\\ASUS\\Desktop\\文本去重\\workspace-dedup\\news-flash-dedup\\.audit-tmp-20260927-current-unique-0523\\test_watchdog_only_terminates_0\\watchdog.json",
+    "max_batch_items": 8,
+    "max_batch_bytes": 524288,
+    "max_log_items": 64,
+    "max_log_bytes": 4194304,
+    "queue_items": 64,
+    "queue_bytes": 4194304,
+    "entry_workers": 64,
+    "mget_batch_size": 128,
+    "max_http_bytes": 262144,
+    "max_text_codepoints": 20000,
+    "max_drain": 0.8,
+    "reconcile_timeout": 0.8,
+    "collector_wait": 0.01,
+    "request_timeout": 0.2,
+    "http_timeout": 0.4,
+    "close_timeout": 0.2,
+    "startup_timeout": 2.0,
+    "sample_interval": 0.01,
+    "drain_window_seconds": 0.0,
+    "materializer_mode": "polling",
+    "materializer_poll_floor": 0.01,
+    "materializer_loop_cap": 16
+  },
+  "source_sha256": {
+    "scripts\\bench_batch_admission.py": "ee4466e1f40dd189cceb67a8a1092a795760a1d20fa2cbc08bc4a983acd3af70",
+    "scripts\\bench_admission.py": "03d29e06c497544355671bd66fb28fa9b496fa76609359e0e0e1ce1a9ef99947",
+    "src\\news_flash_dedup\\admission.py": "90a05f281ae6c6d0c9f44bf0c83092c07bd7bd17a596664ceab15b76256ab945",
+    "src\\news_flash_dedup\\admission_schema.py": "d05154c735f473fecb78165f6ca37bba2f2147cdb2da8a6a55f7a428d47f11fe",
+    "src\\news_flash_dedup\\batch_admission.py": "0edb95b6b35c83b162aa50f0ced16cba1863e993f6cc1cbdeaf1918e10f6b98c",
+    "src\\news_flash_dedup\\batch_collector.py": "021cb94bea4e63ebbb10c4179f105a6322534f6f132097372637fb6ad3e84bb9",
+    "src\\news_flash_dedup\\batch_es_store.py": "3914278df50cd62ec6bcabf0000692ca1b60ea9e19c3936fade611470e393cca",
+    "src\\news_flash_dedup\\es_admission_schema.py": "94729a4db07722d145a52d8c8d56d9a6a6915be533990edac5a9b8285b0104a9",
+    "src\\news_flash_dedup\\api\\http.py": "ec744d6ac86b7008edc79486fe6e84cbc7af9fb681d36bceaa940f972a3e5a9f",
+    "src\\news_flash_dedup\\api\\contract.py": "4d85365b49154f1f2904ad616b20a78219142c2213587a9f884f0236cb9b45af"
+  },
+  "watchdog": {
+    "budget_seconds": 4.300000000000001,
+    "terminated": true,
+    "interrupted": false,
+    "child_alive": false,
+    "pid": 123,
+    "exitcode": -15,
+    "local_process_reaped": true,
+    "server_inflight_writes_unresolved": true,
+    "server_write_fencing_proven": false,
+    "deployment_write_fencing": false
+  }
+}
