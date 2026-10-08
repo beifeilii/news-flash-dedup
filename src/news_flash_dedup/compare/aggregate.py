@@ -198,9 +198,17 @@ def aggregate(
     new_text_issues: Iterable[PairIssue] = (),
     recall_issues: Iterable[PairIssue] = (),
     coverage: CoverageStatus | None = None,
+    strict_required_coverage: bool = False,
 ) -> AggregateOutcome:
     """五字段汇总：先收集已确认直接重复（按 arrival_seq 升序去重），再按缺口决定
-    不重复或边界。"""
+    不重复或边界。
+
+    strict_required_coverage（P1-b，2026-10-09，合同
+    log/temp/p1-interface-contract-v1.md §五）：判官进主链新路径的提交前
+    最终聚合口径——True 时"required 非空而 pair_results 为空"记
+    FACT_INCOMPLETE 缺口（不得签"不重复"）；默认 False=旧路径逐字节
+    （L11/T045 冻结契约"∅→不重复"，test_p16_d_matrix 钉死，不动）。
+    """
     current_ctx = _normalize_ctx(current)
     plan = _normalize_plan(frozen_plan)
     coverage = coverage or CoverageStatus()
@@ -294,6 +302,18 @@ def aggregate(
                 issues.append(PairIssue(
                     "FACT_INCOMPLETE",
                     f"计划内成员 {record_id!r} 无对级结果（漏判不可静默）"))
+
+    # P1-b（2026-10-09，合同 p1-interface-contract-v1 §五红线"required 非空
+    # 而 pair_results 为空 → 不得签不重复"；工程正文 Codex 最终方案 §3.2
+    # "新路径须补"）：strict 口径下 required 非空 + 覆盖完整 + 对级产出全空
+    # =全量漏判缺口，记 FACT_INCOMPLETE 落边界进人工。默认 False：旧路径
+    # L11/T045"∅→不重复"冻结契约逐字节不动（上方既有块 pairs 非空才记账的
+    # 纪律同源——本块只在新路径补 pairs 全空这一格）。
+    if strict_required_coverage and coverage.complete and not pairs and plan.required:
+        issues.append(PairIssue(
+            "FACT_INCOMPLETE",
+            "计划内成员全部无对级结果（required 非空而 pair_results 为空，"
+            "漏判不可静默判不重复）"))
 
     ordered_pairs = sorted(
         seen_item_ids.values(),
