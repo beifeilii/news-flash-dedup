@@ -239,10 +239,22 @@ JUDGE_PROMPT_V3 = """你是快讯文本去重判定裁判。给定同一新闻�
 
 PROMPT_SHA256_V3 = hashlib.sha256(JUDGE_PROMPT_V3.encode("utf-8")).hexdigest()
 
+# judge_v5（2026-10-10 提交二，p3-semantic-authority，方案 §5.2 文件 F/G）：
+# policy_v3 业务口径版，正文与 SHA 单源在 decide/judge_prompt_v5.py（独立
+# 文件，不改写 v1/v2/v3/v4 原文、不沿用旧 SHA）；此处仅增量注册——v1 仍
+# 为全局隐式默认（可切回），新链由 judge_adapter 显式指定 v5，不依赖本
+# 默认值；v4 维持不注册（其测试守卫在案）。
+from news_flash_dedup.decide.judge_prompt_v5 import (
+    JUDGE_PROMPT_V5,
+    JUDGE_PROMPT_VERSION_V5,
+    PROMPT_SHA256_V5,
+)
+
 _JUDGE_PROMPTS = {
     JUDGE_PROMPT_VERSION: (JUDGE_PROMPT_V1, PROMPT_SHA256),
     JUDGE_PROMPT_VERSION_V2: (JUDGE_PROMPT_V2, PROMPT_SHA256_V2),
     JUDGE_PROMPT_VERSION_V3: (JUDGE_PROMPT_V3, PROMPT_SHA256_V3),
+    JUDGE_PROMPT_VERSION_V5: (JUDGE_PROMPT_V5, PROMPT_SHA256_V5),
 }
 
 
@@ -486,7 +498,13 @@ def _opt_str_list(value: Any) -> bool:
 
 
 def validate_judge(payload: Mapping[str, Any]) -> tuple[dict | None, str | None]:
-    """裁判输出结构校验（d32_lib.validate_judge 同款）。引文缺失/结构非法 → error。"""
+    """裁判输出结构校验（d32_lib.validate_judge 同款）。引文缺失/结构非法 → error。
+
+    提交二注记（§5.2 文件 G-4）：证据字段保持必填（本层只验结构）；引文
+    绑定失败自提交一起只进证据诊断（judge_proof/judge_pair），不造成语义
+    invalid；真正 JSON 缺字段或 decision 非法仍由本层判 invalid。v5 输出
+    契约沿用 v1 族，本函数零改动消费。
+    """
     decision = payload.get("decision")
     if decision not in DECISIONS:
         return None, f"decision 非法：{decision!r}"
@@ -941,6 +959,7 @@ __all__ = [
     "JUDGE_PROMPT_VERSION", "JUDGE_PROMPT_V1", "PROMPT_SHA256", "JUDGE_ARM",
     "JUDGE_PROMPT_VERSION_V2", "JUDGE_PROMPT_V2", "PROMPT_SHA256_V2",
     "JUDGE_PROMPT_VERSION_V3", "JUDGE_PROMPT_V3", "PROMPT_SHA256_V3",
+    "JUDGE_PROMPT_VERSION_V5", "JUDGE_PROMPT_V5", "PROMPT_SHA256_V5",
     "DEFAULT_MODEL", "DEFAULT_BASE_URL", "DECISIONS", "MV_AUDIT", "MV_GATE",
     "judge_prompt_sha256", "judge_prompt_for_version", "residual_cache_key",
     "residual_cache_key_hardened",

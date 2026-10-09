@@ -370,7 +370,7 @@ def test_adapter_proof_passes_validate_and_cache_key(monkeypatch):
     assert validated.evidence_status == "pass"
     assert validated.evidence_warnings == ()
     assert proof["reason"] == "r"                        # 判官理由实传
-    assert proof["policy_version"] == "policy_v2"
+    assert proof["policy_version"] == "policy_v3"        # 提交二治理口径单源
     assert proof["machine_verify"] == {"mode": "audit", "rules_triggered": [],
                                        "passed": True}
     assert proof["numeric_check"]["conclusion"] == "一致"

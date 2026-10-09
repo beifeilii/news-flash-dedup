@@ -54,9 +54,11 @@
   无机检轴（P_NO_AXIS）→ 不携 falsification——提交一起由 validate_proof
   记 P_NO_AXIS 证据充分性告警（不再降级 doubtful）。
 - 版本四维：model_version=cfg.model、prompt_sha256=judge_prompt_for_version
-  的 sha、policy_version=judge_proof.PROOF_POLICY_VERSION（="policy_v2"
-  宪章版本）、judged_at=UTC ISO（合同必填；内部审计负载的确定性纪律不
-  及此合同面——judged_at 只进合同证明件，不进 llm_residual 审计槽）。
+  的 sha、policy_version=policy_version.DEFAULT_POLICY_VERSION（提交二
+  §5.2：="policy_v3" 治理业务口径单源；judge_proof 组件内部机检口径
+  仍为 policy_v2 宪章，诊断与治理分层各记）、judged_at=UTC ISO（合同
+  必填；内部审计负载的确定性纪律不及此合同面——judged_at 只进合同
+  证明件，不进 llm_residual 审计槽）。
 - cache_key=合同 §一 逐字公式（judge_pair.compute_cache_key 重算自证）。
 - 预算：内部预算尽（_call_cached 两枚预算字面错误前缀）→
   judge_pair.JudgeBudgetExceeded（合同 BUDGET_EXCEEDED 通道）；其余调用
@@ -75,6 +77,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from . import judge_pair, judge_proof, llm_residual, machine_verify as _mv
+from . import policy_version as _policy_version
 
 __all__ = ["build_judge_callable", "proof_for_order"]
 
@@ -128,7 +131,11 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     text_a, text_b = ctx["text_a"], ctx["text_b"]
     cfg = judge.config
     prompt_sha = llm_residual.judge_prompt_for_version(cfg.prompt_version)[1]
-    policy = judge_proof.PROOF_POLICY_VERSION
+    # 提交二（§5.2）：合同证明 policy_version=治理业务口径单源
+    # （policy_version.DEFAULT_POLICY_VERSION=policy_v3，配套 judge_v5）；
+    # judge_proof 证明组件内部机检口径仍为 v2 宪章（PROOF_POLICY_VERSION
+    # 不变，旧证明工件复验兼容）——治理口径与诊断口径分层，如实各记。
+    policy = _policy_version.DEFAULT_POLICY_VERSION
     sha_a = judge_proof.text_sha256(text_a)
     sha_b = judge_proof.text_sha256(text_b)
 
@@ -248,12 +255,15 @@ def build_judge_callable(
     judge 显式传入优先（测试罐装 LLM 边界）；否则由 config（默认
     ResidualJudgeConfig，mv_mode=audit——核验姿态不自我降级，降级权归
     合同层，见模块 docstring）+budget 构造真 SyncResidualJudge。
+    提交二（§5.2 文件 G-3）：新链默认**显式**使用 judge_v5（不依赖
+    llm_residual.JUDGE_PROMPT_VERSION=judge_v1 的隐式全局默认）。
     """
     if not judge_proof.judge_proof_enabled(environ):
         return None
     if judge is None:
         cfg = config or llm_residual.ResidualJudgeConfig(
-            mv_mode=llm_residual.MV_AUDIT)
+            mv_mode=llm_residual.MV_AUDIT,
+            prompt_version=llm_residual.JUDGE_PROMPT_VERSION_V5)
         judge = llm_residual.SyncResidualJudge(cfg, budget=budget)
 
     def _judge_callable(pair_context: Mapping) -> dict:

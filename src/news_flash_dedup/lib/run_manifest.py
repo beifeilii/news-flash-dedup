@@ -40,15 +40,22 @@ from news_flash_dedup.decide.llm_residual import (
     JUDGE_PROMPT_VERSION,
     judge_prompt_for_version,
 )
+from news_flash_dedup.decide.policy_version import (
+    DEFAULT_POLICY_VERSION,
+    POLICY_VERSION_V2,
+    POLICY_VERSION_V3,
+)
 from news_flash_dedup.facts.rule import RULE_DICT_VERSION
 
 MANIFEST_SCHEMA_VERSION = "run_manifest_v1"
 
-# 宪章生效版（《判定宪章-草案-v2-1009.md》，业务方 2026-10-09 审签）；
-# 字面量单源——判官 prompt v4（decide/judge_prompt_v4.py）与审计/考卷
-# 封存共用此值，禁止各处手抄字符串。
-POLICY_VERSION_V2 = "policy_v2"
-DEFAULT_POLICY_VERSION = POLICY_VERSION_V2
+# 提交二（2026-10-10，p3-semantic-authority，方案 §5.2 文件 E/H）：policy
+# 版本字面量单源迁至 decide/policy_version.py（无循环依赖；本模块与
+# judge_prompt_v5 同源导入，提示词模块不再反向导入本模块）。此处仅做
+# 兼容再导出——POLICY_VERSION_V2 仍为 "policy_v2"（judge_prompt_v4 与
+# judge_proof 组件锚定）；DEFAULT_POLICY_VERSION 自本提交起为
+# POLICY_VERSION_V3="policy_v3"（judge_v5 配套治理口径，manifest 如实
+# 记录真实使用的 policy version）。
 
 DEFAULT_PIPELINE_VERSION = "dedup_v1"
 
@@ -63,6 +70,9 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_COVERAGE_FRONTIER",          # recall/service.py（覆盖闸 frontier）
     "DEDUP_EMBEDDING_DAILY_TOKEN_BUDGET",  # vector/embedding_client.py（预算闸）
     "DEDUP_EXACT_MIN_LEN",              # text/__init__.py（最小正文长度闸）
+    # 提交二（§5.2 文件 H-2）补登记：判官证明路开关 + 判官进主链开关
+    "DEDUP_JUDGE_IN_CHAIN",             # decide/judge_pair.py（判官进主链，默认关）
+    "DEDUP_JUDGE_PROOF",                # decide/judge_proof.py（证明路，默认关）
     "DEDUP_RECALL_MODE",                # recall/service.py（召回/判重模式闸）
 )
 
@@ -239,6 +249,7 @@ __all__ = [
     "KNOWN_SWITCHES",
     "MANIFEST_SCHEMA_VERSION",
     "POLICY_VERSION_V2",
+    "POLICY_VERSION_V3",
     "RULE_DICT_VERSION",
     "RunManifest",
     "build_run_manifest",

@@ -60,7 +60,7 @@ def test_manifest_fields_complete():
     assert d["dict_version"] == RULE_DICT_VERSION
     assert d["prompt_version"] == JUDGE_PROMPT_VERSION
     assert d["prompt_sha256"] == PROMPT_SHA256      # 注册处单源解析
-    assert d["policy_version"] == "policy_v2"       # 宪章生效版字面量
+    assert d["policy_version"] == "policy_v3"       # 提交二：治理口径默认版
     assert d["model"] == DEFAULT_MODEL
     assert d["embedding_space"] == FAKE_SPACE_ID
     assert d["code_git_sha"] == GIT_SHA
@@ -68,11 +68,19 @@ def test_manifest_fields_complete():
     assert set(d["switch_state"]) == set(rm.KNOWN_SWITCHES)
 
 
-def test_policy_version_literal_is_policy_v2():
-    """宪章 §六-2 字面量钉：默认 policy_version 恒为 policy_v2。"""
-    assert rm.POLICY_VERSION_V2 == "policy_v2"
-    assert rm.DEFAULT_POLICY_VERSION == "policy_v2"
-    assert _build().policy_version == "policy_v2"
+def test_policy_version_literal_defaults():
+    """提交二（§5.2 文件 E/H）：policy 字面量单源=decide/policy_version.py；
+    run_manifest 同源再导出——V2 常量保留（judge_proof/v4 锚定），默认
+    policy_version 自提交二起为 policy_v3（judge_v5 治理口径）。"""
+    from news_flash_dedup.decide import policy_version as pv
+    assert pv.POLICY_VERSION_V2 == "policy_v2"
+    assert pv.POLICY_VERSION_V3 == "policy_v3"
+    assert pv.DEFAULT_POLICY_VERSION == "policy_v3"
+    assert rm.POLICY_VERSION_V2 == "policy_v2"          # 兼容再导出
+    assert rm.POLICY_VERSION_V3 == "policy_v3"
+    assert rm.DEFAULT_POLICY_VERSION == "policy_v3"
+    assert _build().policy_version == "policy_v3"
+    assert _build(policy_version="policy_v2").policy_version == "policy_v2"
 
 
 # ---------- 可序列化 ----------
@@ -115,11 +123,15 @@ def test_embedding_space_instance_uses_space_id():
 
 def test_switch_state_snapshot_honors_injected_env():
     env = {"DEDUP_RECALL_MODE": "shadow", "DEDUP_CERT_DECOUPLE": "1",
+           "DEDUP_JUDGE_PROOF": "1", "DEDUP_JUDGE_IN_CHAIN": "true",
            "UNRELATED_ENV": "x"}
     manifest = _build(env=env)
     state = dict(manifest.switch_state)
     assert state["DEDUP_RECALL_MODE"] == "shadow"
     assert state["DEDUP_CERT_DECOUPLE"] == "1"
+    # 提交二（§5.2 文件 H-2）：判官两开关登记入册并如实快照
+    assert state["DEDUP_JUDGE_PROOF"] == "1"
+    assert state["DEDUP_JUDGE_IN_CHAIN"] == "true"
     assert state["DEDUP_COVERAGE_FRONTIER"] == ""             # 缺席记空串
     assert "UNRELATED_ENV" not in state                       # 非登记开关不入册
     assert [name for name, _ in manifest.switch_state] == list(rm.KNOWN_SWITCHES)
