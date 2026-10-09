@@ -6,17 +6,24 @@
 - 判定宪章 policy_v2（机检语义口径）；
 - 工程正文 log/判定链改造最终方案-Codex-20261008.md §3.1/§3.2。
 
+提交一（2026-10-10，分支 p3-semantic-authority，方案 §4.2/§5.1）口径更新：
+- 双序判重复 → 签发 JUDGE_EQUIVALENT（语义权威码，真证据入列）；
+- 双序不重复（有/无机检证伪轴）→ JUDGE_NON_DUPLICATE——不再强制
+  机器证伪轴，P_NO_AXIS 只记告警不降级；
+- 机验 P_*（如 P_NUMERIC）不再一票否决——audit 语义如实记录，
+  双序一致语义判定照旧生效；
+- machine_verify mode="audit"；proof 携 reason 实传。
+
 覆盖（decide_for_task 级，真件+真开关；LLM 边界罐装，机检/适配/聚合全真）：
-- 双序判重复+机验过 → 签发 FACT_EQUIVALENT（件级重复，真证据入列）；
-- 双序不重复+机检证伪轴 → VERIFIED_CONFLICT（dimension 映射钉）；
-- 空口不重复（无机检轴）→ 合同 §二 降级不签（JUDGE_DOUBTFUL 未决进人工）；
-- 机验拦截（P_NUMERIC）→ MV_REJECTED 未决进人工；
+- 双序判重复+机检 P_NUMERIC 在场 → 仍签发 JUDGE_EQUIVALENT + 诊断留存；
+- 双序不重复+机检证伪轴 → JUDGE_NON_DUPLICATE（dimension 映射钉）；
+- 空口不重复（无机检轴）→ JUDGE_NON_DUPLICATE + P_NO_AXIS 告警（§4.2）；
 - 超时（真件慢 LLM+真线程硬超时）→ TIMEOUT 未决；
 - 预算尽（真 ProcessingBudget 越软界）→ BUDGET_EXCEEDED 未决；
 - 开关关=逐字节老行为（IN_CHAIN 关判官零调用；PROOF 关→装配返 None=
   未注入 fail-closed 未决）；
 - 适配器直射钉：validate_proof 录取线过/预算异常映射/failure·invalid
-  verdict/cache_key 合同公式/time→stage·polarity→event 维度映射；
+  verdict/cache_key 合同公式/五族维度原生直发；
 - 装配透传钉：commit_one 显式注入生效+env 关未注入 fail-closed。
 """
 
@@ -187,8 +194,8 @@ SUB_RESP = {
 # ---------------------------------------------------------------- 联调红测（decide_for_task 级）
 
 def test_real_judge_signs_duplicate_fact_equivalent(monkeypatch):
-    """双序判重复+机验过（真件+真开关）→ 签发 FACT_EQUIVALENT（件级重复，
-    对级真证据入列，duplicate_ids 只收已证件）。"""
+    """双序判重复+机检无触发（真件+真开关）→ 签发 JUDGE_EQUIVALENT
+    （件级重复，对级真证据入列，duplicate_ids 只收已证件）。"""
     _switches_on(monkeypatch)
     cb = _real_callable(DUP_RESP)
     out = decide_service.decide_for_task(
@@ -196,17 +203,17 @@ def test_real_judge_signs_duplicate_fact_equivalent(monkeypatch):
         coverage_complete=True)
     assert out.decision == "重复"
     assert out.duplicate_ids == ("item-A",)
-    assert out.internal_code == "FACT_EQUIVALENT"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
     pair = out.pair_results[0]
-    assert pair.outcome == "equivalent" and pair.code == "FACT_EQUIVALENT"
+    assert pair.outcome == "equivalent" and pair.code == "JUDGE_EQUIVALENT"
     assert len(pair.used_evidence) > 0
     quotes = {e.quote for e in pair.used_evidence}
     assert "9月24日公告营收100万元" in quotes     # 真引文（非空壳）
 
 
 def test_real_judge_signs_conflict_with_subject_axis(monkeypatch):
-    """双序不重复+机检主体轴 → VERIFIED_CONFLICT（件级不重复；
-    dimension=subject 直钉，双侧证伪引文绑真 offset）。"""
+    """双序不重复+机检主体轴 → JUDGE_NON_DUPLICATE（件级不重复；
+    dimension=subject 直钉，双侧证伪引文绑真 offset，仍构造审计冲突件）。"""
     _switches_on(monkeypatch)
     cb = _real_callable(SUB_RESP)
     out = decide_service.decide_for_task(
@@ -214,7 +221,7 @@ def test_real_judge_signs_conflict_with_subject_axis(monkeypatch):
         coverage_complete=True)
     assert out.decision == "不重复"
     pair = out.pair_results[0]
-    assert pair.outcome == "conflict" and pair.code == "VERIFIED_CONFLICT"
+    assert pair.outcome == "conflict" and pair.code == "JUDGE_NON_DUPLICATE"
     assert len(pair.verified_conflicts) == 1
     conflict = pair.verified_conflicts[0]
     assert conflict.field_path == "judge_falsification.subject"
@@ -222,35 +229,51 @@ def test_real_judge_signs_conflict_with_subject_axis(monkeypatch):
     assert conflict.current_evidence.quote == "002919"
 
 
-def test_real_judge_empty_not_duplicate_downgraded(monkeypatch):
-    """空口不重复（判官双序 不重复 但机检无证伪轴）→ 合同 §二 降级不签：
-    JUDGE_DOUBTFUL 未决进人工，不得入"有效排除"。"""
+def test_real_judge_empty_not_duplicate_signs_with_p_no_axis(monkeypatch):
+    """提交一 §4.2：空口不重复（判官双序 不重复 但机检无证伪轴）→ 签
+    JUDGE_NON_DUPLICATE（件级不重复），P_NO_AXIS 只记告警不降级。"""
     _switches_on(monkeypatch)
     cb = _real_callable(ND0_RESP)
     out = decide_service.decide_for_task(
         _history(ND0_H), [], current=_current(ND0_C), judge_callable=cb,
         coverage_complete=True)
-    assert out.decision == "边界case/疑难case"
+    assert out.decision == "不重复"
     assert out.duplicate_ids == ()
     pair = out.pair_results[0]
-    assert pair.outcome == "unresolved"
-    assert pair.code == "SUBJECT_UNRESOLVED"
-    assert judge_pair.JUDGE_DOUBTFUL in pair.detail
+    assert pair.outcome == "conflict"
+    assert pair.code == "JUDGE_NON_DUPLICATE"
+    assert pair.verified_conflicts == ()          # 无轴不构造审计冲突件
+    # P_NO_AXIS 告警留存（适配层直射面）
+    judged = judge_pair.adjudicate_pair(cb, judge_pair.build_pair_context(
+        SimpleNamespace(pair_id="p-no-axis", history_record_id=H_ID,
+                        current_record_id=C_ID, history_item_id="item-A",
+                        current_item_id="item-C"),
+        history_text=ND0_H, current_text=ND0_C))
+    assert judged.outcome == "conflict"
+    assert "P_NO_AXIS" in judged.evidence_warnings
 
 
-def test_real_judge_machine_numeric_conflict_rejected(monkeypatch):
-    """机验拦截（判官双序 重复 声称数值一致，机抽 787.8万/789.8万 双向
-    差异=P_NUMERIC）→ MV_REJECTED 未决进人工（EVIDENCE_INVALID 码）。"""
+def test_real_judge_machine_numeric_conflict_now_audit_only(monkeypatch):
+    """提交一（解除一票否决）：判官双序 重复 声称数值一致，机抽
+    787.8万/789.8万 双向差异=P_NUMERIC → 仍签发 JUDGE_EQUIVALENT，
+    P_NUMERIC 只进证据诊断（audit 语义，不改判）。"""
     _switches_on(monkeypatch)
     cb = _real_callable(NUM_RESP)
     out = decide_service.decide_for_task(
         _history(NUM_H), [], current=_current(NUM_C), judge_callable=cb,
         coverage_complete=True)
-    assert out.decision == "边界case/疑难case"
+    assert out.decision == "重复"
+    assert out.duplicate_ids == ("item-A",)
     pair = out.pair_results[0]
-    assert pair.outcome == "unresolved"
-    assert pair.code == "EVIDENCE_INVALID"
-    assert judge_pair.MV_REJECTED in pair.detail
+    assert pair.outcome == "equivalent"
+    assert pair.code == "JUDGE_EQUIVALENT"
+    judged = judge_pair.adjudicate_pair(cb, judge_pair.build_pair_context(
+        SimpleNamespace(pair_id="p-num", history_record_id=H_ID,
+                        current_record_id=C_ID, history_item_id="item-A",
+                        current_item_id="item-C"),
+        history_text=NUM_H, current_text=NUM_C))
+    assert judged.outcome == "equivalent"
+    assert "P_NUMERIC" in judged.machine_findings
 
 
 def test_real_judge_timeout_unresolved(monkeypatch):
@@ -335,16 +358,20 @@ def _order_ctx(pair_id, text_h, text_c, order="ab"):
 
 
 def test_adapter_proof_passes_validate_and_cache_key(monkeypatch):
-    """适配器产物过 validate_proof 录取线（duplicate）；cache_key=合同
-    §一 公式重算；quotes/三态结论/machine_verify 段全合规。"""
+    """适配器产物过 validate_proof 合同录取线（duplicate）；cache_key=合同
+    §一 公式重算；quotes/三态结论/machine_verify 段全合规；提交一：
+    mode="audit" 审计语义 + reason 实传判官理由。"""
     _switches_on(monkeypatch)
     cb = _real_callable(DUP_RESP)
     ctx = _order_ctx("p1", DUP_H, DUP_C, "ab")
     proof = cb(ctx)
     validated = judge_pair.validate_proof(proof, ctx)
-    assert validated["verdict"] == "duplicate"
+    assert validated.verdict == "duplicate"
+    assert validated.evidence_status == "pass"
+    assert validated.evidence_warnings == ()
+    assert proof["reason"] == "r"                        # 判官理由实传
     assert proof["policy_version"] == "policy_v2"
-    assert proof["machine_verify"] == {"mode": "gate", "rules_triggered": [],
+    assert proof["machine_verify"] == {"mode": "audit", "rules_triggered": [],
                                        "passed": True}
     assert proof["numeric_check"]["conclusion"] == "一致"
     assert proof["time_check"]["conclusion"] == "一致"
@@ -368,8 +395,8 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     proof = cb(ctx)
     assert proof["verdict"] == "not_duplicate"
     validated = judge_pair.validate_proof(proof, ctx)
-    assert validated["falsification"]["dimension"] == "subject"
-    assert validated["falsification"]["evidence_a"]["text"] == "600001"
+    assert validated.falsification["dimension"] == "subject"
+    assert validated.falsification["evidence_a"]["text"] == "600001"
     # time 轴原生直发（宪章 §二-3；合同 v1 曾最近邻并入 stage，v2 原生）
     t_h, t_c = "甲公司3月4日公告投产。", "乙公司3月5日公告投产。"
     resp = {
@@ -386,8 +413,8 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     assert proof2["falsification"]["dimension"] == "time"
     assert proof2["falsification"]["evidence_a"]["text"] == "3月4日"
     assert proof2["time_check"]["conclusion"] == "不一致"
-    assert judge_pair.validate_proof(proof2, ctx2)[
-        "falsification"]["dimension"] == "time"
+    assert judge_pair.validate_proof(proof2, ctx2).falsification[
+        "dimension"] == "time"
     # polarity 轴原生直发（宪章 §二-5 方向冲突；v1 曾并入 event，v2 原生）
     p_h, p_c = "甲公司主力净流入5亿。", "乙公司主力净流出5亿。"
     resp3 = {
@@ -403,13 +430,13 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     proof3 = cb3(ctx3)
     assert proof3["falsification"]["dimension"] == "polarity"
     assert proof3["falsification"]["evidence_a"]["text"] == "净流入"
-    assert judge_pair.validate_proof(proof3, ctx3)[
-        "falsification"]["dimension"] == "polarity"
+    assert judge_pair.validate_proof(proof3, ctx3).falsification[
+        "dimension"] == "polarity"
 
 
 def test_adapter_verdict_failure_and_invalid(monkeypatch):
     """败状映射：LLM 调用失败→verdict=failure；JSON 非法→verdict=invalid
-    （合同五态，validate_proof 收）。"""
+    （合同五态，validate_proof 收；reason 缺省稳定兜底文案）。"""
     _switches_on(monkeypatch)
 
     def _boom(model, system, user, timeout_s=None):
@@ -421,13 +448,14 @@ def test_adapter_verdict_failure_and_invalid(monkeypatch):
     ctx = _order_ctx("p1", DUP_H, DUP_C, "ab")
     proof = cb(ctx)
     assert proof["verdict"] == "failure"
+    assert proof["reason"]                                # 兜底文案非空
     validated = judge_pair.validate_proof(proof, ctx)
-    assert validated["verdict"] == "failure"
+    assert validated.verdict == "failure"
 
     cb2 = _real_callable({(DUP_H, DUP_C): "not-json{{{"})
     proof2 = cb2(ctx)
     assert proof2["verdict"] == "invalid"
-    assert judge_pair.validate_proof(proof2, ctx)["verdict"] == "invalid"
+    assert judge_pair.validate_proof(proof2, ctx).verdict == "invalid"
 
 
 def test_adapter_budget_raises_contract_exception(monkeypatch):
@@ -447,7 +475,8 @@ def test_adapter_budget_raises_contract_exception(monkeypatch):
 
 def test_adapter_empty_not_duplicate_carries_no_falsification(monkeypatch):
     """无机检轴的不重复：proof 不携 falsification、machine_verify.passed=
-    true（P_NO_AXIS 不入机验闸）→ 合同 §二 降级 doubtful（非硬失败）。"""
+    true（P_NO_AXIS 不入机验闸）→ 提交一：P_NO_AXIS 入 proof 级
+    evidence_warnings 告警（validate_proof 同字面衍生），不再降级。"""
     _switches_on(monkeypatch)
     cb = _real_callable(ND0_RESP)
     ctx = _order_ctx("p1", ND0_H, ND0_C, "ab")
@@ -455,23 +484,32 @@ def test_adapter_empty_not_duplicate_carries_no_falsification(monkeypatch):
     assert proof["verdict"] == "not_duplicate"
     assert "falsification" not in proof
     assert proof["machine_verify"]["passed"] is True
+    assert proof["machine_verify"]["mode"] == "audit"
+    assert "P_NO_AXIS" in proof["evidence_warnings"]   # §5.1 文件 B-4
     validated = judge_pair.validate_proof(proof, ctx)
-    assert validated["downgrade_not_duplicate"] is True
+    assert validated.verdict == "not_duplicate"
+    assert validated.falsification is None
+    assert "P_NO_AXIS" in validated.evidence_warnings
+    assert validated.evidence_status == "warn"
 
 
 def test_adapter_numeric_mv_rejection_shape(monkeypatch):
-    """机验拦截形态：P_NUMERIC 入 rules_triggered、passed=false →
-    validate_proof 抛 MV_REJECTED（硬失败通道）。"""
+    """机验 P_NUMERIC audit 形态（提交一）：P_NUMERIC 入 rules_triggered、
+    passed=false、mode="audit"——validate_proof **不再抛错**，如实收入
+    machine_findings/告警诊断，语义 verdict 不动。"""
     _switches_on(monkeypatch)
     cb = _real_callable(NUM_RESP)
     ctx = _order_ctx("p1", NUM_H, NUM_C, "ab")
     proof = cb(ctx)
     assert proof["machine_verify"]["passed"] is False
+    assert proof["machine_verify"]["mode"] == "audit"
     assert "P_NUMERIC" in proof["machine_verify"]["rules_triggered"]
     assert proof["numeric_check"]["conclusion"] == "不一致"
-    with pytest.raises(judge_pair.JudgeProofError) as excinfo:
-        judge_pair.validate_proof(proof, ctx)
-    assert str(excinfo.value).startswith(judge_pair.MV_REJECTED)
+    validated = judge_pair.validate_proof(proof, ctx)   # 不再抛 MV_REJECTED
+    assert validated.verdict == "duplicate"             # 语义判定不被改
+    assert "P_NUMERIC" in validated.machine_findings
+    assert judge_pair.MACHINE_VERIFY_REJECTED in validated.evidence_warnings
+    assert validated.evidence_status == "warn"
 
 
 # ---------------------------------------------------------------- 装配透传钉（commit_one）

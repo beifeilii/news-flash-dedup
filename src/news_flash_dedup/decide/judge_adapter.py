@@ -3,11 +3,21 @@
 定位：P1-a 证明组件（judge_proof.py 证明级核验 + llm_residual.py 双序判官）
 → P1-b 合同 `judge_callable(pair_context) -> VerifiedJudgeProof`（合同
 `log/temp/p1-interface-contract-v1.md` §一 JSON 形态 dict）的**真件接线**。
-录取线=judge_pair.validate_proof 全字段校验（不合规自动 fail-closed 未决）。
+录取线=judge_pair.validate_proof 合同级硬校验（不合规自动 fail-closed 未决）。
 
 依据（冻结件）：合同 §一/§二/§三 + 判定宪章 policy_v2（机检语义口径）。
 文件纪律：本模块只接线不改判定语义；judge_proof/llm_residual/judge_pair
 三件套零改动。
+
+提交一（2026-10-10，分支 p3-semantic-authority，方案
+`log/快讯去重_判官与证明层改造_可执行技术方案.md` §5.1 文件 B）：
+- proof 新增 `reason`（取证明级核验留存的判官理由，缺省稳定兜底文案）；
+- `machine_verify` 改**审计语义**：`mode="audit"`，`rules_triggered` 如实
+  携带全部机器/绑定 P_*，`passed` 保留用于兼容现有审计数据——**消费侧
+  不得再拿它改判**（judge_pair 自提交一起只把它当诊断）；
+- 全部 P_* 记录保留不丢失：机器/绑定类入 rules_triggered，证据充分性
+  P_NO_AXIS 入 proof 级 `evidence_warnings`——只告警，**不得**再把双序
+  不重复降成未决（§4.2 矩阵：双序 not_duplicate → conflict）。
 
 合同映射表（真件内部形态 → 合同形态，逐项）：
 - 粒度：合同=每顺序一份证明（adjudicate_pair 双序各调一次）；本适配器每次
@@ -15,29 +25,34 @@
   "ab 与 hc 同向"），对级装配（双序组合/ORDER_DISAGREE）由 P1-b 适配层执行。
 - verdict：内部 重复→duplicate / 不重复→not_duplicate / 存疑→doubtful /
   结构非法→invalid / 调用失败→failure（合同五态）。
+- reason：内部 OrderVerification.judgment["reason"]（validate_judge 已保证
+  非空）→ proof["reason"]；无存核（存疑/失败/非法顺序不送核）→ 稳定兜底
+  文案 _REASON_FALLBACK。
 - 引文：内部 OrderVerification.citations（side/field/quote/start/end，
   Unicode 码点 offset）→ quotes_a/quotes_b[{text, offset_start, offset_end,
-  role=内部 field 槽位 evidence|numbers|times}]；offset 精确回指本侧原文
-  （绑定失败走 P_OFFSET→machine_verify.passed=false，见下）。
+  role=内部 field 槽位 evidence|numbers|times}]；绑定失败走 P_OFFSET 入
+  rules_triggered（提交一起为诊断，不再有一票否决，见下）。
 - 机侧分项结论三态（合同 numeric_check/time_check.conclusion，机侧独立
   抽取口径）：机检冲突→"不一致"；任一侧无机检材料（含双侧皆无）→
   "无法判定"（宪章缺失例外≠不一致，合同不拦）；双侧在场且无双向差异→
   "一致"。time_check.anchors_a/b=机抽归一日期锚列表。
-- machine_verify={"mode": "gate", "rules_triggered": [P_*], "passed": bool}：
-  mode 字面=合同 §一 gate（签发前机验闸由 P1-b 适配层执行）；本适配器内部
-  核验姿态=audit（不自我降级存疑，触发如实入 rules_triggered，降级权归
-  合同层）。passed=false 当且仅当存在 P_* 机器/绑定失败（P_OFFSET 含——
-  签发判定引文绑定失败不得冒充通过）；P_NO_AXIS 不入 rules_triggered
-  （证据充分性问题，走合同 §二 降级通道，见下）。
+- machine_verify={"mode": "audit", "rules_triggered": [P_*], "passed": bool}
+  （提交一 audit 语义）：本适配器内部核验姿态=audit（不自我降级存疑，
+  触发如实入 rules_triggered）；passed=false 当且仅当存在 P_* 机器/绑定
+  失败（P_OFFSET 含）——**兼容保留字段，消费侧不得再拿它改判**；
+  P_NO_AXIS 不入 rules_triggered（证据充分性问题，走 proof 级
+  evidence_warnings 告警通道，见下）。
+- 证据充分性告警：内部 P_NO_AXIS（不重复无机器可证伪轴）→
+  proof["evidence_warnings"]=["P_NO_AXIS"]（提交一：只告警，不降级双序
+  不重复为未决；§4.2 矩阵 not_duplicate+not_duplicate→conflict）。
 - 不重复证伪（合同 §二 falsification）：内部首条证伪轴（定序）→
   {dimension, evidence_a/evidence_b{text, offset_start, offset_end},
   relation=内部 correspondence}。dimension=内部轴原生直发（D7 裁定
   2026-10-09：合同 v2 词表=实现五族 subject/numeric/time/stage/
   polarity，"event" 无机检判据删除——不再最近邻映射；内部轴不在
   合同词表=组件漂移，fail-closed 抛错归 JUDGE_EXCEPTION 未决）。
-  无机检轴（P_NO_AXIS）→ 不携 falsification、passed=true——合同 §二
-  空口 not_duplicate 由 validate_proof 降级 doubtful（未决同义），
-  与内部"证据不足→未决"同义。
+  无机检轴（P_NO_AXIS）→ 不携 falsification——提交一起由 validate_proof
+  记 P_NO_AXIS 证据充分性告警（不再降级 doubtful）。
 - 版本四维：model_version=cfg.model、prompt_sha256=judge_prompt_for_version
   的 sha、policy_version=judge_proof.PROOF_POLICY_VERSION（="policy_v2"
   宪章版本）、judged_at=UTC ISO（合同必填；内部审计负载的确定性纪律不
@@ -69,6 +84,10 @@ _ORDER_TO_INTERNAL = {"ab": "hc", "ba": "ch"}
 # 内部预算尽两枚字面错误前缀（llm_residual._call_cached 预算环抛出，
 # _judge_order 收容为 status="failure"、error=str(exc)[:300]——前缀稳定）
 _BUDGET_ERROR_PREFIXES = ("预算软边界", "LLM 调用预算拒付")
+
+# proof["reason"] 稳定兜底文案（无存核顺序：存疑/失败/非法不送证明级
+# 核验，判官理由不可得——兜底不冒充模型原话）
+_REASON_FALLBACK = "（判官本顺序未形成可绑定理由）"
 
 
 def _budget_exhausted(error: str | None) -> bool:
@@ -134,18 +153,27 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     quotes_a: list[dict] = []
     quotes_b: list[dict] = []
     failures: list[str] = []
+    evidence_warnings: list[str] = []
     numeric = {"conclusion": "无法判定", "details": []}
     time_chk = {"conclusion": "无法判定", "anchors_a": [], "anchors_b": []}
     falsification: dict | None = None
+    reason = _REASON_FALLBACK
     if verification is not None:
+        judgment_reason = verification.judgment.get("reason")
+        if isinstance(judgment_reason, str) and judgment_reason.strip():
+            reason = judgment_reason.strip()      # 判官理由实传（§5.1 文件 B-1）
         for span in verification.citations:
             quote = {"text": span.quote, "offset_start": span.start,
                      "offset_end": span.end, "role": span.field}
             (quotes_a if span.side == "A" else quotes_b).append(quote)
-        # P_NO_AXIS=证据充分性（合同 §二 降级通道），不入机验闸；
-        # 其余 P_*（含 P_OFFSET 绑定失败）全入 rules_triggered。
+        # 全部 P_* 记录保留（§5.1 文件 B-3 不丢诊断）：机器/绑定类入
+        # rules_triggered（audit 语义，passed 兼容保留但消费侧不得改判）；
+        # 证据充分性 P_NO_AXIS 入 proof 级 evidence_warnings——只告警，
+        # 不得再把双序不重复降成未决（§5.1 文件 B-4）。
         failures = [f for f in verification.failures
                     if f != judge_proof.P_NO_AXIS]
+        if judge_proof.P_NO_AXIS in verification.failures:
+            evidence_warnings.append(judge_proof.P_NO_AXIS)
         numeric = {
             "conclusion": _numeric_conclusion(verification, text_a, text_b),
             "details": [{"only_a": verification.numeric_check["only_a"],
@@ -184,11 +212,15 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
         "text_b_sha256": sha_b,
         "order": order,
         "verdict": verdict,
+        "reason": reason,
         "quotes_a": quotes_a,
         "quotes_b": quotes_b,
         "numeric_check": numeric,
         "time_check": time_chk,
-        "machine_verify": {"mode": "gate",
+        # 提交一（§5.1 文件 B-2）：machine_verify 审计语义——mode="audit"
+        # 如实记录；passed 兼容保留（存在 P_* 机器/绑定失败即 false），
+        # 消费侧不得再拿它改判。
+        "machine_verify": {"mode": "audit",
                            "rules_triggered": failures,
                            "passed": not failures},
         "model_version": cfg.model,
@@ -196,6 +228,8 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
         "policy_version": policy,
         "judged_at": datetime.now(timezone.utc).isoformat(),
     }
+    if evidence_warnings:
+        proof["evidence_warnings"] = evidence_warnings
     if falsification is not None:
         proof["falsification"] = falsification
     proof["cache_key"] = judge_pair.compute_cache_key(

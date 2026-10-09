@@ -4,26 +4,36 @@
 - 接口合同 log/temp/p1-interface-contract-v1.md §一-§五；
 - 工程正文 log/判定链改造最终方案-Codex-20261008.md §3.1/§3.2。
 
+提交一（2026-10-10，分支 p3-semantic-authority，方案
+log/快讯去重_判官与证明层改造_可执行技术方案.md §4.2/§5.1）口径更新：
+- 判官双序签 duplicate → 重复（**JUDGE_EQUIVALENT**——语义权威码，
+  不冒充机器已验证的 FACT_EQUIVALENT）；
+- 双序签 not_duplicate → 不重复（**JUDGE_NON_DUPLICATE**——不再强制
+  机器证伪轴；无轴记 P_NO_AXIS 审计告警，不降级）；
+- 证明层一票否决解除：机验 passed=false / 引文回指失败 / 结论对拍
+  "不一致" 全部降为证据诊断告警（不再未决）；双序分歧/存疑 → 未决
+  （**JUDGE_UNCERTAIN**）；
+- 合同级硬失败保留：换文复用/身份错绑/结构非法/超时/预算/异常/
+  verdict=failure·invalid → 仍 fail-closed 未决进人工。
+
 覆盖：
 - 开关 DEDUP_JUDGE_IN_CHAIN 默认关=老行为逐字节（判官零调用、结果同构）；
-- 判官双序签 duplicate → 重复（FACT_EQUIVALENT，duplicate_ids 只收已证件）；
-- 双序签 not_duplicate+合格 falsification+机验 → 不重复（VERIFIED_CONFLICT）；
 - 红测群（合同 §五红线）：required 非空而 pair_results 空→不得签不重复；
-  候选漏判→不得签不重复；预算耗尽/超时/机验拦截→未决进人工；
-  空口 not_duplicate（无 falsification）→降级未决不得入有效排除（§二）；
-  双序分歧/引文回指失败/结论对拍失败/换文复用→未决进人工（§三）；
+  候选漏判→不得签不重复；预算耗尽/超时→未决进人工；
 - 提交前唯一聚合：终聚合 DecideOutcome 才进 commit 写入计划；初聚合不写
   主记录（commit 侧只见终态）；commit_one 接线点只读核对（env 开+未注入
   判官 → fail-closed 边界，不冒签）。
 
 证明件 = 合同合规的假证明（_make_proof 测试 double，照合同 §一 schema
-逐字段构造含 cache_key 公式重算）；P1-a 真件合流时零改动替换注入件。
+逐字段构造含 cache_key 公式重算 + 提交一 audit 语义 machine_verify +
+reason 字段）；P1-a 真件合流时零改动替换注入件。
 """
 
 from __future__ import annotations
 
 import hashlib
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,13 +113,17 @@ _DOUBLE_PROMPT_SHA = hashlib.sha256(b"double-prompt").hexdigest()
 _DOUBLE_POLICY = "policy-v1"
 
 
-def _make_proof(ctx, *, verdict, mv_passed=True, numeric_conclusion="一致",
+def _make_proof(ctx, *, verdict, mv_passed=True, rules_triggered=(),
+                numeric_conclusion="一致",
                 time_conclusion="一致", with_falsification=True,
-                unbound_quotes=False, stolen_binding=False):
+                unbound_quotes=False, stolen_binding=False,
+                reason="双序测试理由：双侧所述为同一事实。"):
     """照合同 §一 schema 构造 VerifiedJudgeProof（dict）。
 
     ctx = judge_pair._order_context 产物（含 order/text_a/text_b/双侧 id 与 sha）。
     默认全合规；各关键字构造一类不合规形态供红测。
+    提交一：machine_verify 为 audit 语义（mode="audit"，passed 兼容保留、
+    消费侧不得改判）；proof 携 reason（§5.1 文件 B-1）。
     """
     text_a, text_b = ctx["text_a"], ctx["text_b"]
     sha_a = hashlib.sha256(text_a.encode("utf-8")).hexdigest()
@@ -135,12 +149,14 @@ def _make_proof(ctx, *, verdict, mv_passed=True, numeric_conclusion="一致",
         "text_b_sha256": sha_b,
         "order": ctx["order"],
         "verdict": verdict,
+        "reason": reason,
         "quotes_a": quotes_a,
         "quotes_b": quotes_b,
         "numeric_check": {"conclusion": numeric_conclusion, "details": []},
         "time_check": {"conclusion": time_conclusion,
                        "anchors_a": [], "anchors_b": []},
-        "machine_verify": {"mode": "gate", "rules_triggered": [],
+        "machine_verify": {"mode": "audit",
+                           "rules_triggered": list(rules_triggered),
                            "passed": mv_passed},
         "model_version": _DOUBLE_MODEL,
         "prompt_sha256": _DOUBLE_PROMPT_SHA,
@@ -253,36 +269,38 @@ def test_switch_value_parsing(value, expected):
 # ---------------------------------------------------------------- B. 签发路径（合同 §四/§五）
 
 def test_judge_signs_duplicate_final_decision():
-    """双序 duplicate+机验 gate 通过 → equivalent → 件级重复；
-    duplicate_ids 只收已证件；对级 PairResult 落成 FACT_EQUIVALENT 携真证据。"""
+    """双序 duplicate → equivalent → 件级重复（提交一：JUDGE_EQUIVALENT
+    语义权威码）；duplicate_ids 只收已证件；对级 PairResult 携真证据。"""
     judge = _judge(_sign_duplicate)
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
     assert out.decision == "重复"
     assert out.duplicate_ids == ("item-A",)
-    assert out.internal_code == "FACT_EQUIVALENT"
-    assert out.pair_codes[H_ID] == "FACT_EQUIVALENT"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+    assert out.pair_codes[H_ID] == "JUDGE_EQUIVALENT"
     final_pair = out.pair_results[0]
     assert final_pair.outcome == "equivalent"
-    assert final_pair.code == "FACT_EQUIVALENT"
+    assert final_pair.code == "JUDGE_EQUIVALENT"
     assert len(final_pair.used_evidence) > 0
-    for code in ("EXACT_TEXT_MATCH", "LOSSLESS_TEXT_MATCH", "FACT_EQUIVALENT"):
+    for code in ("EXACT_TEXT_MATCH", "LOSSLESS_TEXT_MATCH", "FACT_EQUIVALENT",
+                 "JUDGE_EQUIVALENT", "JUDGE_NON_DUPLICATE", "JUDGE_UNCERTAIN"):
         assert code not in out.reason
 
 
 def test_judge_signs_conflict_final_decision():
-    """双序 not_duplicate+合格 falsification+机验 → conflict → 件级不重复。"""
+    """双序 not_duplicate+合格 falsification → conflict → 件级不重复
+    （提交一：JUDGE_NON_DUPLICATE；falsification 仍构造审计冲突件）。"""
     judge = _judge(_sign_conflict)
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
     assert out.decision == "不重复"
     assert out.duplicate_ids == ()
-    assert out.internal_code == "VERIFIED_CONFLICT"
+    assert out.internal_code == "JUDGE_NON_DUPLICATE"
     final_pair = out.pair_results[0]
     assert final_pair.outcome == "conflict"
-    assert final_pair.code == "VERIFIED_CONFLICT"
+    assert final_pair.code == "JUDGE_NON_DUPLICATE"
     assert len(final_pair.verified_conflicts) == 1
     conflict = final_pair.verified_conflicts[0]
     assert conflict.history_evidence.record_id == H_ID
@@ -299,9 +317,10 @@ def test_judge_called_in_candidate_order_two_orders_each():
     seq = [(c["history_record_id"], c["order"]) for c in judge.calls]
     assert seq == [(H_ID, "ab"), (H_ID, "ba"), (D_ID, "ab"), (D_ID, "ba")]
     assert out.decision == "边界case/疑难case"   # 双序存疑 → 未决进人工
-    assert out.internal_code == "SUBJECT_UNRESOLVED"
+    assert out.internal_code == "JUDGE_UNCERTAIN"  # 提交一：判官已跑而存疑
     for pair in out.pair_results:
         assert pair.outcome == "unresolved"
+        assert pair.code == "JUDGE_UNCERTAIN"
         assert judge_pair.JUDGE_DOUBTFUL in pair.detail
 
 
@@ -326,22 +345,41 @@ def test_initial_non_boundary_skips_judge():
     assert judge.calls == []
 
 
-# ---------------------------------------------------------------- C. 红测群：失败/未决映射（合同 §二/§三）
+# ---------------------------------------------------------------- C. 红测群：失败/未决映射（合同 §二/§三 + 提交一 §4.2）
 
-def test_red_bare_not_duplicate_downgraded_never_signs_not_duplicate():
-    """合同 §二：无 falsification 的 not_duplicate=未决——不得签"不重复"。"""
+def _adjudicate(handler, *, h_text=H_TEXT, c_text=CUR_TEXT):
+    """直跑判官适配层（诊断面断言用）：返 JudgePairOutcome。"""
+    pair = SimpleNamespace(
+        pair_id="pair-direct-1", history_record_id=H_ID,
+        current_record_id=C_ID, history_item_id="item-A",
+        current_item_id="item-C")
+    pctx = judge_pair.build_pair_context(pair, history_text=h_text,
+                                         current_text=c_text)
+    return judge_pair.adjudicate_pair(_judge(handler), pctx)
+
+
+def test_bare_not_duplicate_signs_with_p_no_axis_warning():
+    """提交一 §4.2：双序 not_duplicate + 无 falsification → **不重复**
+    （JUDGE_NON_DUPLICATE），P_NO_AXIS 只记证据充分性告警、不再降级。"""
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate",
                                            with_falsification=False))
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
-    assert out.decision == "边界case/疑难case"
+    assert out.decision == "不重复"
     assert out.duplicate_ids == ()
-    assert judge_pair.JUDGE_DOUBTFUL in out.pair_results[0].detail
+    assert out.pair_results[0].outcome == "conflict"
+    assert out.pair_results[0].code == "JUDGE_NON_DUPLICATE"
+    judged = _adjudicate(lambda ctx: _make_proof(
+        ctx, verdict="not_duplicate", with_falsification=False))
+    assert judged.outcome == "conflict"
+    assert "P_NO_AXIS" in judged.evidence_warnings
+    assert judged.verified_conflicts == ()        # 无轴不构造审计冲突件
 
 
 def test_red_order_disagree_unresolved():
-    """合同 §三 ORDER_DISAGREE（双序分歧）→ 未决进人工。"""
+    """合同 §三 ORDER_DISAGREE（双序分歧）→ 未决进人工
+    （提交一：JUDGE_UNCERTAIN 码）。"""
     def _handler(ctx):
         return _make_proof(ctx, verdict=(
             "duplicate" if ctx["order"] == "ab" else "not_duplicate"))
@@ -349,20 +387,30 @@ def test_red_order_disagree_unresolved():
         _history(), [], current=_current(), judge_callable=_judge(_handler),
         judge_in_chain=True, **_boundary_kwargs())
     assert out.decision == "边界case/疑难case"
-    assert out.internal_code == "SUBJECT_UNRESOLVED"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert out.pair_results[0].code == "JUDGE_UNCERTAIN"
     assert judge_pair.ORDER_DISAGREE in out.pair_results[0].detail
 
 
-def test_red_machine_verify_rejected_unresolved():
-    """合同 §三 MV_REJECTED（机验 gate 拦截）→ 未决进人工。"""
+def test_machine_verify_rejected_now_audit_only_still_signs():
+    """提交一（解除一票否决）：双序 duplicate + machine_verify.passed=false
+    （携 P_* 触发）→ 仍签重复（JUDGE_EQUIVALENT），MACHINE_VERIFY_REJECTED
+    与 P_* 只进证据诊断。"""
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate",
-                                           mv_passed=False))
+                                           mv_passed=False,
+                                           rules_triggered=("P_OFFSET",)))
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
-    assert out.decision == "边界case/疑难case"
-    assert out.internal_code == "EVIDENCE_INVALID"
-    assert judge_pair.MV_REJECTED in out.pair_results[0].detail
+    assert out.decision == "重复"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.pair_results[0].code == "JUDGE_EQUIVALENT"
+    judged = _adjudicate(lambda ctx: _make_proof(
+        ctx, verdict="duplicate", mv_passed=False,
+        rules_triggered=("P_OFFSET",)))
+    assert judged.outcome == "equivalent"
+    assert judge_pair.MACHINE_VERIFY_REJECTED in judged.evidence_warnings
+    assert "P_OFFSET" in judged.machine_findings
 
 
 def test_red_judge_timeout_unresolved():
@@ -411,28 +459,44 @@ def test_red_judge_not_injected_fail_closed():
     assert judge_pair.JUDGE_NOT_INJECTED in out.pair_results[0].detail
 
 
-def test_red_evidence_unbound_unresolved():
-    """合同 §三 EVIDENCE_UNBOUND（引文 offset 回指失败）→ 未决进人工。"""
+def test_evidence_unbound_now_full_text_fallback_still_signs():
+    """提交一（解除一票否决 + §5.1 修改点 3）：双序 duplicate 但引文
+    offset 全部回指失败 → 仍签重复；EVIDENCE_UNBOUND 告警 + 完整原文
+    回退证据（quote=该侧完整正文、start=0、end=len，可回指）。"""
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate",
                                            unbound_quotes=True))
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
-    assert out.decision == "边界case/疑难case"
-    assert out.internal_code == "EVIDENCE_INVALID"
-    assert judge_pair.EVIDENCE_UNBOUND in out.pair_results[0].detail
+    assert out.decision == "重复"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.pair_results[0].code == "JUDGE_EQUIVALENT"
+    judged = _adjudicate(lambda ctx: _make_proof(
+        ctx, verdict="duplicate", unbound_quotes=True))
+    assert judged.outcome == "equivalent"
+    assert judge_pair.EVIDENCE_UNBOUND in judged.evidence_warnings
+    assert judge_pair.EVIDENCE_FALLBACK_FULL_TEXT in judged.evidence_warnings
+    fallback = {e.record_id: e for e in judged.used_evidence
+                if e.start == 0 and e.end == len(e.quote)}
+    assert fallback[H_ID].quote == H_TEXT
+    assert fallback[C_ID].quote == CUR_TEXT
+    assert H_TEXT[0:len(H_TEXT)] == fallback[H_ID].quote  # 审计可回指
 
 
-def test_red_conclusion_contradicts_unresolved():
-    """合同 §三 CONCLUSION_CONTRADICTS（签 duplicate 但机侧数值结论不一致）。"""
+def test_conclusion_contradicts_now_audit_only_still_signs():
+    """提交一（解除一票否决）：双序 duplicate 但机侧数值结论"不一致"
+    → 仍签重复；CONCLUSION_CONTRADICTS 只进证据诊断。"""
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate",
                                            numeric_conclusion="不一致"))
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
-    assert out.decision == "边界case/疑难case"
-    assert out.internal_code == "NUMERIC_ALIGNMENT_FAILED"
-    assert judge_pair.CONCLUSION_CONTRADICTS in out.pair_results[0].detail
+    assert out.decision == "重复"
+    assert out.pair_results[0].code == "JUDGE_EQUIVALENT"
+    judged = _adjudicate(lambda ctx: _make_proof(
+        ctx, verdict="duplicate", numeric_conclusion="不一致"))
+    assert judged.outcome == "equivalent"
+    assert judge_pair.CONCLUSION_CONTRADICTS in judged.evidence_warnings
 
 
 def test_red_stolen_proof_rebinding_rejected():
@@ -541,9 +605,9 @@ def test_final_aggregation_is_what_enters_commit_write_plan():
     plan = build_commit_write_plan(ctx, decide, audit_complete=True)
     assert plan.main_record.decision == "重复"
     assert plan.main_record.duplicate_ids == ("item-A",)
-    assert plan.main_record.internal_code == "FACT_EQUIVALENT"
+    assert plan.main_record.internal_code == "JUDGE_EQUIVALENT"  # 提交一新码
     bases = {record.basis for record in plan.audit_batch.records}
-    assert bases == {"FACT_EQUIVALENT"}   # 审计 basis=终态对级码，非初态未决码
+    assert bases == {"JUDGE_EQUIVALENT"}   # 审计 basis=终态对级码，非初态未决码
     # 审计证据段实填判官证明引文（非空壳）
     record = plan.audit_batch.records[0]
     assert record.history_evidence["quote"] == H_TEXT[0:4]

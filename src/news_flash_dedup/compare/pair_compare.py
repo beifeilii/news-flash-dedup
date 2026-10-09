@@ -32,6 +32,9 @@ EQUIVALENT_CODES = frozenset({
     "EXACT_TEXT_MATCH",
     "LOSSLESS_TEXT_MATCH",
     "FACT_EQUIVALENT",
+    # 提交一（2026-10-10，p3-semantic-authority，§5.1 修改点 2）：判官
+    # 双序一致判重复的语义权威码——不伪装成机器已验证的 FACT_EQUIVALENT。
+    "JUDGE_EQUIVALENT",
 })
 # 2026-10-09（P0-b 修订一，主窗口修订令）：开关 DEDUP_CERT_DECOUPLE 开时
 # 可直接签发的有效文本证书码集——EXACT/LOSSLESS 双码（代码可复核通道）；
@@ -43,6 +46,10 @@ _TEXT_CERT_PROOF_CODES = frozenset({
 })
 CONFLICT_CODES = frozenset({
     "VERIFIED_CONFLICT",
+    # 提交一（§5.1）：判官双序一致判不重复的语义权威码——不再强制机器
+    # 证伪轴（无轴记 P_NO_AXIS 审计告警，不降级），也不冒充规则链
+    # 已验证硬冲突 VERIFIED_CONFLICT。
+    "JUDGE_NON_DUPLICATE",
 })
 # N21（D28 批准第 2 件；窗口I《方案一致性核验-09.md》N21=一致）：按 09
 # §12.1 十五码表（L1315）补 DEPENDENCY_TIMEOUT/EXTRACTION_FAILED/
@@ -63,11 +70,17 @@ UNRESOLVED_CODES = frozenset({
     "TIME_RELATION_UNCERTAIN",
     "RULE_UNCOVERED",
     "FACT_INCOMPLETE",
+    # 提交一（§5.1）：判官双序存疑或分歧的未决码（判官已跑、语义未决，
+    # 与判官未跑/调用失败的 SUBJECT_UNRESOLVED 通道区分）。
+    "JUDGE_UNCERTAIN",
 })
 
 
 _BOUNDARY_PRIORITY = (
     "SUBJECT_UNRESOLVED",
+    # 提交一：JUDGE_UNCERTAIN 紧随语义近邻 SUBJECT_UNRESOLVED 之后
+    # （判官已跑而未决次于判官未跑/失败进人工）。
+    "JUDGE_UNCERTAIN",
     "DEPENDENCY_TIMEOUT",
     "RECALL_INCOMPLETE",
     "CANDIDATE_BUDGET_EXHAUSTED",

@@ -32,3 +32,29 @@ def test_reason_containing_conflict_code_rejected():
     coverage = CoverageStatus(visible_seq=10, prepared_seq=10, complete=True)
     with pytest.raises(AggregateError, match="VERIFIED_CONFLICT"):
         aggregate(_ctx(), plan, [], new_text_issues=issues, coverage=coverage)
+
+
+# 提交一（2026-10-10，p3-semantic-authority，§5.1 白名单同步）：判官语义
+# 权威三码同步入扫描集——公共 reason 出现任一内部码即拒（聚合层扫描
+# EQUIVALENT|UNRESOLVED|CONFLICT 三集合全覆盖）。
+@pytest.mark.parametrize("code", [
+    "JUDGE_EQUIVALENT", "JUDGE_NON_DUPLICATE", "JUDGE_UNCERTAIN",
+])
+def test_reason_containing_judge_semantic_code_rejected(code):
+    plan = FrozenRecallPlan(version="rrf_v1_k60_30_10", required={})
+    issues = [PairIssue("FACT_INCOMPLETE", f"细节文本异常混入 {code} 字样")]
+    coverage = CoverageStatus(visible_seq=10, prepared_seq=10, complete=True)
+    with pytest.raises(AggregateError, match=code):
+        aggregate(_ctx(), plan, [], new_text_issues=issues, coverage=coverage)
+
+
+def test_decide_outcome_reason_containing_judge_code_rejected():
+    """同源钉（decide/types.py 扫描闸）：DecideOutcome 公共 reason 携判官
+    内码 → 构造即 ValueError（五字段合同的最后一道闸）。"""
+    from news_flash_dedup.decide.types import DecideOutcome
+    for code in ("JUDGE_EQUIVALENT", "JUDGE_NON_DUPLICATE", "JUDGE_UNCERTAIN"):
+        with pytest.raises(ValueError, match=code):
+            DecideOutcome(
+                item_id="item-C", text="甲公司完成回购。", decision="不重复",
+                duplicate_ids=(), reason=f"异常混入 {code} 字样",
+                internal_code="NO_DUPLICATE_FOUND")

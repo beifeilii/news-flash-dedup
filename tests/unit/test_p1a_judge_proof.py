@@ -22,6 +22,16 @@
 ⑦ gate 语义：开关默认关=老行为逐字节（含 gate 下去空白伪匹配照放、
    R1-R6 旧规则、审计负载无证明键）；开关开 audit 只观测、gate 降级。
 
+提交一对外语义（2026-10-10，分支 p3-semantic-authority，方案 §5.1 文件 C）：
+本文件钉的是**证明层自身能力**（构造/复验/机检/绑定），行为零改动；
+但 `OrderVerification.ok`、`VerifiedJudgeProof.issued`、
+`NotDuplicateProof.issued` 的对外语义自提交一起为**证据质量诊断**——
+不再表示"语义结论可生效"、不再控制最终 decision（在线主链按 §4.2
+双序语义矩阵定夺，证明层 P_* 全部降为审计告警）。verify_proof_dict
+继续承担证明工件复验（败状证明亦可复验=诊断自含，见新增钉值⑧）。
+⑧ 解耦钉：issued=False / ok=False 的证明仍字段自洽、可复验——证据
+   质量与语义判定分层，诊断面不失真。
+
 policy_v2 宪章对齐（2026-10-09 主窗口通报生效，log\判定宪章-草案-v2-1009.md）：
    policy_version="policy_v2"；时间/阶段可识别差异=不重复直接事由（无阶段
    限定词）；主体缺失（单侧代码）进边界 P_SUBJECT_MISSING；相对时间无共同
@@ -630,6 +640,30 @@ def test_gate_mode_issued_invariant(monkeypatch):
     bad = _judge(_MockLLM(N_RESP), mv_mode=lr.MV_GATE).judge_pair(
         "p2", N_H, N_C)
     assert bad.cell == "doubtful" and bad.proof.issued is False
+
+
+def test_ok_and_issued_are_audit_semantics_not_decision_gate(monkeypatch):
+    """⑧ 提交一解耦钉：ok/issued=False 只是证据质量诊断——证明件仍字段
+    自洽、诊断自含、可复验（verify_proof_dict True）；证明层不再持
+    "语义结论是否生效"的否决权（消费侧按 §4.2 双序语义矩阵定夺，
+    judge_pair 层钉值见 test_p3sem_judge_semantic_authority.py）。"""
+    _proof_on(monkeypatch)
+    # 重复路：机检 P_NUMERIC 触发 → ok=False/issued=False，但证明件
+    # 结构完整、失败原因如实、复验仍真（诊断不失真）。
+    out = _judge(_MockLLM(N_RESP), mv_mode=lr.MV_AUDIT).judge_pair(
+        "p1", N_H, N_C)
+    assert out.proof is not None and out.proof.issued is False
+    hc = jp.OrderVerification.from_dict(out.proof.orders[0])
+    assert hc.ok is False and jp.P_NUMERIC in hc.failures
+    assert hc.citations                          # 诊断面证据仍在
+    assert jp.verify_proof_dict(out.proof.to_dict(), N_H, N_C) is True
+    # 不重复路：无机器可证伪轴 → issued=False，同样可复验。
+    out2 = _judge(_MockLLM(ND0_RESP), mv_mode=lr.MV_AUDIT).judge_pair(
+        "p2", ND0_H, ND0_C)
+    nd = out2.not_duplicate_proof
+    assert nd is not None and nd.issued is False
+    assert nd.failure == "insufficient_falsification_evidence"
+    assert jp.verify_proof_dict(nd.to_dict(), ND0_H, ND0_C) is True
 
 
 # ---------------------------------------------------------------- ⑥ NotDuplicateProof

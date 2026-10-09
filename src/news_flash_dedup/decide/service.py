@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
@@ -31,6 +32,11 @@ from news_flash_dedup.decide.extra_event import detect_extra_event
 from news_flash_dedup.decide.types import DecideOutcome
 from news_flash_dedup.facts import FactValidationReport
 from news_flash_dedup.facts.core import validate_fact_artifact
+
+# 提交一（2026-10-10，p3-semantic-authority，§5.1 文件 D-3）：判官证据
+# 诊断（evidence warnings/machine findings/P_* 告警）只进内部日志——
+# 绝不进公共五字段（item_id/text/decision/duplicate_ids/reason）。
+_logger = logging.getLogger(__name__)
 
 
 class DecideInputError(ValueError):
@@ -232,6 +238,13 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     decide_for_task 的返回即终聚合结果，commit_one 只接本结果。
     `judge_in_chain` 显式 True/False 覆盖 env；`judge_timeout_s` 为单顺序
     判官调用硬超时（None=judge_pair.DEFAULT_JUDGE_TIMEOUT_S）。
+
+    提交一（2026-10-10，p3-semantic-authority，方案 §5.1 文件 D）：
+    判官一致结果（双序 duplicate→JUDGE_EQUIVALENT、双序 not_duplicate
+    →JUDGE_NON_DUPLICATE）替换原未决 PairResult 时带入新 code、合并
+    detail 与可用引文/完整原文回退证据；证明层告警（P_*、引文绑定、
+    machine_verify.passed）不再有一票否决，只进内部诊断日志；
+    `DecideOutcome.to_public_dict()` 五字段合同不变。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -453,6 +466,9 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         # ① 聚合后判官段：初聚合产出"边界且存在未决对"时，按候选序
         # （pair_results 顺序=首对+候选到达序）对未决对逐对过判官适配层；
         # judge_callable 未注入即默认实现 fail-closed 未决（绝不冒签）。
+        # 提交一（§5.1 文件 D-1/2）：规则链已判 conflict/equivalent 的对
+        # 不重复调用判官（判官只补未决对）；最终聚合继续是唯一公共结果
+        # 来源。
         if aggregate_outcome.decision == "边界case/疑难case":
             for index, pair in enumerate(pair_results):
                 if pair.outcome != "unresolved":
@@ -463,14 +479,24 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     current_text=current_text)
                 judged = judge_pair_module.adjudicate_pair(
                     judge_callable, pair_context, timeout_s=judge_timeout_s)
+                # 提交一（§5.1 文件 D-3）：证据告警/机检发现只进内部
+                # 诊断日志——绝不进公共五字段、绝不再改判。
+                if judged.evidence_warnings or judged.machine_findings:
+                    _logger.info(
+                        "判官证据诊断 pair=%s status=%s warnings=%s findings=%s",
+                        pair.pair_id, judged.evidence_status,
+                        list(judged.evidence_warnings),
+                        list(judged.machine_findings))
                 if judged.outcome == "unresolved":
                     # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
                     # 原对级证据字段不动。
                     pair_results[index] = replace(
                         pair, code=judged.code, detail=judged.detail)
                 else:
-                    # ② 对级映射（合同 §四）产物落成标准 PairResult：
-                    # equivalent/conflict 携判官证明转化的真证据入列。
+                    # ② 对级映射（§4.2 矩阵）产物落成标准 PairResult：带入
+                    # 新 code（JUDGE_EQUIVALENT/JUDGE_NON_DUPLICATE）、合并
+                    # 后的自然语言 detail、可用引文或完整原文回退证据
+                    # （回退证据只进内部审计）；证据 warnings 不入本对象。
                     pair_results[index] = replace(
                         pair, outcome=judged.outcome, code=judged.code,
                         detail=judged.detail,

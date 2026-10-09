@@ -410,6 +410,22 @@ def test_r2h4_explicit_basis_override_still_honored_guard():
     assert record.field_path == "facts.f1"
 
 
+def test_r2h4_judge_semantic_codes_basis_follows_pair_code():
+    """R2-H4 × 提交一（p3-semantic-authority，§5.1）：判官语义权威三码
+    （JUDGE_EQUIVALENT/JUDGE_NON_DUPLICATE/JUDGE_UNCERTAIN）入审计时
+    basis 同样实传对级实际码——不洗成机器已验证口径。"""
+    cases = [("equivalent", "JUDGE_EQUIVALENT"),
+             ("conflict", "JUDGE_NON_DUPLICATE"),
+             ("unresolved", "JUDGE_UNCERTAIN")]
+    batch = audit_module.build_audit_batch(
+        [_pair_result(outcome=outcome, code=code) for outcome, code in cases],
+        index_prefix="winz1-test-audits-v1", audit_complete=True)
+    assert [r.basis for r in batch.records] == [code for _, code in cases]
+    for record, (_, code) in zip(batch.records, cases):
+        assert record.basis == code
+        assert record.basis not in ("FACT_EQUIVALENT", "VERIFIED_CONFLICT")
+
+
 # ============================== F-K1 引文↔槽值一致性 ==============================
 
 FK1_TEXT = "甲公司宣布分红。"

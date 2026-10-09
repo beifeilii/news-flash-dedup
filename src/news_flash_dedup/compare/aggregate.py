@@ -76,6 +76,9 @@ class IllegalMemberError(AggregateError):
 
 _BOUNDARY_PRIORITY = (
     "SUBJECT_UNRESOLVED",
+    # 提交一（2026-10-10，p3-semantic-authority，§5.1）：判官双序存疑/
+    # 分歧未决码——与 pair_compare.py 同表同步（紧随语义近邻之后）。
+    "JUDGE_UNCERTAIN",
     "DEPENDENCY_TIMEOUT",
     "RECALL_INCOMPLETE",
     "CANDIDATE_BUDGET_EXHAUSTED",
@@ -331,8 +334,11 @@ def aggregate(
         # reason 错称"未发现候选"（候选明明存在且冲突证伪）、code 错挂
         # NO_DUPLICATE_FOUND，使下方冲突感知 else 成死代码。将冲突感知
         # 上提本分支（决策"不重复"不变：冲突即证伪非重复）。
+        # 提交一（p3-semantic-authority，§5.1）：internal_code 取首个冲突
+        # 对的真实码——规则链冲突仍 VERIFIED_CONFLICT，判官双序不重复
+        # 实传 JUDGE_NON_DUPLICATE（不再把语义结论洗成机器已验证结论）。
         decision = "不重复"
-        internal_code = "VERIFIED_CONFLICT" if conflicts else "NO_DUPLICATE_FOUND"
+        internal_code = conflicts[0].code if conflicts else "NO_DUPLICATE_FOUND"
         reason = ("本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
                   if conflicts
                   else "本次健康的限定召回中未发现可比较的重复候选。")
@@ -371,8 +377,9 @@ def aggregate(
         # D25：本 else 原承载冲突感知文案但永不可达（分支链恒在前面
         # 命中——三轮审计 C-05 死代码实证）；冲突感知已上提至
         # coverage.complete 分支，此处保留兜底并标注不可达防御。
+        # 提交一：与上方分支同源——conflicts[0].code 实传（见上注）。
         decision = "不重复"
-        internal_code = "VERIFIED_CONFLICT" if conflicts else "NO_DUPLICATE_FOUND"
+        internal_code = conflicts[0].code if conflicts else "NO_DUPLICATE_FOUND"
         reason = ("本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
                   if conflicts else "本次健康的限定召回中未发现可比较的重复候选。")
 

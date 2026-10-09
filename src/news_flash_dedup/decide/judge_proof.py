@@ -13,6 +13,20 @@
 audit 模式只观测不降级、gate 模式按 P_* 触发降级存疑（含"不重复无机器
 可证伪轴"降级——未证排除不得冒充已证，任务书⑥）。
 
+提交一对外语义（2026-10-10，分支 p3-semantic-authority，方案
+`log/快讯去重_判官与证明层改造_可执行技术方案.md` §5.1 文件 C）：
+**证明层与最终 decision 解耦**——本模块的证明构造/复验能力原样保留
+（verify_proof_dict 继续用于证明工件复验，提取器不重写），但：
+- `OrderVerification.ok` 只表示"证据检查全部通过"，**不再**表示
+  "语义结论可生效"；
+- `VerifiedJudgeProof.issued` / `NotDuplicateProof.issued` 只表示
+  "高质量证明可签发"，**不再**控制最终 decision；
+- 在线主链（judge_adapter → judge_pair.adjudicate_pair）自提交一起
+  只按 §4.2 双序语义矩阵合并对级结论，本模块一切 P_* 结果（含
+  P_OFFSET/P_SUBJECT_MISSING/P_REL_TIME/P_NO_AXIS 与基于全文集合的
+  P_NUMERIC/P_TIME/P_STAGE/P_NEGATION）均为审计告警，不得单独推翻
+  双序一致的语义判定（§4.3：硬冲突只承认规则链前置 VerifiedConflict）。
+
 policy_v2 对齐（2026-10-09 主窗口通报：《判定宪章》policy_v2 经用户审签
 生效，文件=log\判定宪章-草案-v2-1009.md 头部生效声明）：
 - policy_version 字段取值="policy_v2"（宪章版本；旧 "p1a-proof-v1" 作废
@@ -342,7 +356,11 @@ def _build_falsification_axes(text_a: str, text_b: str) -> tuple[dict, ...]:
 @dataclass(frozen=True)
 class OrderVerification:
     """单顺序证明级核验记录（decision ∈ {重复, 不重复}；存疑不送核——本已
-    保守）。judgment=判定快照（解析后结构），证明自含复验的判官侧输入。"""
+    保守）。judgment=判定快照（解析后结构），证明自含复验的判官侧输入。
+
+    提交一对外语义：`ok` 只表示"证据检查全部通过"（无 P_* 触发），
+    **不再**表示"语义结论可生效"——证据质量诊断与语义判定分层（§4.1），
+    消费侧不得拿 ok/failures 单独改判双序一致的语义结论。"""
     order: str                              # "hc" | "ch"
     decision: str
     text_a_sha256: str
@@ -542,7 +560,11 @@ def verify_order_judgment(*, order: str, judgment: Mapping[str, Any],
 @dataclass(frozen=True)
 class VerifiedJudgeProof:
     """"重复"可签发证明（⑤）。可序列化（to_dict/from_dict）、可复验
-    （verify_proof_dict：双文 hash+policy 版本对拍后全量机检重算对拍）。"""
+    （verify_proof_dict：双文 hash+policy 版本对拍后全量机检重算对拍）。
+
+    提交一对外语义：`issued` 只表示"高质量证明可签发"（双序核验全过），
+    **不再**控制最终 decision——在线主链按 §4.2 双序语义矩阵定夺，
+    issued=False 只是证据质量告警（审计/回放分析用），不一票否决。"""
     proof_type: str                          # PROOF_TYPE_DUPLICATE
     pair_id: str
     text_history_sha256: str
@@ -587,9 +609,12 @@ class VerifiedJudgeProof:
 
 @dataclass(frozen=True)
 class NotDuplicateProof:
-    """"不重复"证伪证明（⑥）。双侧证伪轴 + 失败状态枚举；一切失败=未决
-    （供 P1-b 按"全部必检候选有效排除"聚合消费——issued=False 的对不得
-    计入有效排除）。"""
+    """"不重复"证伪证明（⑥）。双侧证伪轴 + 失败状态枚举。
+
+    提交一对外语义：`issued`/`failure` 只表示"高质量证伪证明是否可
+    签发"（证据充分性诊断），**不再**控制最终 decision——双序一致的
+    not_duplicate 不再因 P_NO_AXIS/citation 告警被证明层降成未决
+    （§4.2 矩阵），告警只进审计与回放分析。"""
     proof_type: str                          # PROOF_TYPE_NOT_DUPLICATE
     pair_id: str
     text_history_sha256: str

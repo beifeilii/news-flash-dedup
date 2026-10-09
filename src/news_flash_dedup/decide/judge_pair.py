@@ -12,13 +12,30 @@
 （合同 §一 的 JSON 形态 dict）。P1-a 真件合流时零改动替换注入件；
 未注入（judge_callable=None）即 fail-closed 未决（默认实现，绝不冒签）。
 
+提交一（2026-10-10，分支 p3-semantic-authority，方案
+`log/快讯去重_判官与证明层改造_可执行技术方案.md` §4/§5.1）：**解除证明层
+一票否决**——判定与证据分层（§4.1）：
+- 合同级硬校验保留（身份绑定/正文 SHA/order/cache key/verdict 枚举/
+  版本四维/输出结构），不合规仍 fail-closed 未决；
+- 证据级检查（引文绑定/offset 回指/machine_verify.passed/结论对拍/
+  falsification 在场性）全部降为**诊断**（ValidatedJudgeOrder.
+  evidence_warnings/machine_findings），不再抛错、不再单独改判；
+- 双序合并按 §4.2 矩阵：双序 duplicate→JUDGE_EQUIVALENT；双序
+  not_duplicate→JUDGE_NON_DUPLICATE（不再强制机器证伪轴）；分歧/存疑/
+  失败→未决（JUDGE_UNCERTAIN 或合同 §三 映射码）；
+- 某一侧无可绑定引文时构造"完整原文 span"审计回退证据
+  （field="text"、quote=该侧完整正文、start=0、end=len），并记
+  EVIDENCE_FALLBACK_FULL_TEXT 告警——该回退只证明"判定对应的原文版本"，
+  不冒充精确字段证明；只进内部审计/诊断，绝不进公共五字段。
+
 纪律：
-- 超时/异常/证明不合规一律 fail-closed → 对级 unresolved（合同 §三映射）；
-- 无 falsification 的 not_duplicate 按合同 §二降级为 doubtful（未决同义），
-  不得入"有效排除"；
+- 超时/异常/合同不合规一律 fail-closed → 对级 unresolved（合同 §三映射）；
 - 对级产出只取三态：equivalent / conflict / unresolved（合同 §四）；
 - detail 文案只携合同 §三枚举与适配层本地枚举，绝不嵌入
-  EQUIVALENT/CONFLICT/UNRESOLVED 白名单码（aggregate reason 扫描闸在案）。
+  EQUIVALENT/CONFLICT/UNRESOLVED 白名单码（含新三码 JUDGE_EQUIVALENT/
+  JUDGE_NON_DUPLICATE/JUDGE_UNCERTAIN——aggregate reason 扫描闸在案）；
+- evidence_warnings/machine_findings 只进内部诊断（本层 outcome 字段 +
+  service 层日志），绝不进公共五字段。
 """
 
 from __future__ import annotations
@@ -59,6 +76,12 @@ PROOF_VERDICTS = ("duplicate", "not_duplicate", "doubtful", "failure", "invalid"
 FALSIFICATION_DIMENSIONS = ("subject", "numeric", "time", "stage", "polarity")
 CHECK_CONCLUSIONS = ("一致", "不一致", "无法判定")
 
+# 对级内部结果码（提交一 §5.1 修改点 2，语义权威）——判官语义结论不再
+# 伪装成机器已验证结论（不再占用 FACT_EQUIVALENT/VERIFIED_CONFLICT）：
+JUDGE_EQUIVALENT = "JUDGE_EQUIVALENT"        # 双序判官一致判重复
+JUDGE_NON_DUPLICATE = "JUDGE_NON_DUPLICATE"  # 双序判官一致判不重复
+JUDGE_UNCERTAIN = "JUDGE_UNCERTAIN"          # 双序存疑或分歧
+
 # 合同 §三 失败/未决枚举（P1-b 一律映射为"未决"进人工，禁止静默豁免）
 MV_REJECTED = "MV_REJECTED"
 ORDER_DISAGREE = "ORDER_DISAGREE"
@@ -74,20 +97,30 @@ JUDGE_EXCEPTION = "JUDGE_EXCEPTION"         # 判官调用抛异常（fail-close
 JUDGE_FAILURE = "JUDGE_FAILURE"             # 证明 verdict="failure"
 JUDGE_DOUBTFUL = "JUDGE_DOUBTFUL"           # 双序存疑/混合（非分歧）
 
+# 证据诊断告警 token（提交一：只进内部诊断，绝不改判、绝不进公共五字段）
+EVIDENCE_QUOTES_EMPTY = "EVIDENCE_QUOTES_EMPTY"            # 签发判定引文为空
+EVIDENCE_FALLBACK_FULL_TEXT = "EVIDENCE_FALLBACK_FULL_TEXT"  # 完整原文回退证据
+MACHINE_VERIFY_REJECTED = "MACHINE_VERIFY_REJECTED"        # machine_verify.passed=false
+# 与 judge_proof.P_NO_AXIS 同字面（证据充分性告警：not_duplicate 无机器可
+# 证伪轴）。本层不 import judge_proof（组件分层），字面一致由两侧测试钉死。
+P_NO_AXIS_WARNING = "P_NO_AXIS"
+
 # 合同 §三/本地枚举 → 对级 unresolved 码（pair_compare UNRESOLVED_CODES
-# 白名单成员；码面不动，语义最近邻映射，真值由 detail 携合同枚举承载）
+# 白名单成员；码面不动，语义最近邻映射，真值由 detail 携合同枚举承载）。
+# 提交一：ORDER_DISAGREE/JUDGE_DOUBTFUL 改映 JUDGE_UNCERTAIN（判官已跑、
+# 语义未决，与"判官未跑/调用失败"的 SUBJECT_UNRESOLVED 通道区分开）。
 _FAILURE_TO_CODE = {
     BUDGET_EXCEEDED: "CANDIDATE_BUDGET_EXHAUSTED",
     TIMEOUT: "DEPENDENCY_TIMEOUT",
-    MV_REJECTED: "EVIDENCE_INVALID",
-    EVIDENCE_UNBOUND: "EVIDENCE_INVALID",
+    MV_REJECTED: "EVIDENCE_INVALID",           # 兼容保留（提交一起不再硬抛）
+    EVIDENCE_UNBOUND: "EVIDENCE_INVALID",      # 兼容保留（提交一起降为诊断）
     INVALID_OUTPUT: "EVIDENCE_INVALID",
-    CONCLUSION_CONTRADICTS: "NUMERIC_ALIGNMENT_FAILED",
-    ORDER_DISAGREE: "SUBJECT_UNRESOLVED",
+    CONCLUSION_CONTRADICTS: "NUMERIC_ALIGNMENT_FAILED",  # 兼容保留（降为诊断）
+    ORDER_DISAGREE: JUDGE_UNCERTAIN,
     JUDGE_NOT_INJECTED: "SUBJECT_UNRESOLVED",
     JUDGE_EXCEPTION: "SUBJECT_UNRESOLVED",
     JUDGE_FAILURE: "SUBJECT_UNRESOLVED",
-    JUDGE_DOUBTFUL: "SUBJECT_UNRESOLVED",
+    JUDGE_DOUBTFUL: JUDGE_UNCERTAIN,
 }
 
 # 未决归因确定性优先序（硬失败先于双序分歧先于存疑；同序多因取首见）
@@ -104,6 +137,9 @@ _HARD_FAILURE_PRIORITY = (
 
 DEFAULT_JUDGE_TIMEOUT_S = 120.0   # 单顺序判官调用硬超时（注入件自带超时之外的本层兜底）
 
+_REASON_FALLBACK = "（判官本顺序未形成可绑定理由）"
+_REASON_CAP = 300                   # 理由入 detail 的长度上限（提交三 300 字口径预热）
+
 
 class JudgeBudgetExceeded(RuntimeError):
     """判官侧预算耗尽信号（异常通道）——适配层映射 BUDGET_EXCEEDED 未决。
@@ -119,8 +155,26 @@ class JudgeProofError(ValueError):
 # ---------------------------------------------------------------- 结果形态
 
 @dataclass(frozen=True)
+class ValidatedJudgeOrder:
+    """单顺序判官结果的合同校验 + 证据诊断产物（提交一 §4.1 分层）。
+
+    verdict/reason 为语义面；quotes/falsification 为成功绑定的证据面；
+    evidence_status/evidence_warnings/machine_findings 为证据诊断面——
+    诊断只描述证据质量（pass/warn/fail），不得单独改变语义判定。
+    """
+    verdict: str                          # ∈ PROOF_VERDICTS
+    reason: str                           # 模型理由（缺省稳定兜底文案）
+    quotes_a: tuple[dict, ...]            # 成功绑定本侧原文的引文（归一化）
+    quotes_b: tuple[dict, ...]
+    falsification: dict | None            # 绑定成功的证伪结构；无/失效 None
+    evidence_status: str                  # "pass" | "warn" | "fail"
+    evidence_warnings: tuple[str, ...]    # EVIDENCE_*/P_NO_AXIS 等告警 token
+    machine_findings: tuple[str, ...]     # machine_verify.rules_triggered（P_*）
+
+
+@dataclass(frozen=True)
 class JudgePairOutcome:
-    """判官适配层对级产出（合同 §四映射后）。"""
+    """判官适配层对级产出（合同 §四/§4.2 矩阵映射后）。"""
     outcome: str                      # "equivalent" | "conflict" | "unresolved"
     code: str                         # PairResult 码（对应白名单成员）
     detail: str                       # 人读说明（携合同枚举，不携白名单码）
@@ -128,6 +182,10 @@ class JudgePairOutcome:
     used_evidence: tuple = ()         # EvidenceRef（签发态实填，未决空）
     verified_conflicts: tuple = ()    # VerifiedConflict（conflict 实填）
     proofs: Mapping = field(default_factory=dict)  # {"ab": proof|None, "ba": proof|None} 审计留存
+    # 提交一：证据诊断（内部审计/日志专用，绝不进公共五字段、绝不改判）
+    evidence_status: str = "pass"     # 双序合并最劣档（fail > warn > pass）
+    evidence_warnings: tuple = ()     # 双序告警 token 并集（定序去重）
+    machine_findings: tuple = ()      # 双序 P_* 机检发现并集（定序去重）
 
 
 # ---------------------------------------------------------------- 证明构造辅助（缓存键=合同 §一公式）
@@ -217,7 +275,7 @@ def _call_with_timeout(fn: Callable, arg: Mapping, timeout_s: float):
     return box.get("value"), None
 
 
-# ---------------------------------------------------------------- 证明校验（合同 §一/§二）
+# ---------------------------------------------------------------- 合同级硬校验（提交一：与证据校验拆分）
 
 _PROOF_REQUIRED_FIELDS = (
     "pair_id", "item_a_id", "item_b_id",
@@ -229,6 +287,11 @@ _PROOF_REQUIRED_FIELDS = (
     "judged_at", "cache_key",
 )
 
+# machine_verify.mode 合法值："audit"（提交一起真件在线语义）与 "gate"
+# （历史证明工件/测试 double 兼容）。mode 只陈述核验姿态，passed 自提交一
+# 起为审计保留字段——消费侧不得再拿它改判（§5.1 文件 B）。
+_MACHINE_VERIFY_MODES = ("audit", "gate")
+
 
 def _fail(reason: str, detail: str) -> JudgeProofError:
     return JudgeProofError(f"{reason}: {detail}")
@@ -239,64 +302,13 @@ def _is_hex64(value: Any) -> bool:
             and all(c in "0123456789abcdef" for c in value))
 
 
-def _check_quote_binding(quotes: Any, bound_text: str, side: str) -> list:
-    """quotes=[{text, offset_start, offset_end, role}] 逐条校验并回指本侧原文
-    （合同 §一：offset 必须能回指原文，否则 verdict 不得为 duplicate/not_duplicate）。
-    返归一化 quote dict 列表；任何不合规 → JudgeProofError。"""
-    if not isinstance(quotes, list) or not quotes:
-        raise _fail(EVIDENCE_UNBOUND, f"{side} 引文缺失或为空（签发判定须带引文）")
-    normalized = []
-    for index, quote in enumerate(quotes):
-        if not isinstance(quote, Mapping):
-            raise _fail(EVIDENCE_UNBOUND, f"{side} 引文[{index}]非对象")
-        for key in ("text", "offset_start", "offset_end", "role"):
-            if key not in quote:
-                raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}]缺键 {key!r}")
-        text = quote["text"]
-        start, end = quote["offset_start"], quote["offset_end"]
-        if not isinstance(text, str) or not text:
-            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}] text 非非空字符串")
-        if not isinstance(quote["role"], str) or not quote["role"]:
-            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}] role 非非空字符串")
-        if (type(start) is not int or type(end) is not int
-                or not (0 <= start < end <= len(bound_text))):
-            raise _fail(EVIDENCE_UNBOUND,
-                        f"{side} 引文[{index}] offset 越界（[{start},{end}) vs "
-                        f"原文长 {len(bound_text)}）")
-        if bound_text[start:end] != text:
-            raise _fail(EVIDENCE_UNBOUND,
-                        f"{side} 引文[{index}] offset 回指失败："
-                        f"原文切片 {bound_text[start:end]!r} != 引文 {text!r}")
-        normalized.append({"text": text, "offset_start": start,
-                           "offset_end": end, "role": quote["role"]})
-    return normalized
+def _validate_contract(proof: Any, ctx: Mapping) -> None:
+    """合同级硬校验（提交一保留的全部硬闸）：身份绑定/正文 SHA/order/
+    verdict 枚举/版本四维/cache key/机检段结构。不合规一律 JudgeProofError
+    （首词=合同 §三 枚举；适配层 catch 后映射未决）。
 
-
-def _check_span_binding(span: Any, bound_text: str, side: str) -> dict:
-    """falsification evidence 单跨 {text, offset_start, offset_end} 绑定校验。"""
-    if not isinstance(span, Mapping):
-        raise _fail(EVIDENCE_UNBOUND, f"{side} 证伪证据非对象")
-    for key in ("text", "offset_start", "offset_end"):
-        if key not in span:
-            raise _fail(INVALID_OUTPUT, f"{side} 证伪证据缺键 {key!r}")
-    text, start, end = span["text"], span["offset_start"], span["offset_end"]
-    if not isinstance(text, str) or not text:
-        raise _fail(INVALID_OUTPUT, f"{side} 证伪证据 text 非非空字符串")
-    if (type(start) is not int or type(end) is not int
-            or not (0 <= start < end <= len(bound_text))
-            or bound_text[start:end] != text):
-        raise _fail(EVIDENCE_UNBOUND, f"{side} 证伪证据 offset 回指失败")
-    return {"text": text, "offset_start": start, "offset_end": end}
-
-
-def validate_proof(proof: Any, ctx: Mapping) -> dict:
-    """VerifiedJudgeProof 合同合规校验（合同 §一/§二/§三）。
-
-    返 {"verdict": 生效 verdict, "falsification": dict|None,
-        "quotes_a": [...], "quotes_b": [...]}；
-    不合规一律 JudgeProofError（首词=合同 §三枚举；适配层 catch 后映射未决）。
-    无/不合格 falsification 的 not_duplicate 不抛错——按合同 §二降级
-    doubtful 由调用侧处理（本函数仅对结构硬失败与证据绑定负责）。
+    证据级内容（引文能否绑定、passed 真假、结论对拍、falsification 在场性）
+    一律不在本层——那是 validate_proof 的诊断面。
     """
     if not isinstance(proof, Mapping):
         raise _fail(INVALID_OUTPUT, f"证明非 Mapping：{type(proof).__name__}")
@@ -329,7 +341,7 @@ def validate_proof(proof: Any, ctx: Mapping) -> dict:
         proof["order"], proof["text_a_sha256"], proof["text_b_sha256"])
     if proof["cache_key"] != expected_key:
         raise _fail(INVALID_OUTPUT, "cache_key 与合同 §一 公式重算不符")
-    # 机侧独立核验段（数值/时间结论三值闭合）
+    # 机侧独立核验段（数值/时间结论三值闭合——结构闸，不信其结论内容）
     for check_key in ("numeric_check", "time_check"):
         check = proof[check_key]
         if not isinstance(check, Mapping):
@@ -337,93 +349,302 @@ def validate_proof(proof: Any, ctx: Mapping) -> dict:
         if check.get("conclusion") not in CHECK_CONCLUSIONS:
             raise _fail(INVALID_OUTPUT,
                         f"{check_key}.conclusion 非法：{check.get('conclusion')!r}")
-    # 机器验 gate 段（合同 §一 mode="gate" + passed bool）
+    # 机器验段结构闸（mode 合法 + passed bool）；passed 值本身只是诊断
     mv = proof["machine_verify"]
     if not isinstance(mv, Mapping):
         raise _fail(INVALID_OUTPUT, "machine_verify 非对象")
-    if mv.get("mode") != "gate":
+    if mv.get("mode") not in _MACHINE_VERIFY_MODES:
         raise _fail(INVALID_OUTPUT,
-                    f"machine_verify.mode 非 gate：{mv.get('mode')!r}")
+                    f"machine_verify.mode 非法：{mv.get('mode')!r}"
+                    f"（合法：{_MACHINE_VERIFY_MODES}）")
     if type(mv.get("passed")) is not bool:
         raise _fail(INVALID_OUTPUT, "machine_verify.passed 非 bool")
 
-    if verdict in ("doubtful", "failure", "invalid"):
-        return {"verdict": verdict, "falsification": None,
-                "quotes_a": [], "quotes_b": []}
 
-    # 签发判定（duplicate/not_duplicate）：引文必须回指本侧原文（合同 §一）
-    quotes_a = _check_quote_binding(proof["quotes_a"], ctx["text_a"], "a 侧")
-    quotes_b = _check_quote_binding(proof["quotes_b"], ctx["text_b"], "b 侧")
-    # 机验 gate 拦截（合同 §四：签发须 machine_verify.passed=true）
-    if mv["passed"] is not True:
-        raise _fail(MV_REJECTED,
-                    f"machine_verify.passed=false（触发 {mv.get('rules_triggered')!r}）")
-    # 判定与机侧分项结论对拍（合同 §三 CONCLUSION_CONTRADICTS）
-    if verdict == "duplicate":
-        contradicted = [
-            key for key in ("numeric_check", "time_check")
-            if proof[key]["conclusion"] == "不一致"]
-        if contradicted:
-            raise _fail(CONCLUSION_CONTRADICTS,
-                        f"verdict=duplicate 与 {contradicted} 结论'不一致'对拍失败")
-    # not_duplicate 证伪合同（合同 §二）：结构缺失/维度非法 → 降级 doubtful
-    # （未决同义，本函数返 downgrade 标记）；证据 offset 回指失败 → 硬失败。
-    falsification = None
-    downgrade_not_duplicate = False
-    if verdict == "not_duplicate":
-        fals = proof.get("falsification")
-        if (not isinstance(fals, Mapping)
-                or fals.get("dimension") not in FALSIFICATION_DIMENSIONS
-                or not isinstance(fals.get("relation"), str)
-                or not fals["relation"].strip()):
-            downgrade_not_duplicate = True   # 合同 §二：空口 not_duplicate=未决
-        else:
-            falsification = {
-                "dimension": fals["dimension"],
-                "evidence_a": _check_span_binding(
-                    fals.get("evidence_a"), ctx["text_a"], "a 侧"),
-                "evidence_b": _check_span_binding(
-                    fals.get("evidence_b"), ctx["text_b"], "b 侧"),
-                "relation": fals["relation"].strip(),
-            }
-    return {"verdict": verdict, "falsification": falsification,
-            "downgrade_not_duplicate": downgrade_not_duplicate,
-            "quotes_a": quotes_a, "quotes_b": quotes_b}
+# ---------------------------------------------------------------- 证据级诊断（提交一：不再抛错）
+
+def _check_quote_structure(quotes: Any, side: str) -> list:
+    """引文段结构硬校验（输出结构非法=合同失败，§4.1）：list + 每条
+    Mapping + 四键齐全 + text/role 非空 str + offset 为 int。
+    返原始条目列表；结构非法 → JudgeProofError(INVALID_OUTPUT)。"""
+    if not isinstance(quotes, list):
+        raise _fail(INVALID_OUTPUT, f"{side} 引文段非 list：{type(quotes).__name__}")
+    for index, quote in enumerate(quotes):
+        if not isinstance(quote, Mapping):
+            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}]非对象")
+        for key in ("text", "offset_start", "offset_end", "role"):
+            if key not in quote:
+                raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}]缺键 {key!r}")
+        if not isinstance(quote["text"], str) or not quote["text"]:
+            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}] text 非非空字符串")
+        if not isinstance(quote["role"], str) or not quote["role"]:
+            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}] role 非非空字符串")
+        if (type(quote["offset_start"]) is not int
+                or type(quote["offset_end"]) is not int):
+            raise _fail(INVALID_OUTPUT, f"{side} 引文[{index}] offset 非 int")
+    return quotes
 
 
-# ---------------------------------------------------------------- 对级映射（合同 §四）
+def _bind_quotes_diagnostic(quotes: list, bound_text: str, side: str,
+                            warnings: list) -> list:
+    """引文 offset 绑定诊断（提交一：越界/回指失败只记 EVIDENCE_UNBOUND
+    告警并丢弃该条，不再抛错）。返成功绑定的归一化引文列表。"""
+    normalized = []
+    for index, quote in enumerate(quotes):
+        text = quote["text"]
+        start, end = quote["offset_start"], quote["offset_end"]
+        if not (0 <= start < end <= len(bound_text)):
+            warnings.append(EVIDENCE_UNBOUND)
+            continue
+        if bound_text[start:end] != text:
+            warnings.append(EVIDENCE_UNBOUND)
+            continue
+        normalized.append({"text": text, "offset_start": start,
+                           "offset_end": end, "role": quote["role"]})
+    return normalized
 
-def _quotes_to_evidence(quotes: list, record_id: str) -> tuple:
+
+def _bind_falsification_diagnostic(fals: Any, ctx: Mapping,
+                                   warnings: list) -> dict | None:
+    """falsification 绑定诊断（提交一 §5.1 修改点 1）：
+
+    - 缺失/非 Mapping/relation 空 → None（调用侧记 P_NO_AXIS 告警）；
+    - dimension 越出合同词表/结构键非法 → 硬失败 INVALID_OUTPUT
+      （输出结构非法=合同失败，组件漂移不冒充）；
+    - 证据 offset 无法回指 → 记 EVIDENCE_UNBOUND 告警并返 None
+      （证伪失效=无轴，调用侧补 P_NO_AXIS）。
+    """
+    if not isinstance(fals, Mapping):
+        return None
+    if fals.get("dimension") not in FALSIFICATION_DIMENSIONS:
+        raise _fail(INVALID_OUTPUT,
+                    f"证伪 dimension 非法：{fals.get('dimension')!r}")
+    if (not isinstance(fals.get("relation"), str)
+            or not fals["relation"].strip()):
+        return None
+    spans: dict[str, dict] = {}
+    for key, side in (("evidence_a", "a 侧"), ("evidence_b", "b 侧")):
+        span = fals.get(key)
+        bound_text = ctx["text_a"] if key == "evidence_a" else ctx["text_b"]
+        if not isinstance(span, Mapping):
+            raise _fail(INVALID_OUTPUT, f"{side} 证伪证据非对象")
+        for field_key in ("text", "offset_start", "offset_end"):
+            if field_key not in span:
+                raise _fail(INVALID_OUTPUT, f"{side} 证伪证据缺键 {field_key!r}")
+        text, start, end = span["text"], span["offset_start"], span["offset_end"]
+        if not isinstance(text, str) or not text:
+            raise _fail(INVALID_OUTPUT, f"{side} 证伪证据 text 非非空字符串")
+        if type(start) is not int or type(end) is not int:
+            raise _fail(INVALID_OUTPUT, f"{side} 证伪证据 offset 非 int")
+        if (not (0 <= start < end <= len(bound_text))
+                or bound_text[start:end] != text):
+            warnings.append(EVIDENCE_UNBOUND)   # 诊断：证伪引文无法回指
+            return None
+        spans[key] = {"text": text, "offset_start": start, "offset_end": end}
+    return {"dimension": fals["dimension"],
+            "evidence_a": spans["evidence_a"],
+            "evidence_b": spans["evidence_b"],
+            "relation": fals["relation"].strip()}
+
+
+def validate_proof(proof: Any, ctx: Mapping) -> ValidatedJudgeOrder:
+    """VerifiedJudgeProof 合同校验 + 证据诊断（提交一 §4.1/§5.1）。
+
+    两道合同级硬校验（_validate_contract：身份绑定/SHA/order/cache key/
+    verdict 枚举/版本四维/结构）不合规仍抛 JudgeProofError——映射未决。
+    证据级检查全部降为诊断，**不再抛错、不再改判**：
+
+    - quotes_a/quotes_b 为空 → EVIDENCE_QUOTES_EMPTY 告警；
+    - 引文 offset 越界/回指失败 → EVIDENCE_UNBOUND 告警（丢弃该条）；
+    - machine_verify.passed=false → MACHINE_VERIFY_REJECTED 告警，
+      rules_triggered 全量入 machine_findings（P_* 诊断不丢失）；
+    - verdict=duplicate 与机侧 numeric/time 结论"不一致"对拍
+      → CONCLUSION_CONTRADICTS 告警（不再否决语义判定）；
+    - not_duplicate 缺/失效 falsification → P_NO_AXIS 告警
+      （证据充分性问题，不再降级 doubtful）。
+
+    返 ValidatedJudgeOrder（语义面 + 证据面 + 诊断面三段）。
+    """
+    _validate_contract(proof, ctx)
+    verdict = proof["verdict"]
+    raw_reason = proof.get("reason")
+    reason = (raw_reason.strip()
+              if isinstance(raw_reason, str) and raw_reason.strip()
+              else _REASON_FALLBACK)
+
+    warnings: list[str] = []
+    findings: list[str] = []
+    mv = proof["machine_verify"]
+    rules = mv.get("rules_triggered") or []
+    if isinstance(rules, (list, tuple)):
+        findings.extend(str(rule) for rule in rules)
+    if mv["passed"] is False:
+        warnings.append(MACHINE_VERIFY_REJECTED)   # 诊断：不改判
+    adapter_warnings = proof.get("evidence_warnings")
+    if isinstance(adapter_warnings, (list, tuple)):
+        warnings.extend(str(w) for w in adapter_warnings
+                        if isinstance(w, str) and w)
+
+    quotes_a: list[dict] = []
+    quotes_b: list[dict] = []
+    falsification: dict | None = None
+    if verdict in ("duplicate", "not_duplicate"):
+        # 引文段：结构硬闸（INVALID_OUTPUT）+ 绑定诊断（EVIDENCE_UNBOUND）
+        for key, side, bound in (("quotes_a", "a 侧", ctx["text_a"]),
+                                 ("quotes_b", "b 侧", ctx["text_b"])):
+            entries = _check_quote_structure(proof[key], side)
+            if not entries:
+                warnings.append(EVIDENCE_QUOTES_EMPTY)
+            bound_quotes = _bind_quotes_diagnostic(entries, bound, side, warnings)
+            if key == "quotes_a":
+                quotes_a = bound_quotes
+            else:
+                quotes_b = bound_quotes
+        # duplicate 与机侧分项结论对拍（诊断：不再 CONCLUSION_CONTRADICTS 硬抛）
+        if verdict == "duplicate":
+            contradicted = [
+                key for key in ("numeric_check", "time_check")
+                if proof[key]["conclusion"] == "不一致"]
+            if contradicted:
+                warnings.append(CONCLUSION_CONTRADICTS)
+        # not_duplicate 证伪（诊断：缺/失效 → P_NO_AXIS 告警，不降级）
+        if verdict == "not_duplicate":
+            falsification = _bind_falsification_diagnostic(
+                proof.get("falsification"), ctx, warnings)
+            if falsification is None:
+                warnings.append(P_NO_AXIS_WARNING)
+
+    # 定序去重（首见序；告警/发现集合确定性输出）
+    warnings = list(dict.fromkeys(warnings))
+    findings = list(dict.fromkeys(findings))
+    if verdict in ("duplicate", "not_duplicate") and not (quotes_a or quotes_b):
+        status = "fail"        # 签发判定双侧均无可绑定引文（回退证据兜底）
+    elif warnings or findings:
+        status = "warn"
+    else:
+        status = "pass"
+    return ValidatedJudgeOrder(
+        verdict=verdict, reason=reason,
+        quotes_a=tuple(quotes_a), quotes_b=tuple(quotes_b),
+        falsification=falsification, evidence_status=status,
+        evidence_warnings=tuple(warnings), machine_findings=tuple(findings))
+
+
+# ---------------------------------------------------------------- 对级映射（合同 §四 + §4.2 矩阵）
+
+def _quotes_to_evidence(quotes: list | tuple, record_id: str) -> tuple:
     """归一化引文 → EvidenceRef 元组（审计/聚合消费面=EvidenceRef 属性协议）。"""
     return tuple(EvidenceRef(record_id=record_id, field="text",
                              quote=q["text"], start=q["offset_start"],
                              end=q["offset_end"]) for q in quotes)
 
 
-def _unresolved(reason: str, proofs: Mapping) -> JudgePairOutcome:
+def _side_evidence(quotes: tuple, record_id: str, full_text: str,
+                   fallback_sides: list) -> tuple:
+    """单侧审计证据：有绑定成功引文用引文；**一条都绑不上** → 完整原文
+    回退证据（field="text"、quote=该侧完整正文、start=0、end=len——
+    只证明"判定对应的原文版本"，不冒充精确字段证明），并登记
+    EVIDENCE_FALLBACK_FULL_TEXT（由调用侧并表）。回退证据只进内部
+    审计/诊断，绝不进公共五字段（§5.1 修改点 3）。"""
+    if quotes:
+        return _quotes_to_evidence(quotes, record_id)
+    fallback_sides.append(record_id)
+    return (EvidenceRef(record_id=record_id, field="text", quote=full_text,
+                        start=0, end=len(full_text)),)
+
+
+def _collect_order_evidence(pair_context: Mapping,
+                            per_order: Mapping) -> tuple:
+    """双序 EvidenceRef 汇总（ab 后 ba、每序 a 侧后 b 侧，定序确定）；
+    返 (evidence, had_fallback)——任一侧走了完整原文回退则 had_fallback。"""
+    evidence: list = []
+    fallback_sides: list = []
+    for order in ORDERS:
+        validated = per_order[order]
+        ctx = _order_context(pair_context, order)
+        evidence.extend(_side_evidence(
+            validated.quotes_a, ctx["record_a_id"], ctx["text_a"],
+            fallback_sides))
+        evidence.extend(_side_evidence(
+            validated.quotes_b, ctx["record_b_id"], ctx["text_b"],
+            fallback_sides))
+    return tuple(evidence), bool(fallback_sides)
+
+
+def _merge_diagnostics(per_order: Mapping, orders: tuple) -> tuple:
+    """双序诊断并表（定序去重）：返 (status, warnings, findings)。
+    status 取最劣档（fail > warn > pass）；orders=参与并表的顺序。"""
+    warnings: list[str] = []
+    findings: list[str] = []
+    status = "pass"
+    for order in orders:
+        validated = per_order.get(order)
+        if validated is None:
+            continue
+        warnings.extend(validated.evidence_warnings)
+        findings.extend(validated.machine_findings)
+        if validated.evidence_status == "fail":
+            status = "fail"
+        elif validated.evidence_status == "warn" and status != "fail":
+            status = "warn"
+    return (status, tuple(dict.fromkeys(warnings)),
+            tuple(dict.fromkeys(findings)))
+
+
+def _clip_reason(reason: str) -> str:
+    """理由入 detail 的整形：去换行 + 上限 _REASON_CAP（防超长原文入
+    审计 detail；内部面纪律，公共五字段永不消费本 detail 生成 reason）。"""
+    flat = " ".join(reason.split())
+    if len(flat) > _REASON_CAP:
+        return flat[:_REASON_CAP] + "…"
+    return flat
+
+
+def _merged_detail(verdict_cn: str, per_order: Mapping) -> str:
+    """双序一致判定的合并自然语言 detail（§5.1 文件 D-3：新 code + 合并
+    detail）。只携双序理由与语义裁决声明，绝不携白名单码/模型原始响应
+    全文/URL（reason 经 _clip_reason 整形）。"""
+    parts = "；".join(
+        f"{order} 序理由：{_clip_reason(per_order[order].reason)}"
+        for order in ORDERS)
+    return (f"判官双序一致判定{verdict_cn}（语义裁决，证明层告警"
+            f"见内部审计）。{parts}。")
+
+
+def _unresolved(reason: str, proofs: Mapping,
+                per_order: Mapping | None = None) -> JudgePairOutcome:
     code = _FAILURE_TO_CODE[reason]
+    status, warnings, findings = ("pass", (), ())
+    if per_order:
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
     return JudgePairOutcome(
         outcome="unresolved", code=code,
         detail=f"判官未决进人工（{reason}）。",
-        failure_reason=reason, proofs=proofs)
+        failure_reason=reason, proofs=proofs,
+        evidence_status=status, evidence_warnings=warnings,
+        machine_findings=findings)
 
 
 def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
                     timeout_s: float | None = None) -> JudgePairOutcome:
-    """对一对未决候选跑双序判官并按合同 §四映射对级结论。
+    """对一对未决候选跑双序判官并按 §4.2 矩阵合并对级结论（提交一）。
 
     - judge_callable=None → 默认实现 fail-closed 未决（JUDGE_NOT_INJECTED）；
-    - 双序均 duplicate 且机验 gate 通过 → equivalent（FACT_EQUIVALENT）；
-    - 双序均 not_duplicate 且各带合格 falsification 且机验通过
-      → conflict（VERIFIED_CONFLICT）；
-    - 其余一切组合（含超时/异常/机验拦截/引文回指失败/结论对拍失败/双序
-      分歧/存疑）→ unresolved（合同 §三映射 UNRESOLVED 白名单码）。
+    - 双序均 duplicate → equivalent（JUDGE_EQUIVALENT）——证明层告警只进
+      审计/诊断，不再有一票否决；
+    - 双序均 not_duplicate → conflict（JUDGE_NON_DUPLICATE）——不再强制
+      机器证伪轴（无轴记 P_NO_AXIS 告警，不降级）；有绑定成功的
+      falsification 时仍构造 VerifiedConflict 审计件；
+    - 双序分歧（ORDER_DISAGREE）/任一存疑（JUDGE_DOUBTFUL）→ 未决
+      （JUDGE_UNCERTAIN）；
+    - 超时/预算/异常/合同不合规/verdict=failure·invalid → 未决
+      （合同 §三 映射 UNRESOLVED 白名单码）。
     """
     timeout_s = DEFAULT_JUDGE_TIMEOUT_S if timeout_s is None else timeout_s
     if judge_callable is None:
         return _unresolved(JUDGE_NOT_INJECTED, proofs={"ab": None, "ba": None})
 
-    per_order: dict[str, dict] = {}
+    per_order: dict[str, ValidatedJudgeOrder | None] = {}
     raw_proofs: dict[str, Any] = {"ab": None, "ba": None}
     hard_failures: list[str] = []
     for order in ORDERS:
@@ -432,7 +653,7 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
         raw_proofs[order] = proof
         if failure is not None:
             hard_failures.append(failure)
-            per_order[order] = {"verdict": None, "falsification": None}
+            per_order[order] = None
             continue
         try:
             validated = validate_proof(proof, ctx)
@@ -440,81 +661,103 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
             reason = str(exc).split(":", 1)[0]
             hard_failures.append(reason if reason in _FAILURE_TO_CODE
                                  else INVALID_OUTPUT)
-            per_order[order] = {"verdict": None, "falsification": None}
+            per_order[order] = None
             continue
-        verdict = validated["verdict"]
+        verdict = validated.verdict
         if verdict == "failure":
             hard_failures.append(JUDGE_FAILURE)
-            verdict = None
+            per_order[order] = None
         elif verdict == "invalid":
             hard_failures.append(INVALID_OUTPUT)
-            verdict = None
-        elif verdict == "not_duplicate" and validated.get(
-                "downgrade_not_duplicate"):
-            verdict = "doubtful"   # 合同 §二：空口 not_duplicate=未决同义
-        per_order[order] = {"verdict": verdict,
-                            "falsification": validated["falsification"],
-                            "quotes_a": validated["quotes_a"],
-                            "quotes_b": validated["quotes_b"]}
+            per_order[order] = None
+        else:
+            per_order[order] = validated
 
-    verdicts = {order: per_order[order]["verdict"] for order in ORDERS}
+    verdicts = {order: (per_order[order].verdict if per_order[order] is not None
+                        else None) for order in ORDERS}
 
-    # 合同 §四 分支 1：双序 duplicate + 机验 gate 通过 → equivalent
+    # §4.2 分支 1：双序 duplicate → equivalent（证明告警只进审计）
     if verdicts["ab"] == "duplicate" and verdicts["ba"] == "duplicate":
-        evidence = []
-        for order in ORDERS:
-            ctx = _order_context(pair_context, order)
-            evidence.extend(_quotes_to_evidence(
-                per_order[order]["quotes_a"], ctx["record_a_id"]))
-            evidence.extend(_quotes_to_evidence(
-                per_order[order]["quotes_b"], ctx["record_b_id"]))
+        evidence, had_fallback = _collect_order_evidence(pair_context, per_order)
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
+        if had_fallback and EVIDENCE_FALLBACK_FULL_TEXT not in warnings:
+            warnings = warnings + (EVIDENCE_FALLBACK_FULL_TEXT,)
         return JudgePairOutcome(
-            outcome="equivalent", code="FACT_EQUIVALENT",
-            detail="判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。",
-            used_evidence=tuple(evidence), proofs=raw_proofs)
+            outcome="equivalent", code=JUDGE_EQUIVALENT,
+            detail=_merged_detail("重复", per_order),
+            used_evidence=evidence, proofs=raw_proofs,
+            evidence_status=status, evidence_warnings=warnings,
+            machine_findings=findings)
 
-    # 合同 §四 分支 2：双序 not_duplicate + 合格 falsification + 机验 → conflict
+    # §4.2 分支 2：双序 not_duplicate → conflict（不再强制机器证伪轴）
     if verdicts["ab"] == "not_duplicate" and verdicts["ba"] == "not_duplicate":
-        fals_ab = per_order["ab"]["falsification"]   # ab 序 a=history、b=current
-        ctx_ab = _order_context(pair_context, "ab")
-        conflict = VerifiedConflict(
-            field_path=f"judge_falsification.{fals_ab['dimension']}",
-            basis="JUDGE_FALSIFICATION",
-            history_evidence=EvidenceRef(
-                record_id=ctx_ab["record_a_id"], field="text",
-                quote=fals_ab["evidence_a"]["text"],
-                start=fals_ab["evidence_a"]["offset_start"],
-                end=fals_ab["evidence_a"]["offset_end"]),
-            current_evidence=EvidenceRef(
-                record_id=ctx_ab["record_b_id"], field="text",
-                quote=fals_ab["evidence_b"]["text"],
-                start=fals_ab["evidence_b"]["offset_start"],
-                end=fals_ab["evidence_b"]["offset_end"]),
-            detail=fals_ab["relation"])
+        evidence, had_fallback = _collect_order_evidence(pair_context, per_order)
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
+        if had_fallback and EVIDENCE_FALLBACK_FULL_TEXT not in warnings:
+            warnings = warnings + (EVIDENCE_FALLBACK_FULL_TEXT,)
+        # 有绑定成功的 falsification 时构造 VerifiedConflict 审计件
+        # （ab 序优先、ba 序兜底——双序各独立绑定，取首份可用，确定性）；
+        # 证据归属按**来源序**的 a/b 角色映射回 history/current（ba 序
+        # a=current、b=history，直取会张冠李戴）。
+        conflicts: tuple = ()
+        fals_order = next((order for order in ORDERS
+                           if per_order[order].falsification is not None), None)
+        if fals_order is not None:
+            fals = per_order[fals_order].falsification
+            ctx_f = _order_context(pair_context, fals_order)
+            side_evidence = {
+                "a": EvidenceRef(
+                    record_id=ctx_f["record_a_id"], field="text",
+                    quote=fals["evidence_a"]["text"],
+                    start=fals["evidence_a"]["offset_start"],
+                    end=fals["evidence_a"]["offset_end"]),
+                "b": EvidenceRef(
+                    record_id=ctx_f["record_b_id"], field="text",
+                    quote=fals["evidence_b"]["text"],
+                    start=fals["evidence_b"]["offset_start"],
+                    end=fals["evidence_b"]["offset_end"]),
+            }
+            history_side = "a" if fals_order == "ab" else "b"
+            current_side = "b" if fals_order == "ab" else "a"
+            conflict = VerifiedConflict(
+                field_path=f"judge_falsification.{fals['dimension']}",
+                basis="JUDGE_FALSIFICATION",
+                history_evidence=side_evidence[history_side],
+                current_evidence=side_evidence[current_side],
+                detail=fals["relation"])
+            conflicts = (conflict,)
+            evidence = (conflict.history_evidence,
+                        conflict.current_evidence) + evidence
         return JudgePairOutcome(
-            outcome="conflict", code="VERIFIED_CONFLICT",
-            detail=f"判官双序一致证伪同一事实（维度 {fals_ab['dimension']}），"
-                   "双侧证伪引文已绑定原文且机器验 gate 通过。",
-            used_evidence=(conflict.history_evidence, conflict.current_evidence),
-            verified_conflicts=(conflict,), proofs=raw_proofs)
+            outcome="conflict", code=JUDGE_NON_DUPLICATE,
+            detail=_merged_detail("不重复", per_order),
+            used_evidence=evidence, verified_conflicts=conflicts,
+            proofs=raw_proofs,
+            evidence_status=status, evidence_warnings=warnings,
+            machine_findings=findings)
 
-    # 合同 §四 分支 3：其余一切组合 → unresolved（确定性归因）
+    # §4.2 分支 3：其余一切组合 → unresolved（确定性归因，硬失败优先）
     for reason in _HARD_FAILURE_PRIORITY:
         if reason in hard_failures:
-            return _unresolved(reason, proofs=raw_proofs)
+            return _unresolved(reason, proofs=raw_proofs, per_order=per_order)
     if {v for v in verdicts.values() if v} == {"duplicate", "not_duplicate"}:
-        return _unresolved(ORDER_DISAGREE, proofs=raw_proofs)
-    return _unresolved(JUDGE_DOUBTFUL, proofs=raw_proofs)
+        return _unresolved(ORDER_DISAGREE, proofs=raw_proofs,
+                           per_order=per_order)
+    return _unresolved(JUDGE_DOUBTFUL, proofs=raw_proofs, per_order=per_order)
 
 
 __all__ = [
     "JUDGE_IN_CHAIN_ENV", "judge_in_chain_enabled",
     "ORDERS", "PROOF_VERDICTS", "FALSIFICATION_DIMENSIONS", "CHECK_CONCLUSIONS",
+    "JUDGE_EQUIVALENT", "JUDGE_NON_DUPLICATE", "JUDGE_UNCERTAIN",
     "MV_REJECTED", "ORDER_DISAGREE", "INVALID_OUTPUT", "TIMEOUT",
     "BUDGET_EXCEEDED", "EVIDENCE_UNBOUND", "CONCLUSION_CONTRADICTS",
     "JUDGE_NOT_INJECTED", "JUDGE_EXCEPTION", "JUDGE_FAILURE", "JUDGE_DOUBTFUL",
+    "EVIDENCE_QUOTES_EMPTY", "EVIDENCE_FALLBACK_FULL_TEXT",
+    "MACHINE_VERIFY_REJECTED", "P_NO_AXIS_WARNING",
     "DEFAULT_JUDGE_TIMEOUT_S",
     "JudgeBudgetExceeded", "JudgeProofError", "JudgePairOutcome",
+    "ValidatedJudgeOrder",
     "compute_cache_key", "build_pair_context", "validate_proof",
     "adjudicate_pair",
 ]
