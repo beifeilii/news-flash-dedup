@@ -655,12 +655,21 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                             history_evidence=hard.history_evidence,
                             current_evidence=hard.current_evidence,
                             detail=hard.human_reason)
+                        # 终审复审第三轮：拦截路径补审计模式留痕——
+                        # semantic_authority 模式下被硬冲突拦截的对，
+                        # PairResult.judge_decision_mode 原为空串（replace
+                        # 未设该字段），AuditRecord 看不出是 semantic 模式
+                        # 触发的拦截。legacy 不走此层，模式即判定成因的
+                        # 一部分，必须留痕：引用入口已解析的
+                        # active_decision_mode（含 allow_prompt_direct
+                        # 回放通道显式确定的合并模式）。
                         pair_results[index] = replace(
                             pair, outcome="conflict", code="VERIFIED_CONFLICT",
                             detail=hard.human_reason,
                             used_evidence=(hard.history_evidence,
                                            hard.current_evidence),
-                            verified_conflicts=(conflict,))
+                            verified_conflicts=(conflict,),
+                            judge_decision_mode=active_decision_mode)
                         pair_codes[pair.history_record_id] = "VERIFIED_CONFLICT"
                         _jcount("judge.core_conflict.intercepted")
                         _jcount(f"judge.core_conflict.{hard.conflict_type}")

@@ -250,7 +250,9 @@ def test_hard_conflict_skips_judge_signs_verified_conflict(
     assert c_text[c_ev.start:c_ev.end] == c_quote
     assert out.reason == reason                    # 整改令五固定措辞
     assert "已验证" not in out.reason and "已逐一核验" not in out.reason
-    assert pair.judge_decision_mode == ""          # 判官未参与（前置层直判）
+    # 判官未参与（前置层直判），但生效模式留痕（终审复审第三轮：
+    # 拦截对 judge_decision_mode=semantic_authority——模式即判定成因）
+    assert pair.judge_decision_mode == "semantic_authority"
     # 观测指标同源消费（提交三指标面+本层拦截计数）：判官零调用但拦截
     # 计数照记，且绝不进公共五字段
     diag = out.judge_diagnostics
@@ -509,6 +511,67 @@ def test_p0_5_detector_exception_without_callback_still_fail_open(monkeypatch):
         history_record_id=H_ID, current_record_id=C_ID)
     assert hit is cc.NO_CONFLICT
     assert hit.has_conflict is False
+
+
+# ------------------------------------------------ 3-B-ter. 终审复审第三轮钉测
+# 硬冲突前置拦截路径审计模式留痕：拦截对 PairResult/AuditRecord 的
+# judge_decision_mode 必须记生效模式（legacy 不走此层，模式即判定成因
+# 的一部分）。全假件零真 API（爆炸 callable 反证判官零调用）。
+
+def test_review3_hard_conflict_intercept_records_semantic_mode(monkeypatch):
+    """复审第三轮钉测①：semantic_authority 正常生产配置（固定映射
+    config）命中硬冲突（787.8万股 vs 789.8万股类）→判官零调用（爆炸
+    callable 反证）+PairResult.judge_decision_mode=="semantic_authority"
+    +AuditRecord 同值。"""
+    _semantic(monkeypatch)
+    h_text = "甲公司9月24日公告营收787.8万元。"
+    c_text = "甲公司9月24日公告营收789.8万元。"
+    out = _decide(h_text, "甲公司", c_text, "甲公司", _explode)
+    assert out.decision == "不重复"
+    assert out.internal_code == "VERIFIED_CONFLICT"
+    pair = out.pair_results[0]
+    # 拦截对模式留痕（复审第三轮核心断言——原为空串）
+    assert pair.judge_decision_mode == "semantic_authority"
+    record = audit_module.build_audit_record(pair)
+    assert record.judge_decision_mode == "semantic_authority"
+    assert out.judge_version_config.decision_mode == "semantic_authority"
+    # 端到端：commit 写入计划审计文档同值留痕
+    ctx = CommitContext(
+        scope_id="default", business_date="2026-09-26", arrival_seq=3,
+        current=_current(c_text, "甲公司"),
+        candidates=(_history(h_text, "甲公司"),),
+        visible_seq=10, prepared_seq=10, coverage_complete=True)
+    plan = build_commit_write_plan(ctx, out, audit_complete=True)
+    assert plan.audit_batch.records[0].judge_decision_mode == \
+        "semantic_authority"
+
+
+def test_review3_replay_intercept_records_explicit_mode(monkeypatch):
+    """复审第三轮钉测②：allow_prompt_direct=True+judge_v2 config+
+    env=semantic_authority 命中硬冲突→PairResult 与 AuditRecord 均记
+    "semantic_authority"（回放通道生效合并模式显式留痕——env 单源链
+    解析值，非空串；版本面仍 config 单源 judge_v2）。"""
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
+                       "semantic_authority")
+    replay_vc = jvc.judge_version_for_prompt("judge_v2")
+    assert replay_vc.decision_mode == ""
+    h_text = "甲公司营收787.8万元。"
+    c_text = "甲公司营收789.8万元。"
+    out = decide_service.decide_for_task(
+        _history(h_text, "甲公司"), [],
+        current=_current(c_text, "甲公司"),
+        judge_callable=_explode, judge_in_chain=True, coverage_complete=True,
+        judge_version_config=replay_vc, allow_prompt_direct=True)
+    assert out.decision == "不重复"
+    assert out.internal_code == "VERIFIED_CONFLICT"
+    pair = out.pair_results[0]
+    # 拦截对留生效合并模式（回放通道 env 解析值——显式非空串）
+    assert pair.judge_decision_mode == "semantic_authority"
+    record = audit_module.build_audit_record(pair)
+    assert record.judge_decision_mode == "semantic_authority"
+    # 版本面仍 config 单源（v2 提示词身份不漂移）
+    assert out.judge_version_config is replay_vc
+    assert out.judge_version_config.prompt_version == "judge_v2"
 
 
 # ============================================================ 3-C. 已摘除族函数级语义钉（终审 P0-3/P0-4）
