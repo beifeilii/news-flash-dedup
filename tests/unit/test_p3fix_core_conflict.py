@@ -14,6 +14,24 @@ p3-semantic-authority）——
 五、公共理由按来源固定措辞（禁"已验证""已逐一核验"）。
 主窗附加纪律 2：默认 legacy_proof_gate 下判官裁决面行为与 2d0d418 基线
    全等（§7 回归钉）。
+
+独立终审整改令（P0 六项+P1 三项，2026-10-10，本文件收口）——
+P0-1 模式闸：硬冲突前置仅 semantic_authority 执行；legacy 全等回归钉
+   （§7 专项：前置层零调用+判官照常+公共五字段基线全等）；
+P0-2 主体收窄：删除"文首取段首4字"回退，主体硬冲突只保留双侧代码
+   互斥（§3-A subject-code 正例+§3-B-bis 特朗普反例钉）；
+P0-3 四族摘除：极性/单位/时间/阶段从 _DETECTORS 摘除（§3-B-bis 三枚
+   反例钉 a/b/c+§3-C 函数级语义钉备日后槽位对齐版回归）；
+P0-4 revision 摘除：前值修订交判官（§3-B-bis 反例钉）；
+P0-5 fail-open：逐检测器 try/except+judge.core_conflict.detector_error
+   诊断计数+放行给判官（§3-B-bis 两钉）；
+P0-6 数值族保留加审：787.8万/789.8万 正例（判官零调用）+3286000股/
+   328.6万股 同值不同写法反例（§3-A/§3-B-bis）；
+P1-1 单源传递：JudgeVersionConfig 在 decide_for_task 入口创建一次，
+   adapter/manifest/audit 三处版本一致（§9 钉测：env 空+显式实参
+   semantic_authority→三层 v5/policy_v3）；
+P1-2 diagnostics_hash：五诊断字段规范化哈希入 AuditRecord，payload_hash
+   原样不动（§10 钉测）。
 """
 
 from __future__ import annotations
@@ -175,9 +193,11 @@ def _adjudicate_direct(judge, h_text, c_text, **kw):
 
 
 # ============================================================ 3-A. 硬冲突正例（判官零调用）
-# 整改令三：每种硬冲突至少一条正例——主体明确不同（代码互斥/主体名互斥）、
-# 数值不同、时间不同、开盘/收盘、上涨/下跌、高于/低于、单位美元/点、
-# 数值修订后有效值不同。默认 legacy 模式下同样前置拦截（模式无关）。
+# 整改令三：每种硬冲突至少一条正例。终审 P0 收口后现役硬冲突族=主体
+# （P0-2 收窄：仅双侧明确证券代码互斥）+数值（P0-6 保留：剔数骨架
+# 同槽位判据）；unit/time/stage/polarity/revision 五族已摘除（正例改钉
+# 函数级语义备回归，见 §3-C）。前置拦截仅 semantic_authority 模式生效
+# （P0-1 模式闸；legacy 全等回归钉见 §7）。
 
 _HARD_CONFLICT_CASES = [
     # (case_id, h_text, c_text, type, h_quote, c_quote, 公共理由)
@@ -185,38 +205,15 @@ _HARD_CONFLICT_CASES = [
      "甲公司（600001）公告营收100万元。", "甲公司（600002）公告营收100万元。",
      "subject", "600001", "600002",
      "两条快讯的核心主体不同，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("subject-name",  # 整改令三点名样本：易天股份（300812）/名臣健康
-     "易天股份（300812）主力净流入5亿。", "名臣健康主力净流入5亿。",
-     "subject", "易天股份", "名臣健康",
-     "两条快讯的核心主体不同，属于同一槽位明确冲突，因此判定为不重复。"),
     ("numeric",  # 整改令三点名样本：787.8万/789.8万 同槽位数值冲突
      "甲公司9月24日公告营收787.8万元。", "甲公司9月24日公告营收789.8万元。",
      "numeric", "787.8万", "789.8万",
      "两条快讯的核心数值不同，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("unit",
-     "甲公司9月24日报价6612.30美元。", "甲公司9月24日报价6612.30点。",
-     "unit", "6612.30美元", "6612.30点",
-     "两条快讯同槽位数值的单位不同，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("time",
-     "甲公司9月24日公告营收100万元。", "甲公司9月25日公告营收100万元。",
-     "time", "9月24日", "9月25日",
-     "两条快讯的事实时间不同，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("stage",
-     "甲公司开盘价100元。", "甲公司收盘价100元。",
-     "stage", "开盘", "收盘",
-     "两条快讯的时间阶段不同，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("polarity-rise-fall",
-     "甲公司股价上涨5%。", "甲公司股价下跌5%。",
-     "polarity", "上涨", "下跌",
-     "两条快讯的方向相反，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("polarity-above-below",
-     "甲公司业绩高于预期。", "甲公司业绩低于预期。",
-     "polarity", "高于", "低于",
-     "两条快讯的方向相反，属于同一槽位明确冲突，因此判定为不重复。"),
-    ("revision",
-     "甲公司公告净利177.9万元。", "甲公司公告：净利由177.9万修正为177.5万。",
-     "revision", "177.9万", "177.5万",
-     "两条快讯为修订关系且修订后最新有效值不同，属于同一槽位明确冲突，因此判定为不重复。"),
+    # 终审 P0-6 正例钉（无日期裸数值对——同槽位判据不依赖日期词）
+    ("numeric-bare",
+     "甲公司营收787.8万元。", "甲公司营收789.8万元。",
+     "numeric", "787.8万", "789.8万",
+     "两条快讯的核心数值不同，属于同一槽位明确冲突，因此判定为不重复。"),
 ]
 
 
@@ -227,11 +224,11 @@ _HARD_CONFLICT_CASES = [
 def test_hard_conflict_skips_judge_signs_verified_conflict(
         monkeypatch, case_id, h_text, c_text, ctype, h_quote, c_quote,
         reason):
-    """整改令一/三：核心硬冲突→直接不重复（VERIFIED_CONFLICT）+判官零调用
-    （爆炸 callable 反证）+双侧原文证据绑真 offset+按冲突类型的固定公共
-    理由（整改令五）+审计冲突件 basis=CORE_CONFLICT。默认 legacy 模式下
-    同样拦截（前置层先于模式分流）。"""
-    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    """整改令一/三+终审 P0-1/P0-6：semantic_authority 下核心硬冲突→直接
+    不重复（VERIFIED_CONFLICT）+判官零调用（爆炸 callable 反证）+双侧
+    原文证据绑真 offset+按冲突类型的固定公共理由（整改令五）+审计冲突件
+    basis=CORE_CONFLICT。legacy_proof_gate 下不拦截（模式闸，§7 专项钉）。"""
+    _semantic(monkeypatch)
     h_subject = h_text.lstrip("*ST").split("（")[0][:4]
     c_subject = c_text.lstrip("*ST").split("（")[0][:4]
     out = _decide(h_text, h_subject, c_text, c_subject, _explode)
@@ -391,6 +388,190 @@ def test_counterexample_same_value_different_notation(monkeypatch):
     assert out3.decision == "重复"
 
 
+# ============================================================ 3-B-bis. 终审反例钉（P0-2/P0-3/P0-4/P0-6）
+# 独立终审整改令反例：每枚钉"不得硬冲突、判官被调用"（fp=0 铁律——
+# 硬冲突误判=把真重复冤杀成不重复）。
+
+def test_p0_2_counterexample_subject_prefix_truncation(monkeypatch):
+    """终审 P0-2 反例钉："特朗普表示将结束战争。/特朗普总统表示将结束
+    战争。"——原"文首取段首4字"回退截成"特朗普表"/"特朗普总"误判主体
+    不同；名称比对整族降级后（无代码=不判主体冲突）不得硬冲突，判官
+    被调用。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("特朗普表示将结束战争。", "特朗普",
+                  "特朗普总统表示将结束战争。", "特朗普总统", judge)
+    assert judge.calls == ["ab", "ba"]          # 判官被调用（不硬冲突）
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    assert out.decision == "重复"                # 判官签发重复（真重复不被冤杀）
+
+
+def test_p0_3a_counterexample_polarity_one_side_supplement(monkeypatch):
+    """终审 P0-3 反例钉 a)："甲指数上涨，乙指数下跌。/甲指数上涨。"——
+    单方补充另一指数方向，非同槽位极性冲突；极性族停用+数值骨架不同
+    →不硬冲突，判官被调用。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("甲指数上涨，乙指数下跌。", "甲指数",
+                  "甲指数上涨。", "甲指数", judge)
+    assert judge.calls == ["ab", "ba"]
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    assert out.decision == "重复"
+
+
+def test_p0_3b_counterexample_unit_cross_slot(monkeypatch):
+    """终审 P0-3 反例钉 b)："甲公司目标价100美元，涨幅1%。/甲公司指数
+    报100点，涨幅1%。"——同值挂不同单位词=跨槽位（目标价 vs 指数位），
+    不是同槽位单位冲突；单位族停用+数值剔数骨架不同→不硬冲突，判官
+    被调用。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate",
+                                           with_falsification=False))
+    out = _decide("甲公司目标价100美元，涨幅1%。", "甲公司",
+                  "甲公司指数报100点，涨幅1%。", "甲公司", judge)
+    assert judge.calls == ["ab", "ba"]
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    assert out.decision == "不重复"               # 判官语义裁决（非前置抢判）
+    assert out.internal_code == "JUDGE_NON_DUPLICATE"
+
+
+def test_p0_3c_counterexample_time_info_supplement(monkeypatch):
+    """终审 P0-3 反例钉 c)："9月10日甲公司营收100万。/9月10日甲公司
+    营收100万，当日股价涨1%。"——当日股价补充=信息补充，非时间冲突；
+    时间族停用+数值 token 数不等→不硬冲突，判官被调用。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("9月10日甲公司营收100万。", "9月10日甲公司",
+                  "9月10日甲公司营收100万，当日股价涨1%。", "9月10日甲公司",
+                  judge)
+    assert judge.calls == ["ab", "ba"]
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    assert out.decision == "重复"
+
+
+def test_p0_4_counterexample_revision_goes_to_judge(monkeypatch):
+    """终审 P0-4 反例钉："前值为177.9万人。/前值由177.9万人修正为
+    177.5万人。"——v5 提示词 R8 已定前值修订在产品确认前一律存疑，
+    硬冲突层不得抢判不重复；修订族摘除后不硬冲突，进判官。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("前值为177.9万人。", "前值",
+                  "前值由177.9万人修正为177.5万人。", "前值", judge)
+    assert judge.calls == ["ab", "ba"]          # 进判官（不硬冲突）
+    assert "judge.core_conflict.revision" not in out.judge_diagnostics
+    assert out.decision == "重复"
+
+
+def test_p0_6_counterexample_same_value_different_notation_bare(monkeypatch):
+    """终审 P0-6 反例钉："3286000股，占比5%。/328.6万股。"——同值不同
+    写法+单方补充（占比）：数值 token 数不等（2 vs 1）不判同槽位冲突
+    →不硬冲突，判官被调用；与 §3-A numeric-bare 正例共同钉数值族
+    判据的两翼。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("3286000股，占比5%。", "3286000股",
+                  "328.6万股。", "328.6万股", judge)
+    assert judge.calls == ["ab", "ba"]
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    assert out.decision == "重复"
+
+
+def test_p0_5_detector_exception_fails_open_to_judge(monkeypatch):
+    """终审 P0-5 fail-open：任一检测器异常→记诊断计数
+    （judge.core_conflict.detector_error）+放行给判官，绝不中断判定
+    （后续检测器照常执行；判官照常被调用并签发）。"""
+    _semantic(monkeypatch)
+
+    def _boom(text_a, text_b, id_a, id_b):
+        raise RuntimeError("检测器炸了（fail-open 钉）")
+
+    # 前置一个必炸检测器+现役检测器：异常计数后继续跑现役族，全放行
+    monkeypatch.setattr(cc, "_DETECTORS", (_boom, cc._detect_subject))
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide("甲公司9月24日公告营收100万元。", "甲公司",
+                  "甲公司公告：9月24日营收100万元。", "甲公司", judge)
+    assert out.judge_diagnostics["judge.core_conflict.detector_error"] == 1
+    assert judge.calls == ["ab", "ba"]          # 放行给判官（双序实调）
+    assert out.decision == "重复"                # 判定未中断，正常签发
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+
+
+def test_p0_5_detector_exception_without_callback_still_fail_open(monkeypatch):
+    """终审 P0-5 兜底形态：on_detector_error 未注入（None）时异常同样
+    放行（不向上抛、不中断），返回 NO_CONFLICT。"""
+    def _boom(text_a, text_b, id_a, id_b):
+        raise RuntimeError("无回调 fail-open 钉")
+
+    monkeypatch.setattr(cc, "_DETECTORS", (_boom,))
+    hit = cc.detect_core_conflict(
+        "甲公司公告营收100万元。", "甲公司公告营收100万元。",
+        history_record_id=H_ID, current_record_id=C_ID)
+    assert hit is cc.NO_CONFLICT
+    assert hit.has_conflict is False
+
+
+# ============================================================ 3-C. 已摘除族函数级语义钉（终审 P0-3/P0-4）
+# 四族+revision 已从 _DETECTORS 摘除（槽位归属未证前停用，交判官）；
+# 函数与语义钉保留备日后槽位对齐版回归——本节直射函数级（不经
+# detect_core_conflict），证明函数判据未漂移；复位入 _DETECTORS 前以
+# 本节为语义基准。
+
+_RETIRED_POSITIVE_CASES = [
+    ("unit", cc._detect_unit,
+     "甲公司9月24日报价6612.30美元。", "甲公司9月24日报价6612.30点。",
+     "unit"),
+    ("time", cc._detect_time,
+     "甲公司9月24日公告营收100万元。", "甲公司9月25日公告营收100万元。",
+     "time"),
+    ("stage", cc._detect_stage,
+     "甲公司开盘价100元。", "甲公司收盘价100元。", "stage"),
+    ("polarity", cc._detect_polarity,
+     "甲公司股价上涨5%。", "甲公司股价下跌5%。", "polarity"),
+    ("revision", cc._detect_revision,
+     "甲公司公告净利177.9万元。", "甲公司公告：净利由177.9万修正为177.5万。",
+     "revision"),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,fn,h_text,c_text,ctype", _RETIRED_POSITIVE_CASES,
+    ids=[c[0] for c in _RETIRED_POSITIVE_CASES])
+def test_retired_detector_family_semantics_pinned(
+        case_id, fn, h_text, c_text, ctype):
+    """终审 P0-3/P0-4：已摘除族函数语义钉（函数保留在案）——直射调用
+    仍按原判据命中（含双侧证据绑真 offset）；复位前判据不漂移。"""
+    hit = fn(h_text, c_text, H_ID, C_ID)
+    assert hit is not None, case_id
+    assert hit.has_conflict is True
+    assert hit.conflict_type == ctype
+    assert hit.field_path == f"core_conflict.{ctype}"
+    assert h_text[hit.history_evidence.start:
+                  hit.history_evidence.end] == hit.history_evidence.quote
+    assert c_text[hit.current_evidence.start:
+                  hit.current_evidence.end] == hit.current_evidence.quote
+
+
+def test_retired_families_absent_from_active_detectors():
+    """终审 P0-3/P0-4：五族确实不在 _DETECTORS——原五族正例样本经
+    detect_core_conflict 一律 NO_CONFLICT（停用，交判官），与函数级
+    语义钉双面互证（函数在案≠现役）。"""
+    assert cc._detect_unit not in cc._DETECTORS
+    assert cc._detect_time not in cc._DETECTORS
+    assert cc._detect_stage not in cc._DETECTORS
+    assert cc._detect_polarity not in cc._DETECTORS
+    assert cc._detect_revision not in cc._DETECTORS
+    for h_text, c_text in (
+            ("甲公司9月24日报价6612.30美元。", "甲公司9月24日报价6612.30点。"),
+            ("甲公司9月24日公告营收100万元。", "甲公司9月25日公告营收100万元。"),
+            ("甲公司开盘价100元。", "甲公司收盘价100元。"),
+            ("甲公司股价上涨5%。", "甲公司股价下跌5%。"),
+            ("甲公司公告净利177.9万元。",
+             "甲公司公告：净利由177.9万修正为177.5万。")):
+        hit = cc.detect_core_conflict(
+            h_text, c_text, history_record_id=H_ID, current_record_id=C_ID)
+        assert hit.has_conflict is False, (h_text, c_text)
+
+
 # ============================================================ 4. 诊断持久化端到端
 
 def test_diagnostics_persist_pair_to_audit_record(monkeypatch):
@@ -541,6 +722,53 @@ def test_baseline_default_mode_nd_with_falsification(monkeypatch):
     assert judged.detail == (
         "判官双序一致证伪同一事实（维度 time），"
         "双侧证伪引文已绑定原文且机器验 gate 通过。")
+
+
+# —— 终审 P0-1：legacy 全等回归钉（模式闸专项） ——
+
+def test_p0_1_legacy_mode_hard_conflict_layer_fully_disabled(monkeypatch):
+    """终审 P0-1 legacy 全等回归钉：legacy_proof_gate（env 缺席默认）下
+    硬冲突前置层**整层不执行**——detect_core_conflict 零调用（间谍反证）、
+    硬冲突对照常进判官（双序实调）、判官结论即终态，端到端公共五字段
+    与基线 2d0d418 判定完全一致（基线无前置拦截层，判官双序重复→
+    FACT_EQUIVALENT/基线文案；双序证伪不重复→VERIFIED_CONFLICT/基线
+    文案）；前置拦截计数为零。"""
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    spy: list = []
+
+    def _spy_detect(*args, **kwargs):
+        spy.append(1)                     # 任何调用都是模式闸失效
+        return cc.NO_CONFLICT
+
+    monkeypatch.setattr(decide_service.core_conflict_module,
+                        "detect_core_conflict", _spy_detect)
+    # 硬冲突对（semantic 下会被前置层拦截的 numeric 同槽位对）
+    num_h, num_c = "甲公司9月24日公告营收787.8万元。", "甲公司9月24日公告营收789.8万元。"
+    # ① 判官双序重复 → 基线：重复/FACT_EQUIVALENT/基线文案公共理由
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide(num_h, "甲公司", num_c, "甲公司", judge)
+    assert spy == []                      # 前置层零调用（模式闸关死）
+    assert judge.calls == ["ab", "ba"]    # 判官照常被调用（基线行为）
+    assert out.decision == "重复"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.internal_code == "FACT_EQUIVALENT"
+    assert out.pair_results[0].code == "FACT_EQUIVALENT"
+    assert out.reason == (
+        "判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。")
+    assert out.to_public_dict() == {
+        "item_id": "item-C", "text": num_c, "decision": "重复",
+        "duplicate_ids": ["item-A"],
+        "reason": "判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。"}
+    assert "judge.core_conflict.intercepted" not in out.judge_diagnostics
+    # ② 硬冲突主体对（代码互斥）在 legacy 下同样进判官：判官双序重复
+    # →基线重复（证明语义收窄只影响 semantic 面，不渗入 legacy 面）
+    sub_h, sub_c = "甲公司（600001）公告营收100万元。", "甲公司（600002）公告营收100万元。"
+    judge2 = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out2 = _decide(sub_h, "甲公司", sub_c, "甲公司", judge2)
+    assert spy == []
+    assert judge2.calls == ["ab", "ba"]
+    assert out2.decision == "重复"
+    assert out2.internal_code == "FACT_EQUIVALENT"
 
 
 def test_baseline_default_mode_unresolved_mappings(monkeypatch):
@@ -716,3 +944,188 @@ def test_adapter_effective_versions_match_manifest_records(monkeypatch):
         assert proof["cache_key"] == judge_pair.compute_cache_key(
             proof["model_version"], vc.prompt_sha256, vc.policy_version,
             "ab", proof["text_a_sha256"], proof["text_b_sha256"])
+
+
+# ============================================================ 9. 终审 P1-1 单源传递钉测
+# JudgeVersionConfig 在 decide_for_task 入口创建一次，依次传给判官装配
+# （build_judge_callable/proof_for_order）、decide 服务、cache key 素材、
+# run manifest 登记与审计记录——修掉"显式 judge_decision_mode 实参与
+# adapter/manifest 各读环境变量"的分裂（显式实参语义权威）。
+
+def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
+    """终审 P1-1 钉测：env 空+显式实参 semantic_authority → decide_for_task
+    入口创建 JudgeVersionConfig 一次（judge_v5/policy_v3），adapter/
+    manifest/audit 三处版本一致。判官全假件零真 API（装配间谍+罐装
+    call_fn；真装配件被间谍替换的段不触 LLM）。"""
+    import json as _json
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+
+    # （a）入口创建一次并传给判官装配：装配间谍捕获同一 vc（返回 None
+    # =未注入 fail-closed，绝不触真 LLM）
+    captured = {}
+
+    def _spy_build(*, judge=None, config=None, budget=None,
+                   environ=None, version_config=None):
+        captured["version_config"] = version_config
+        return None
+
+    monkeypatch.setattr(decide_service.judge_adapter_module,
+                        "build_judge_callable", _spy_build)
+    t_h, t_c = "甲公司9月24日公告营收100万元。", "甲公司公告：9月24日营收100万元。"
+    history = _history(t_h, "甲公司")
+    current = _current(t_c, "甲公司")
+    out = decide_service.decide_for_task(
+        history, [], current=current, judge_callable=None,
+        judge_in_chain=True, coverage_complete=True,
+        judge_decision_mode="semantic_authority")
+    vc = out.judge_version_config
+    assert vc is not None
+    assert (vc.prompt_version, vc.policy_version, vc.decision_mode) == (
+        "judge_v5", "policy_v3", "semantic_authority")
+    assert captured["version_config"] is vc       # 判官装配收到入口同一 vc
+    assert out.decision == "边界case/疑难case"     # 未注入 fail-closed（不冒签）
+    # 内部审计面外露，绝不进公共五字段
+    assert "judge_version_config" not in out.to_public_dict()
+    monkeypatch.undo()                            # 恢复真装配件（env 复原）
+
+    # （b）adapter：同一 vc 装配罐装真件（call_fn 罐装，零真 API）→
+    # 证明 prompt_sha256/policy/cache key 素材全部同源自 v5/policy_v3
+    resp = _json.dumps({
+        "decision": "重复", "reason": "r",
+        "evidence_a": ["100万元"], "evidence_b": ["100万元"],
+        "numeric_check": {"conclusion": "一致", "numbers_a": ["100万"],
+                          "numbers_b": ["100万"]},
+        "time_check": {"conclusion": "一致", "times_a": ["9月24日"],
+                       "times_b": ["9月24日"]},
+    }, ensure_ascii=False)
+    cfg = judge_adapter.default_judge_config(None, version_config=vc)
+    assert cfg.prompt_version == "judge_v5"       # adapter 不再回落 env 读 v1
+    judge = lr.SyncResidualJudge(
+        lr.ResidualJudgeConfig(prompt_version=cfg.prompt_version),
+        call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
+    cb = judge_adapter.build_judge_callable(
+        judge=judge, version_config=vc,
+        environ={"DEDUP_JUDGE_PROOF": "1"})
+    assert cb is not None
+    ctx = {"pair_id": "p-p11", "order": "ab",
+           "item_a_id": "item-A", "item_b_id": "item-C",
+           "record_a_id": H_ID, "record_b_id": C_ID,
+           "text_a": t_h, "text_b": t_c}
+    proof = cb(ctx)
+    assert proof["prompt_sha256"] == vc.prompt_sha256   # v5 提示词摘要
+    assert proof["policy_version"] == vc.policy_version == "policy_v3"
+    assert proof["cache_key"] == judge_pair.compute_cache_key(
+        proof["model_version"], vc.prompt_sha256, vc.policy_version,
+        "ab", proof["text_a_sha256"], proof["text_b_sha256"])
+
+    # （c）manifest：登记同一 vc（env 空不回落 env 读值）
+    manifest = rm.build_run_manifest(
+        inputs=("rec-a",), embedding_space="fake_space",
+        code_git_sha=_GIT_SHA0, judge_version_config=vc)
+    assert manifest.prompt_version == "judge_v5" == vc.prompt_version
+    assert manifest.prompt_sha256 == vc.prompt_sha256
+    assert manifest.policy_version == "policy_v3" == vc.policy_version
+
+    # （d）audit：对级 PairResult→AuditRecord 的 judge_decision_mode 与
+    # 入口 vc 同源（semantic_authority）；mode→版本映射单源自证
+    # （jvc.judge_version_for_mode(audit mode) == 入口 vc）
+    judge2 = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out2 = decide_service.decide_for_task(
+        _history(t_h, "甲公司"), [], current=_current(t_c, "甲公司"),
+        judge_callable=judge2, judge_in_chain=True, coverage_complete=True,
+        judge_decision_mode="semantic_authority")
+    assert out2.decision == "重复"
+    assert out2.judge_version_config == vc
+    assert out2.pair_results[0].judge_decision_mode == \
+        vc.decision_mode == "semantic_authority"
+    ctx2 = CommitContext(
+        scope_id="default", business_date="2026-09-26", arrival_seq=3,
+        current=current, candidates=(history,), visible_seq=10,
+        prepared_seq=10, coverage_complete=True)
+    plan = build_commit_write_plan(ctx2, out2, audit_complete=True)
+    record = plan.audit_batch.records[0]
+    assert record.judge_decision_mode == vc.decision_mode
+    assert jvc.judge_version_for_mode(
+        record.judge_decision_mode) == vc        # audit mode→版本单源一致
+
+
+def test_p1_1_version_config_param_beats_env(monkeypatch):
+    """终审 P1-1 补钉：env=semantic_authority+显式实参 legacy_proof_gate
+    →入口 vc=judge_v1/policy_v2（显式实参语义权威，双向对拍 §9 主钉）。"""
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV, "semantic_authority")
+    out = decide_service.decide_for_task(
+        _history("甲公司公告回购股份。", "甲公司"), [],
+        current=_current("甲公司发布半年度财报。", "甲公司"),
+        judge_callable=_judge(lambda ctx: _make_proof(
+            ctx, verdict="not_duplicate", with_falsification=False)),
+        judge_in_chain=True, coverage_complete=True,
+        judge_decision_mode="legacy_proof_gate")
+    vc = out.judge_version_config
+    assert (vc.prompt_version, vc.policy_version, vc.decision_mode) == (
+        "judge_v1", "policy_v2", "legacy_proof_gate")
+
+
+# ============================================================ 10. 终审 P1-2 diagnostics_hash 钉测
+
+def test_p1_2_diagnostics_hash_changes_and_payload_hash_stable(monkeypatch):
+    """终审 P1-2 钉测：AuditRecord.diagnostics_hash=五诊断字段
+    （evidence_status/evidence_warnings/machine_findings/
+    full_text_fallback_used/judge_decision_mode）规范化哈希——五字段
+    任一变化→hash 变；payload_hash 原样保留不动（历史兼容）；规范化=
+    warnings/findings 集合语义（排序去序敏感）。"""
+    _semantic(monkeypatch)
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate",
+                                           mv_passed=False,
+                                           rules_triggered=("P_OFFSET",)))
+    history = _history("甲公司9月24日公告营收100万元。", "甲公司")
+    current = _current("甲公司公告：9月24日营收100万元。", "甲公司")
+    out = decide_service.decide_for_task(
+        history, [], current=current, judge_callable=judge,
+        judge_in_chain=True, coverage_complete=True)
+    pair = out.pair_results[0]
+    base = audit_module.build_audit_record(pair)
+    assert base.diagnostics_hash                    # 自动计算非空（64 hex）
+    assert len(base.diagnostics_hash) == 64
+    assert base.payload_hash
+    # 持久化文档实含（to_doc 序列化面）
+    assert "diagnostics_hash" in base.to_doc()
+    # 公共五字段绝不携诊断哈希
+    assert "diagnostics_hash" not in out.to_public_dict()
+
+    # 五字段逐一变异：diagnostics_hash 必变、payload_hash 必不变
+    mutations = [
+        {"evidence_status": "pass"},
+        {"evidence_warnings": ()},
+        {"machine_findings": ()},
+        {"full_text_fallback_used": True},
+        {"judge_decision_mode": "legacy_proof_gate"},
+    ]
+    for mut in mutations:
+        mutated = audit_module.build_audit_record(
+            pair.__class__(**{**pair.__dict__, **mut}))
+        assert mutated.diagnostics_hash != base.diagnostics_hash, mut
+        assert mutated.payload_hash == base.payload_hash, mut
+
+    # 规范化：warnings/findings 排序（集合语义，顺序无关）→ 同 hash
+    two = pair.__class__(**{**pair.__dict__,
+                            "evidence_warnings": ("W_SECOND", "W_FIRST"),
+                            "machine_findings": ("M_SECOND", "M_FIRST")})
+    two_swapped = pair.__class__(
+        **{**pair.__dict__,
+           "evidence_warnings": ("W_FIRST", "W_SECOND"),
+           "machine_findings": ("M_FIRST", "M_SECOND")})
+    rec_two = audit_module.build_audit_record(two)
+    rec_two_swapped = audit_module.build_audit_record(two_swapped)
+    assert rec_two.diagnostics_hash == rec_two_swapped.diagnostics_hash
+    assert rec_two.diagnostics_hash != base.diagnostics_hash
+    assert rec_two.payload_hash == base.payload_hash
+
+    # 端到端：commit 写入计划的审计文档实含 diagnostics_hash（§4 同源）
+    ctx = CommitContext(
+        scope_id="default", business_date="2026-09-26", arrival_seq=3,
+        current=current, candidates=(history,), visible_seq=10,
+        prepared_seq=10, coverage_complete=True)
+    plan = build_commit_write_plan(ctx, out, audit_complete=True)
+    record = plan.audit_batch.records[0]
+    assert record.diagnostics_hash == base.diagnostics_hash
+    assert "diagnostics_hash" in record.to_doc()

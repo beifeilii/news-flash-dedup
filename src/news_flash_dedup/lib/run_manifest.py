@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from news_flash_dedup.decide import judge_version_config
+from news_flash_dedup.decide import judge_version_config as _jvc
 from news_flash_dedup.decide.llm_residual import (
     DEFAULT_MODEL,
     JUDGE_PROMPT_VERSION,
@@ -205,6 +205,7 @@ def build_run_manifest(
     code_git_sha: str | None = None,
     env: Mapping[str, str] | None = None,
     repo_root: str | Path | None = None,
+    judge_version_config=None,
 ) -> RunManifest:
     """装配跑批版本清单。
 
@@ -220,12 +221,25 @@ def build_run_manifest(
     缺省随 prompt 映射同解（judge_v1/v2/v3→policy_v2、judge_v5→
     policy_v3）——修掉"实跑 v5 却登记 v1 / 实跑 legacy 却登记 v3"错配；
     显式实参仍优先（回放/考试通道自供版本身份）。
+
+    终审 P1-1（2026-10-10 单源传递）：judge_version_config 在场（
+    decide_for_task 入口创建、经 DecideOutcome.judge_version_config 外露
+    的同一 JudgeVersionConfig）时，prompt_version/prompt_sha256/
+    policy_version 缺省项从其同源读取——显式实参语义权威（env 空时
+    manifest 不得各自回落 env 读值）；显式字符串实参仍最优先（回放
+    /考试通道自供版本身份）。
     """
     items = tuple(inputs)
+    if prompt_version is None and judge_version_config is not None:
+        prompt_version = judge_version_config.prompt_version
+        if prompt_sha256 is None:
+            prompt_sha256 = judge_version_config.prompt_sha256
+        if policy_version is None:
+            policy_version = judge_version_config.policy_version
     if prompt_version is None:
-        prompt_version = judge_version_config.default_judge_version(
+        prompt_version = _jvc.default_judge_version(
             env).prompt_version
-    resolved = judge_version_config.judge_version_for_prompt(prompt_version)
+    resolved = _jvc.judge_version_for_prompt(prompt_version)
     if prompt_sha256 is None:
         prompt_sha256 = resolved.prompt_sha256
     if policy_version is None:

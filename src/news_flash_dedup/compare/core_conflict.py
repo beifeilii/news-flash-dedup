@@ -1,34 +1,43 @@
-"""核心字段确定性硬冲突前置层（2026-10-10，提交一修复，分支 p3-semantic-authority）。
+"""核心字段确定性硬冲突前置层（2026-10-10 提交一修复；终审 P0 收口
+2026-10-10，分支 p3-semantic-authority）。
 
-出处：独立复审整改令一（老板批准转发）——判官签发结果之前，对明确核心
-字段冲突做**确定性拦截**。仅当全部满足时才允许硬判"不重复"：
-1. 两侧对应同一个事实槽位；2. 两侧字段都明确出现（不是单方缺失）；
-3. 归一化后仍然不同；4. 两侧都能绑定原文证据；5. 冲突属于确定性冲突，
-不需要语义猜测。
+出处：独立复审整改令一（老板批准转发）+ 独立终审整改令（P0 六项）——
+判官签发结果之前，对明确核心字段冲突做**确定性拦截**。仅当全部满足
+时才允许硬判"不重复"：1. 两侧对应同一个事实槽位；2. 两侧字段都明确
+出现（不是单方缺失）；3. 归一化后仍然不同；4. 两侧都能绑定原文证据；
+5. 冲突属于确定性冲突，不需要语义猜测。
 
 执行顺序（decide/service.py 判官循环内）：
-规则比较 → 本层硬冲突前置 → 若硬冲突则直接不重复并**跳过判官** →
-无硬冲突才进入判官双序合并 → 证明层只记录证据质量告警。
+规则比较 → 本层硬冲突前置（**仅 semantic_authority 模式**，终审 P0-1
+模式闸；legacy_proof_gate 下本层不执行，行为与基线 2d0d418 全等）→
+若硬冲突则直接不重复并**跳过判官** → 无硬冲突才进入判官双序合并 →
+证明层只记录证据质量告警。
 
-反冤杀纪律（主窗附加纪律 1：任一 false positive=把真重复冤杀）：
-- 本层一切检测**FN 优先**（宁可漏给判官，不可错杀重复）——凡需"语义
-  猜测"才能确认同槽位的情形一律放行；
+反冤杀纪律（fp=0 铁律：任一 false positive=把真重复冤杀成不重复）：
+- 本层一切检测**FN 优先**（宁可漏给判官，不可错杀重复）——凡无法
+  **证明**"同一原子 Fact+同一字段槽位"的，一律放行给判官；
 - 数值冲突的"同槽位"判据=**剔数骨架逐字相等 + 双侧数值 token 数相等 +
   同位置归一值不同**（骨架不同=可能错位/跨指标，放行；"每10股派3元"
-  vs "每股派0.3元"骨架 token 数不等，放行）；
-- 时间/阶段冲突=**双向**差集均非空（单侧补一条时间/阶段词=信息补充，
-  放行）；
-- 极性冲突=反义词对双侧分别命中（否定词族不对称不算——"并未拉低" vs
-  "未拉低"只进证明层告警）；
-- 主体冲突=6 位代码双侧非空互斥，或文首主体名双侧可抽取且归一核互不
-  包含（"公司股票"等泛指占位词按缺失处理，别名/简称/带 ST 前缀按包含
-  归一，不得误判）；
-- 单位冲突=**同一归一数值**两侧挂载单位词且互斥（"6612.30美元" vs
-  "6612.30点"；数值不同的归数值族，单位缺失侧放行）；
-- 修订冲突=一侧"由 X 修正/修订/更正为 Y"且 X 在另一侧在场、Y 与 X
-  归一不等、Y 不在另一侧在场（缺一放行）。
-明确**不**升级为硬冲突（整改令一末段）：引文偏移失败、单方主体缺失、
-单方数值缺失、相对时间缺少绝对锚点、无证伪轴——仍只是告警或边界。
+  vs "每股派0.3元"骨架 token 数不等，放行）——终审 P0-6 保留数值族；
+- 主体冲突（终审 P0-2 收窄）=**双侧明确证券代码互斥**（6 位代码双侧
+  非空且互斥）——名称比对整族降级：无代码=不判主体冲突，交给判官
+  （"特朗普表示…"vs"特朗普总统表示…"曾被截成"特朗普表"/"特朗普总"
+  误判主体不同，名称截短无法证明同一主体槽位）；
+- 极性/单位/时间/阶段四族（终审 P0-3 摘除）：无法证明"同一原子
+  Fact+同一字段槽位"就不得判冲突——四族整体从 _DETECTORS 摘除
+  （槽位归属未证前停用，交判官），函数与测试保留备日后槽位对齐版
+  回归；
+- 修订冲突（终审 P0-4 摘除）：v5 提示词 R8 已定"前值修订在产品确认
+  前一律存疑"，硬冲突层不得抢判不重复——_detect_revision 从
+  _DETECTORS 摘除，函数与测试保留备日后回归。
+
+异常纪律（终审 P0-5 fail-open）：detect_core_conflict 逐检测器
+try/except——任一检测器异常即经 on_detector_error 上报诊断计数
+（judge.core_conflict.detector_error，service 层记）+放行给判官，
+绝不中断判定。
+
+明确**不**升级为硬冲突：引文偏移失败、单方主体缺失、单方数值缺失、
+相对时间缺少绝对锚点、无证伪轴——仍只是告警或边界。
 """
 
 from __future__ import annotations
@@ -86,48 +95,22 @@ def _ref(record_id: str, text: str, start: int, end: int) -> EvidenceRef:
 
 # ---------------------------------------------------------------- 主体
 
-# 文首主体名抽取：跳过【】/空白后，取 "*ST/ST 前缀 + 连续 CJK 段"（遇
-# 括号代码/标点/字母数字即止）。泛指占位词按缺失处理（整改令三反例：
-# "公司股票"不按主体冲突处理）。
-_LEAD_RE = re.compile(r"^[\s【〔「\x22']*(\*?ST)?([一-鿿]{2,12})")
-_STRIP_SUFFIXES = ("股份有限公司", "有限责任公司", "有限公司",
-                   "股份", "公司", "集团", "控股", "银行", "证券")
-_GENERIC_LEADS = ("公司股票", "该公司股票", "该公司", "本公司", "我公司",
-                  "本集团", "公司", "集团", "发行人", "标的", "个股")
-
-
-def _name_core(text: str) -> tuple[str, int, int] | None:
-    """文首主体名归一核（剥 *ST/ST 前缀与公司类后缀）+原文 span；
-    抽取失败/泛指占位 → None（按主体缺失，绝不当冲突证据）。
-
-    定界工艺（FN 优先）：文首 CJK 段内**首个公司类后缀锚定**名称边界
-    （"甲公司营收…"→"甲公司"）；无后缀时回退取段首 4 字（快讯简称惯
-    例，配合归一核包含比对，截短只可能漏判不可能冤杀）；段首命中泛
-    指占位词族（"公司股票""该公司"…）按主体缺失处理。
-    """
-    m = _LEAD_RE.match(text)
-    if not m:
-        return None
-    run = m.group(2)
-    for generic in _GENERIC_LEADS:
-        if run.startswith(generic):
-            return None
-    raw_start = m.start(2) - (len(m.group(1)) if m.group(1) else 0)
-    core, raw_end = "", m.end(2)
-    for suf in _STRIP_SUFFIXES:
-        pos = run.find(suf)
-        if pos > 0:                              # 后缀前有实芯才算锚定
-            core, raw_end = run[:pos], m.start(2) + pos + len(suf)
-            break
-    if not core:
-        core = run[:4]
-        raw_end = m.start(2) + len(core)
-    if len(core) < 2 or any(core.startswith(g) for g in _GENERIC_LEADS):
-        return None
-    return core, raw_start, raw_end
+# 终审 P0-2（2026-10-10 收窄）：原"文首取段首 4 字"回退（_name_core +
+# _LEAD_RE/_STRIP_SUFFIXES/_GENERIC_LEADS 名称归一核机抽族）整体拆除——
+# "特朗普表示…"vs"特朗普总统表示…"被截成"特朗普表"/"特朗普总"误判
+# 主体不同（fp 实锤：把真重复冤杀成不重复）。名称比对整族降级：无代码
+# =不判主体冲突，交给判官；主体硬冲突只保留双侧明确证券代码互斥分支
+# （_mv.subject_code_mentions，"公司股票"等泛指占位词天然无代码=缺失
+# 放行口径不变）。
 
 
 def _detect_subject(text_a, text_b, id_a, id_b):
+    """主体硬冲突（终审 P0-2）：只保留双侧明确证券代码互斥分支。
+
+    codes 分支判据=双侧 6 位证券代码均非空且 surface 互斥（R1 同口径）；
+    任一侧无代码（含泛指占位"公司股票"）→ 主体缺失，不判主体冲突，
+    放行给判官（FN 优先——名称/简称/别名归一无法证明同一主体槽位）。
+    """
     codes_a = _mv.subject_code_mentions(text_a)
     codes_b = _mv.subject_code_mentions(text_b)
     if codes_a and codes_b:
@@ -137,16 +120,6 @@ def _detect_subject(text_a, text_b, id_a, id_b):
             return _hit("subject",
                         _ref(id_a, text_a, codes_a[0]["start"], codes_a[0]["end"]),
                         _ref(id_b, text_b, codes_b[0]["start"], codes_b[0]["end"]))
-    name_a = _name_core(text_a)
-    name_b = _name_core(text_b)
-    if name_a and name_b:
-        core_a, core_b = name_a[0], name_b[0]
-        # 归一核互相包含=同一主体可无损归一（别名/全称/简称），放行；
-        # 互不包含=明确主体不同（FN 优先：包含关系一律不判冲突）。
-        if core_a not in core_b and core_b not in core_a:
-            return _hit("subject",
-                        _ref(id_a, text_a, name_a[1], name_a[2]),
-                        _ref(id_b, text_b, name_b[1], name_b[2]))
     return None
 
 
@@ -193,6 +166,10 @@ def _detect_numeric(text_a, text_b, id_a, id_b):
 
 
 # ---------------------------------------------------------------- 单位（同一归一数值挂载单位互斥）
+# 终审 P0-3（2026-10-10 摘除）：本族已从 _DETECTORS 摘除——"同一归一
+# 数值挂载单位互斥"无法证明"同一原子 Fact+同一字段槽位"（跨槽位错配：
+# "目标价100美元" vs "指数报100点"同值不同槽即被误伤）；槽位归属未证
+# 前停用，交判官。函数与测试保留备日后槽位对齐版回归。
 
 # 闭合单位词表（多字优先匹配；% 全半角归一）。
 _UNITS = ("人民币", "个基点", "美元", "港元", "欧元", "日元", "英镑",
@@ -234,6 +211,10 @@ def _detect_unit(text_a, text_b, id_a, id_b):
 
 
 # ---------------------------------------------------------------- 时间 / 阶段（双向差集）
+# 终审 P0-3（2026-10-10 摘除）：两族已从 _DETECTORS 摘除——双向差集只
+# 证"双侧时间/阶段词不同"，不证"同一原子 Fact+同一字段槽位"（单方补
+# 充/跨槽位/异事件同名词均可能）；槽位归属未证前停用，交判官。函数与
+# 测试保留备日后槽位对齐版回归。
 
 def _detect_time(text_a, text_b, id_a, id_b):
     mentions_a = _mv.extract_time_mentions(text_a)
@@ -265,6 +246,11 @@ def _detect_stage(text_a, text_b, id_a, id_b):
 
 
 # ---------------------------------------------------------------- 极性（反义词对双侧命中；否定不对称不拦）
+# 终审 P0-3（2026-10-10 摘除）：本族已从 _DETECTORS 摘除——反义词对
+# 双侧命中只证"两文各含一个方向词"，不证"同一原子 Fact+同一字段槽位"
+# （"甲指数上涨，乙指数下跌" vs "甲指数上涨"的双主体跨槽形态即被误
+# 伤）；槽位归属未证前停用，交判官。函数与测试保留备日后槽位对齐版
+# 回归。
 
 def _detect_polarity(text_a, text_b, id_a, id_b):
     for pos, neg in _mv.POLARITY_PAIRS:
@@ -282,6 +268,10 @@ def _detect_polarity(text_a, text_b, id_a, id_b):
 
 
 # ---------------------------------------------------------------- 修订（由 X 修正/修订/更正为 Y）
+# 终审 P0-4（2026-10-10 摘除）：本族已从 _DETECTORS 摘除——v5 提示词
+# R8 已定"前值修订在产品确认前一律存疑"（修订链=同一事实的时间演化
+# 而非冲突证据），硬冲突层不得抢判不重复；交判官按存疑口径裁决。函数
+# 与测试保留备日后（产品确认后的）修订语义回归。
 
 _REVISION_RE = re.compile(
     r"(?:由|从)\s*([+-]?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:万亿|万|亿|千|百)?)"
@@ -318,23 +308,41 @@ def _detect_revision(text_a, text_b, id_a, id_b):
 
 # ---------------------------------------------------------------- 主入口
 
-_DETECTORS = (_detect_subject, _detect_numeric, _detect_unit,
-              _detect_time, _detect_stage, _detect_polarity,
-              _detect_revision)
+# 终审 P0-3/P0-4（2026-10-10）：极性/单位/时间/阶段四族+修订族已从
+# _DETECTORS 摘除（槽位归属未证前停用，交判官；注释与反例钉见各族
+# 分节）——现役仅主体（P0-2 收窄：仅双侧代码互斥）与数值（P0-6 保留：
+# 剔数骨架同槽位判据）两族。
+_DETECTORS = (_detect_subject, _detect_numeric)
+
+# 已摘除族清单（备日后槽位对齐版回归时复位；函数本体保留在案）
+_RETIRED_DETECTORS = (_detect_unit, _detect_time, _detect_stage,
+                      _detect_polarity, _detect_revision)
 
 
 def detect_core_conflict(history_text: str, current_text: str, *,
                          history_record_id: str,
-                         current_record_id: str) -> CoreConflict:
-    """确定性硬冲突检测（七族，固定优先序首中即返；全过=NO_CONFLICT）。
+                         current_record_id: str,
+                         on_detector_error=None) -> CoreConflict:
+    """确定性硬冲突检测（现役两族=主体代码互斥+数值骨架同槽位；固定
+    优先序首中即返；全过=NO_CONFLICT）。
 
-    只消费双侧正文（机抽确定性信号，不做任何语义猜测）；text_a=history、
-    text_b=current（证据 record_id 按侧归属）。任一检测族内部异常不向
-    上抛——本层 FN 优先，异常=放行给判官（不做静默拦截）。
+    只消费双侧正文（机抽确定性信号，不做任何语义猜测）；text_a=
+    history、text_b=current（证据 record_id 按侧归属）。
+
+    终审 P0-5 fail-open：逐检测器 try/except——任一检测器异常即调用
+    on_detector_error(detector_name, exc) 上报（service 层据此记
+    judge.core_conflict.detector_error 诊断计数）并**放行给判官**，
+    绝不中断判定（本层 FN 优先：异常=证据不可判，不是冲突证据）。
+    on_detector_error 未注入（None）时同样放行，不向上抛。
     """
     for detector in _DETECTORS:
-        hit = detector(history_text, current_text,
-                       history_record_id, current_record_id)
+        try:
+            hit = detector(history_text, current_text,
+                           history_record_id, current_record_id)
+        except Exception as exc:  # noqa: BLE001 — fail-open：异常=放行给判官
+            if on_detector_error is not None:
+                on_detector_error(detector.__name__, exc)
+            continue
         if hit is not None:
             return hit
     return NO_CONFLICT

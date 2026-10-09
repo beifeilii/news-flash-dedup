@@ -49,6 +49,12 @@ class DecideOutcome:
     # judge.order_disagree / judge.evidence.* / judge.legacy_vs_new.changed
     # 等键 → int）。内部审计/观测面——绝不进 to_public_dict。
     judge_diagnostics: Mapping = field(default_factory=dict)
+    # 终审 P1-1（2026-10-10 单源传递）：decide_for_task 入口创建的判官
+    # 版本配置（JudgeVersionConfig——prompt_version/prompt_sha256/
+    # policy_version/decision_mode 四维同源）。单源外露供 run manifest
+    # 登记/审计记录消费；内部审计面——绝不进 to_public_dict（五字段
+    # 封闭不动）。判官未启用路径同样在场（入口创建一次）。
+    judge_version_config: Any = None
 
     def __post_init__(self) -> None:
         if self.decision not in _DECISION:

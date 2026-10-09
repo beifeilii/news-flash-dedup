@@ -29,7 +29,9 @@ from news_flash_dedup.compare.aggregate import (
     FrozenRecallPlan,
 )
 from news_flash_dedup.compare.pair_compare import VerifiedConflict
+from news_flash_dedup.decide import judge_adapter as judge_adapter_module
 from news_flash_dedup.decide import judge_pair as judge_pair_module
+from news_flash_dedup.decide import judge_version_config as judge_version_config_module
 from news_flash_dedup.decide.extra_event import detect_extra_event
 from news_flash_dedup.decide.types import DecideOutcome
 from news_flash_dedup.facts import FactValidationReport
@@ -209,7 +211,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                      judge_callable=None,
                      judge_in_chain: bool | None = None,
                      judge_timeout_s: float | None = None,
-                     judge_decision_mode: str | None = None) -> DecideOutcome:
+                     judge_decision_mode: str | None = None,
+                     judge_version_config=None) -> DecideOutcome:
     """集合级决策（P17 03:57 修订 §6.1）：当前条 vs 全部 `required` 候选。
 
     流水线（窗口V 实述勘正：旧述第 3 步 `detect_extra_event(history,
@@ -256,6 +259,22 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     `DecideOutcome.judge_diagnostics`（judge.semantic.* /
     judge.order_disagree / judge.evidence.* / judge.legacy_vs_new.changed），
     budget 在场时同步 bump_counter 轻量钩子；计数绝不进公共五字段。
+
+    终审 P0-1（2026-10-10 模式闸）：硬冲突前置层（detect_core_conflict
+    调用块）仅 active_decision_mode==semantic_authority 时执行；
+    legacy_proof_gate 下整块跳过（判官照常被调用），端到端公共
+    decision/reason/duplicate_ids 与基线 2d0d418 完全一致。
+
+    终审 P1-1（2026-10-10 单源传递）：判官版本配置（JudgeVersionConfig）
+    在本入口创建一次（显式 `judge_version_config` 实参 > 显式
+    `judge_decision_mode` 实参 > env DEDUP_JUDGE_DECISION_MODE > 默认
+    legacy_proof_gate），依次传给：判官装配（judge_callable 未注入且
+    判官在主链时经 build_judge_callable/proof_for_order 消费同一配置）、
+    本服务模式分流、cache key 素材（proof_for_order 同源 prompt/policy）、
+    run manifest 登记（DecideOutcome.judge_version_config 外露供
+    build_run_manifest 消费）、审计记录（judge_decision_mode 经对级
+    PairResult→AuditRecord 同源）。显式实参语义权威：env 空时
+    adapter/manifest/audit 三层不得各自回落 env 读值。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -283,6 +302,39 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     current_record_id = current["record_id"]
     history_text = history["text"]
     current_text = current["text"]
+
+    # ------------------------------------------------------------------
+    # 终审 P1-1（2026-10-10 单源传递）：判官版本配置在本入口创建一次。
+    # 模式解析（整改令二：非法 env/实参值明确报错，绝不静默回退）：
+    # 显式 judge_decision_mode 实参 > 显式 judge_version_config 实参
+    # 自带 decision_mode > env DEDUP_JUDGE_DECISION_MODE（缺席/空串=
+    # 默认 legacy_proof_gate）。创建后的 JudgeVersionConfig 单源依次
+    # 供给判官装配（build_judge_callable/proof_for_order）、本服务
+    # 模式分流、cache key 素材、run manifest 登记与审计记录——修掉
+    # "显式 judge_decision_mode 实参与 adapter/manifest 各读环境变量"
+    # 的分裂：显式实参语义权威时三层必须全部同一版本（semantic_
+    # authority→judge_v5/policy_v3；legacy_proof_gate→judge_v1/
+    # policy_v2）。
+    if judge_decision_mode is not None:
+        if judge_decision_mode not in (
+                judge_pair_module.MODE_LEGACY_PROOF_GATE,
+                judge_pair_module.MODE_SEMANTIC_AUTHORITY):
+            raise ValueError(
+                f"judge_decision_mode={judge_decision_mode!r} 非法：只允许 "
+                f"{judge_pair_module.MODE_LEGACY_PROOF_GATE}|"
+                f"{judge_pair_module.MODE_SEMANTIC_AUTHORITY}")
+        active_decision_mode = judge_decision_mode
+    elif (judge_version_config is not None
+          and getattr(judge_version_config, "decision_mode", "")):
+        active_decision_mode = judge_version_config.decision_mode
+    else:
+        active_decision_mode = judge_pair_module.judge_decision_mode()
+    if judge_version_config is not None:
+        judge_version_cfg = judge_version_config
+    else:
+        judge_version_cfg = (
+            judge_version_config_module.judge_version_for_mode(
+                active_decision_mode))
 
     history_report = _wrap_facts_as_report(
         history_record_id, history_text, history.get("facts", []),
@@ -493,20 +545,17 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
             bump(key, n)
 
     if judge_active:
-        # 提交一修复（2026-10-10 整改令二）：判定模式启动时解析——非法
-        # env/实参值在此处明确抛 ValueError，绝不静默回退（judge_pair
-        # .judge_decision_mode 对非法 env 抛；显式实参在本层验）。
-        if judge_decision_mode is None:
-            active_decision_mode = judge_pair_module.judge_decision_mode()
-        elif judge_decision_mode in (
-                judge_pair_module.MODE_LEGACY_PROOF_GATE,
-                judge_pair_module.MODE_SEMANTIC_AUTHORITY):
-            active_decision_mode = judge_decision_mode
-        else:
-            raise ValueError(
-                f"judge_decision_mode={judge_decision_mode!r} 非法：只允许 "
-                f"{judge_pair_module.MODE_LEGACY_PROOF_GATE}|"
-                f"{judge_pair_module.MODE_SEMANTIC_AUTHORITY}")
+        # 终审 P1-1：判定模式已在入口单源解析（active_decision_mode——
+        # 显式实参 > 显式版本配置 > env；非法值入口明确报错，整改令二），
+        # 版本配置 judge_version_cfg 同入口创建一次，此处不再重复解析。
+        # 判官装配单源：judge_callable 未注入（None）且判官在主链时，以
+        # 入口版本配置装配真件（build_judge_callable 消费同一 vc——
+        # prompt/policy/cache key 素材同源；DEDUP_JUDGE_PROOF 关→返
+        # None=未注入，adjudicate_pair 默认实现 fail-closed 未决，与调用
+        # 方（commit_one/shadow_decide）预装配语义完全一致）。
+        if judge_callable is None:
+            judge_callable = judge_adapter_module.build_judge_callable(
+                budget=budget, version_config=judge_version_cfg)
         # ① 聚合后判官段：初聚合产出"边界且存在未决对"时，按候选序
         # （pair_results 顺序=首对+候选到达序）对未决对逐对过判官适配层；
         # judge_callable 未注入即默认实现 fail-closed 未决（绝不冒签）。
@@ -514,6 +563,23 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         # 不重复调用判官（判官只补未决对）；最终聚合继续是唯一公共结果
         # 来源。
         if aggregate_outcome.decision == "边界case/疑难case":
+            # 终审 P0-1（模式闸）：硬冲突前置层仅 semantic_authority 模式
+            # 执行；legacy_proof_gate（默认）下整块跳过——判官照常被调用，
+            # 端到端公共 decision/reason/duplicate_ids 与基线 2d0d418
+            # 完全一致（硬冲突拦截是新增行为，不得渗入 legacy 面）。
+            core_conflict_enabled = (
+                active_decision_mode
+                == judge_pair_module.MODE_SEMANTIC_AUTHORITY)
+
+            def _core_conflict_detector_error(detector_name: str, exc) -> None:
+                """终审 P0-5 fail-open 上报钩子：检测器异常→诊断计数
+                （judge.core_conflict.detector_error）+警告日志；检测层
+                已放行该检测器给判官，绝不中断判定。"""
+                _jcount("judge.core_conflict.detector_error")
+                _logger.warning(
+                    "硬冲突检测器异常 fail-open 放行给判官 detector=%s: %r",
+                    detector_name, exc)
+
             for index, pair in enumerate(pair_results):
                 if pair.outcome != "unresolved":
                     continue
@@ -521,30 +587,36 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # 前置层——执行顺序=规则比较→硬冲突前置→硬冲突直接不重复
                 # 并**跳过判官**→无硬冲突才进判官双序合并。命中即 VERIFIED_
                 # CONFLICT（双侧原文证据+人类可读理由），判官零调用。
-                hard = core_conflict_module.detect_core_conflict(
-                    re_freeze_required[pair.history_record_id]["text"],
-                    current_text,
-                    history_record_id=pair.history_record_id,
-                    current_record_id=pair.current_record_id)
-                if hard.has_conflict:
-                    conflict = VerifiedConflict(
-                        field_path=hard.field_path, basis="CORE_CONFLICT",
-                        history_evidence=hard.history_evidence,
-                        current_evidence=hard.current_evidence,
-                        detail=hard.human_reason)
-                    pair_results[index] = replace(
-                        pair, outcome="conflict", code="VERIFIED_CONFLICT",
-                        detail=hard.human_reason,
-                        used_evidence=(hard.history_evidence,
-                                       hard.current_evidence),
-                        verified_conflicts=(conflict,))
-                    pair_codes[pair.history_record_id] = "VERIFIED_CONFLICT"
-                    _jcount("judge.core_conflict.intercepted")
-                    _jcount(f"judge.core_conflict.{hard.conflict_type}")
-                    _logger.info(
-                        "核心硬冲突前置拦截 pair=%s type=%s（判官零调用）",
-                        pair.pair_id, hard.conflict_type)
-                    continue
+                # 终审 P0-5：逐检测器 try/except fail-open（异常→
+                # judge.core_conflict.detector_error 计数+放行给判官，
+                # 绝不中断判定）在 core_conflict.detect_core_conflict
+                # 本体实现，经 on_detector_error 钩子接线。
+                if core_conflict_enabled:
+                    hard = core_conflict_module.detect_core_conflict(
+                        re_freeze_required[pair.history_record_id]["text"],
+                        current_text,
+                        history_record_id=pair.history_record_id,
+                        current_record_id=pair.current_record_id,
+                        on_detector_error=_core_conflict_detector_error)
+                    if hard.has_conflict:
+                        conflict = VerifiedConflict(
+                            field_path=hard.field_path, basis="CORE_CONFLICT",
+                            history_evidence=hard.history_evidence,
+                            current_evidence=hard.current_evidence,
+                            detail=hard.human_reason)
+                        pair_results[index] = replace(
+                            pair, outcome="conflict", code="VERIFIED_CONFLICT",
+                            detail=hard.human_reason,
+                            used_evidence=(hard.history_evidence,
+                                           hard.current_evidence),
+                            verified_conflicts=(conflict,))
+                        pair_codes[pair.history_record_id] = "VERIFIED_CONFLICT"
+                        _jcount("judge.core_conflict.intercepted")
+                        _jcount(f"judge.core_conflict.{hard.conflict_type}")
+                        _logger.info(
+                            "核心硬冲突前置拦截 pair=%s type=%s（判官零调用）",
+                            pair.pair_id, hard.conflict_type)
+                        continue
                 pair_context = judge_pair_module.build_pair_context(
                     pair,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
@@ -652,6 +724,9 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         pipeline_version=pipeline_version,
         pair_results=tuple(pair_results),  # R9 F4：外露对级结果供 commit 审计批次
         judge_diagnostics=judge_diagnostics,  # 提交三：判官观测计数（内部面）
+        # 终审 P1-1：入口创建的判官版本配置单源外露（内部审计面——run
+        # manifest 登记/审计记录消费；绝不进 to_public_dict 五字段）。
+        judge_version_config=judge_version_cfg,
     )
 
 

@@ -40,6 +40,13 @@ class AuditRecord:
     full_text_fallback_used: bool = False
     judge_decision_mode: str = ""
     payload_hash: str = field(default="")
+    # 终审 P1-2（2026-10-10）：diagnostics_hash——判官证据诊断五字段
+    # （evidence_status/evidence_warnings/machine_findings/
+    # full_text_fallback_used/judge_decision_mode）的规范化哈希（定序
+    # 规范化：warnings/findings 排序 + JSON canonical 序列化）。诊断
+    # 面内容指纹：五字段任一变化即变。payload_hash 原样保留不动（历史
+    # 兼容——诊断字段不进 payload 规范化集，既有审计重放一致性不破）。
+    diagnostics_hash: str = field(default="")
 
     def __post_init__(self) -> None:
         if not self.comparison_id:
@@ -50,6 +57,9 @@ class AuditRecord:
             raise ValueError("self-audit forbidden")
         if not self.payload_hash:
             object.__setattr__(self, "payload_hash", _compute_payload_hash(self))
+        if not self.diagnostics_hash:
+            object.__setattr__(self, "diagnostics_hash",
+                               _compute_diagnostics_hash(self))
 
     def to_doc(self) -> dict:
         return asdict(self)
@@ -101,6 +111,25 @@ def _compute_payload_hash(record: AuditRecord) -> str:
         "history_evidence": record.history_evidence,
         "current_evidence": record.current_evidence,
         "pipeline_version": record.pipeline_version,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _compute_diagnostics_hash(record: AuditRecord) -> str:
+    """终审 P1-2：判官证据诊断五字段规范化哈希。
+
+    规范化口径：evidence_warnings/machine_findings 排序（集合语义，
+    与双序并表顺序解耦）+ JSON canonical 序列化（sort_keys +
+    ensure_ascii=False，仓内现役习语）。五字段任一变化 → hash 变；
+    与 payload_hash 完全独立（诊断不进 payload 规范化集）。
+    """
+    canonical = {
+        "evidence_status": record.evidence_status,
+        "evidence_warnings": sorted(record.evidence_warnings),
+        "machine_findings": sorted(record.machine_findings),
+        "full_text_fallback_used": record.full_text_fallback_used,
+        "judge_decision_mode": record.judge_decision_mode,
     }
     encoded = json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

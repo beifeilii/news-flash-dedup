@@ -120,11 +120,18 @@ def _time_conclusion(verification) -> str:
 
 
 def proof_for_order(judge: "llm_residual.SyncResidualJudge",
-                    ctx: Mapping) -> dict:
+                    ctx: Mapping,
+                    *, version_config=None) -> dict:
     """单顺序真件证明：跑内部证明级核验， emit 合同 §一 形态 dict。
 
     ctx=judge_pair._order_context 产物（含 order/item ids/text_a/text_b）。
     预算尽 → JudgeBudgetExceeded（合同 BUDGET_EXCEEDED 异常通道）。
+
+    终审 P1-1（单源传递）：version_config 在场（decide_for_task 入口创建
+    的同一 JudgeVersionConfig）时 prompt_sha/policy 从其同源读取——显式
+    实参语义权威，不再各自回落 env/配置重解；缺省维持原口径（按
+    judge.config.prompt_version 经 judge_version_config 单解）。cache key
+    素材（compute_cache_key 的 prompt_sha/policy 位）同对象消费。
     """
     order = ctx["order"]
     internal_order = _ORDER_TO_INTERNAL[order]      # "ab"→"hc"、"ba"→"ch"
@@ -136,7 +143,9 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     # 未登记 fail-closed）——禁止各自取默认值；cache_key 同对象消费。
     # judge_proof 证明组件内部机检口径仍为 v2 宪章（PROOF_POLICY_VERSION
     # 不变，旧证明工件复验兼容）——治理口径与诊断口径分层，如实各记。
-    vc = judge_version_config.judge_version_for_prompt(cfg.prompt_version)
+    vc = (version_config if version_config is not None
+          else judge_version_config.judge_version_for_prompt(
+              cfg.prompt_version))
     prompt_sha = vc.prompt_sha256
     policy = vc.policy_version
     sha_a = judge_proof.text_sha256(text_a)
@@ -249,23 +258,32 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
 
 def default_judge_config(
         environ: Mapping | None = None,
+        *, version_config=None,
 ) -> "llm_residual.ResidualJudgeConfig":
     """装配闸默认配置单源（提交一修复并入提交二复审条 2/3）：
     prompt_version 由 DEDUP_JUDGE_DECISION_MODE 经 judge_version_config
     决定（legacy_proof_gate 默认→judge_v1+policy_v2；semantic_authority→
     judge_v5+policy_v3）——judge_v5 不再无条件默认；mv 姿态恒 audit
     （核验姿态不自我降级，降级权归合同层）。manifest 一致性钉测对本
-    函数与 lib.run_manifest 缺省登记同源自证。"""
+    函数与 lib.run_manifest 缺省登记同源自证。
+
+    终审 P1-1：version_config 在场（decide_for_task 入口创建的同一
+    JudgeVersionConfig）时 prompt_version 从其同源读取（显式实参语义
+    权威，env 不再二次读值分裂）；缺省维持原 env 分发口径。
+    """
     return llm_residual.ResidualJudgeConfig(
         mv_mode=llm_residual.MV_AUDIT,
-        prompt_version=judge_version_config.default_judge_version(
-            environ).prompt_version)
+        prompt_version=(version_config.prompt_version
+                        if version_config is not None
+                        else judge_version_config.default_judge_version(
+                            environ).prompt_version))
 
 
 def build_judge_callable(
         *, judge: "llm_residual.SyncResidualJudge | None" = None,
         config: "llm_residual.ResidualJudgeConfig | None" = None,
-        budget=None, environ: Mapping | None = None
+        budget=None, environ: Mapping | None = None,
+        version_config=None,
         ) -> Callable[[Mapping], dict] | None:
     """装配闸：DEDUP_JUDGE_PROOF 开 → 真件 judge_callable；关 → None。
 
@@ -274,14 +292,22 @@ def build_judge_callable(
     default_judge_config——提交一修复并入复审条 3：prompt 随
     DEDUP_JUDGE_DECISION_MODE 分发，legacy 默认 judge_v1，不再无条件
     judge_v5）+budget 构造真 SyncResidualJudge。
+
+    终审 P1-1（单源传递）：version_config 在场（decide_for_task 入口
+    创建的同一 JudgeVersionConfig）时装配配置与每顺序证明（proof_
+    for_order）均从其同源读取 prompt/policy——显式实参语义权威，
+    adapter 层不再各自回落 env 读值；缺省维持原 env 分发口径。
     """
     if not judge_proof.judge_proof_enabled(environ):
         return None
     if judge is None:
         judge = llm_residual.SyncResidualJudge(
-            config or default_judge_config(environ), budget=budget)
+            config or default_judge_config(environ,
+                                           version_config=version_config),
+            budget=budget)
 
     def _judge_callable(pair_context: Mapping) -> dict:
-        return proof_for_order(judge, pair_context)
+        return proof_for_order(judge, pair_context,
+                               version_config=version_config)
 
     return _judge_callable
