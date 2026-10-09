@@ -53,9 +53,10 @@
   合同词表=组件漂移，fail-closed 抛错归 JUDGE_EXCEPTION 未决）。
   无机检轴（P_NO_AXIS）→ 不携 falsification——提交一起由 validate_proof
   记 P_NO_AXIS 证据充分性告警（不再降级 doubtful）。
-- 版本四维：model_version=cfg.model、prompt_sha256=judge_prompt_for_version
-  的 sha、policy_version=policy_version.DEFAULT_POLICY_VERSION（提交二
-  §5.2：="policy_v3" 治理业务口径单源；judge_proof 组件内部机检口径
+- 版本四维：model_version=cfg.model、prompt_sha256/prompt_version/
+  policy_version 从 judge_version_config 统一版本配置对象同源读取
+  （提交一修复并入提交二复审条 1：judge_v1/v2/v3→policy_v2 原 policy、
+  judge_v5→policy_v3，禁止各自取默认值；judge_proof 组件内部机检口径
   仍为 policy_v2 宪章，诊断与治理分层各记）、judged_at=UTC ISO（合同
   必填；内部审计负载的确定性纪律不及此合同面——judged_at 只进合同
   证明件，不进 llm_residual 审计槽）。
@@ -76,10 +77,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
-from . import judge_pair, judge_proof, llm_residual, machine_verify as _mv
-from . import policy_version as _policy_version
+from . import judge_pair, judge_proof, judge_version_config, llm_residual
+from . import machine_verify as _mv
 
-__all__ = ["build_judge_callable", "proof_for_order"]
+__all__ = ["build_judge_callable", "default_judge_config", "proof_for_order"]
 
 # 合同 order → 内部顺序（"ab" a=history 先=hc 同向）
 _ORDER_TO_INTERNAL = {"ab": "hc", "ba": "ch"}
@@ -130,12 +131,14 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     pair_id = ctx["pair_id"]
     text_a, text_b = ctx["text_a"], ctx["text_b"]
     cfg = judge.config
-    prompt_sha = llm_residual.judge_prompt_for_version(cfg.prompt_version)[1]
-    # 提交二（§5.2）：合同证明 policy_version=治理业务口径单源
-    # （policy_version.DEFAULT_POLICY_VERSION=policy_v3，配套 judge_v5）；
+    # 提交一修复并入提交二复审条 1：prompt_sha/policy 从统一版本配置对象
+    # 同源读取（judge_v1/v2/v3→policy_v2 原 policy；judge_v5→policy_v3；
+    # 未登记 fail-closed）——禁止各自取默认值；cache_key 同对象消费。
     # judge_proof 证明组件内部机检口径仍为 v2 宪章（PROOF_POLICY_VERSION
     # 不变，旧证明工件复验兼容）——治理口径与诊断口径分层，如实各记。
-    policy = _policy_version.DEFAULT_POLICY_VERSION
+    vc = judge_version_config.judge_version_for_prompt(cfg.prompt_version)
+    prompt_sha = vc.prompt_sha256
+    policy = vc.policy_version
     sha_a = judge_proof.text_sha256(text_a)
     sha_b = judge_proof.text_sha256(text_b)
 
@@ -244,6 +247,21 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     return proof
 
 
+def default_judge_config(
+        environ: Mapping | None = None,
+) -> "llm_residual.ResidualJudgeConfig":
+    """装配闸默认配置单源（提交一修复并入提交二复审条 2/3）：
+    prompt_version 由 DEDUP_JUDGE_DECISION_MODE 经 judge_version_config
+    决定（legacy_proof_gate 默认→judge_v1+policy_v2；semantic_authority→
+    judge_v5+policy_v3）——judge_v5 不再无条件默认；mv 姿态恒 audit
+    （核验姿态不自我降级，降级权归合同层）。manifest 一致性钉测对本
+    函数与 lib.run_manifest 缺省登记同源自证。"""
+    return llm_residual.ResidualJudgeConfig(
+        mv_mode=llm_residual.MV_AUDIT,
+        prompt_version=judge_version_config.default_judge_version(
+            environ).prompt_version)
+
+
 def build_judge_callable(
         *, judge: "llm_residual.SyncResidualJudge | None" = None,
         config: "llm_residual.ResidualJudgeConfig | None" = None,
@@ -252,19 +270,16 @@ def build_judge_callable(
     """装配闸：DEDUP_JUDGE_PROOF 开 → 真件 judge_callable；关 → None。
 
     None=未注入（adjudicate_pair 默认实现 fail-closed 未决，绝不冒签）。
-    judge 显式传入优先（测试罐装 LLM 边界）；否则由 config（默认
-    ResidualJudgeConfig，mv_mode=audit——核验姿态不自我降级，降级权归
-    合同层，见模块 docstring）+budget 构造真 SyncResidualJudge。
-    提交二（§5.2 文件 G-3）：新链默认**显式**使用 judge_v5（不依赖
-    llm_residual.JUDGE_PROMPT_VERSION=judge_v1 的隐式全局默认）。
+    judge 显式传入优先（测试罐装 LLM 边界）；否则由 config（缺省=
+    default_judge_config——提交一修复并入复审条 3：prompt 随
+    DEDUP_JUDGE_DECISION_MODE 分发，legacy 默认 judge_v1，不再无条件
+    judge_v5）+budget 构造真 SyncResidualJudge。
     """
     if not judge_proof.judge_proof_enabled(environ):
         return None
     if judge is None:
-        cfg = config or llm_residual.ResidualJudgeConfig(
-            mv_mode=llm_residual.MV_AUDIT,
-            prompt_version=llm_residual.JUDGE_PROMPT_VERSION_V5)
-        judge = llm_residual.SyncResidualJudge(cfg, budget=budget)
+        judge = llm_residual.SyncResidualJudge(
+            config or default_judge_config(environ), budget=budget)
 
     def _judge_callable(pair_context: Mapping) -> dict:
         return proof_for_order(judge, pair_context)

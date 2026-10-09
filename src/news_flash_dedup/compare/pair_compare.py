@@ -200,6 +200,17 @@ class PairResult:
     unresolved_fields: tuple[str, ...]
     used_evidence: tuple[EvidenceRef, ...]
     budget_at: int = 0
+    # 提交一修复（2026-10-10 整改令四）：判官证据诊断持久化字段——
+    # 只进内部对级结果与持久化审计文档（decide/audit.py），绝不进公共
+    # 五字段。判官未参与的对（规则链直判/开关关）保持默认值：
+    # evidence_status="pass"、warnings/findings 空、无回退、mode 空串。
+    # full_text_fallback_used=True 表示走了完整原文回退证据，不与精确
+    # 引文同质量级。
+    evidence_status: str = "pass"
+    evidence_warnings: tuple[str, ...] = ()
+    machine_findings: tuple[str, ...] = ()
+    full_text_fallback_used: bool = False
+    judge_decision_mode: str = ""
 
 
 def _sha256(text: str) -> str:

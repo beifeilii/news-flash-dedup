@@ -59,8 +59,10 @@ def test_manifest_fields_complete():
     assert d["pipeline_version"] == "dedup_v1"
     assert d["dict_version"] == RULE_DICT_VERSION
     assert d["prompt_version"] == JUDGE_PROMPT_VERSION
-    assert d["prompt_sha256"] == PROMPT_SHA256      # 注册处单源解析
-    assert d["policy_version"] == "policy_v3"       # 提交二：治理口径默认版
+    assert d["prompt_sha256"] == PROMPT_SHA256      # 统一版本对象同解
+    # 提交一修复并入复审条 2：缺省登记=按模式分发的实际生效版本
+    # （env={}=legacy 默认→judge_v1+policy_v2，修"实跑 v5 却登记 v1"）
+    assert d["policy_version"] == "policy_v2"
     assert d["model"] == DEFAULT_MODEL
     assert d["embedding_space"] == FAKE_SPACE_ID
     assert d["code_git_sha"] == GIT_SHA
@@ -70,8 +72,10 @@ def test_manifest_fields_complete():
 
 def test_policy_version_literal_defaults():
     """提交二（§5.2 文件 E/H）：policy 字面量单源=decide/policy_version.py；
-    run_manifest 同源再导出——V2 常量保留（judge_proof/v4 锚定），默认
-    policy_version 自提交二起为 policy_v3（judge_v5 治理口径）。"""
+    run_manifest 同源再导出——V2 常量保留（judge_proof/v4 锚定）。提交一
+    修复并入复审条 1/2：manifest 缺省登记改为按模式分发的实际生效版本
+    （judge_version_config 单源）——DEFAULT_POLICY_VERSION=policy_v3 常量
+    保留为 v5 链治理口径字面量，但不再充当 manifest 缺省。"""
     from news_flash_dedup.decide import policy_version as pv
     assert pv.POLICY_VERSION_V2 == "policy_v2"
     assert pv.POLICY_VERSION_V3 == "policy_v3"
@@ -79,8 +83,31 @@ def test_policy_version_literal_defaults():
     assert rm.POLICY_VERSION_V2 == "policy_v2"          # 兼容再导出
     assert rm.POLICY_VERSION_V3 == "policy_v3"
     assert rm.DEFAULT_POLICY_VERSION == "policy_v3"
-    assert _build().policy_version == "policy_v3"
-    assert _build(policy_version="policy_v2").policy_version == "policy_v2"
+    # 缺省=legacy 模式生效版本（judge_v1→policy_v2）；显式实参仍优先
+    assert _build().policy_version == "policy_v2"
+    assert _build(policy_version="policy_v3").policy_version == "policy_v3"
+
+
+def test_manifest_records_mode_dispatched_effective_versions():
+    """提交一修复并入复审条 2：RunManifest 如实记录实际生效 prompt/
+    policy——semantic_authority 环境缺省登记 judge_v5+PROMPT_SHA256_V5+
+    policy_v3；legacy（默认）登记 judge_v1+policy_v2；显式 prompt 实参
+    时 policy 随 prompt 映射同解。"""
+    from news_flash_dedup.decide import judge_prompt_v5 as v5
+    m_sem = _build(env={"DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
+    assert m_sem.prompt_version == "judge_v5"
+    assert m_sem.prompt_sha256 == v5.PROMPT_SHA256_V5
+    assert m_sem.policy_version == "policy_v3"
+    m_legacy = _build(env={"DEDUP_JUDGE_DECISION_MODE": "legacy_proof_gate"})
+    assert m_legacy.prompt_version == "judge_v1"
+    assert m_legacy.prompt_sha256 == PROMPT_SHA256
+    assert m_legacy.policy_version == "policy_v2"
+    # 显式 prompt 实参：policy 随 prompt 映射（不随环境模式）
+    m_v3 = _build(prompt_version="judge_v3")
+    assert m_v3.policy_version == "policy_v2"
+    m_v5 = _build(prompt_version="judge_v5")
+    assert m_v5.policy_version == "policy_v3"
+    assert m_v5.prompt_sha256 == v5.PROMPT_SHA256_V5
 
 
 # ---------- 可序列化 ----------

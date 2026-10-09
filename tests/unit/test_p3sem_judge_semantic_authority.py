@@ -253,8 +253,12 @@ def _assert_public_contract(out):
 
 
 # ---------------------------------------------------------------- 文本对
+# 提交一修复（2026-10-10 整改令三）：判"重复"的文本对必须业务正确——
+# 同一主体、无核心字段硬冲突（硬冲突对由 compare/core_conflict 前置层
+# 拦截、判官零调用，专项钉见 test_p3fix_core_conflict.py）。本对：同
+# 主体（甲公司）、同时（9月24日）、同值（100万元），仅措辞差异。
 DUP_H = "甲公司9月24日公告营收100万元。"
-DUP_C = "乙公司9月24日公告营收100万元。"
+DUP_C = "甲公司公告：9月24日营收100万元。"
 
 
 # ============================================================ 1. P_OFFSET
@@ -274,7 +278,7 @@ def test_1_duplicate_with_p_offset_still_signs_with_warning(monkeypatch):
     }
     cb = _real_callable(resp)
     out = decide_service.decide_for_task(
-        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "乙公司"),
+        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "甲公司"),
         judge_callable=cb, coverage_complete=True)
     assert out.decision == "重复"
     assert out.duplicate_ids == ("item-A",)
@@ -288,8 +292,12 @@ def test_1_duplicate_with_p_offset_still_signs_with_warning(monkeypatch):
 
 # ============================================================ 2. P_SUBJECT_MISSING
 
-SM_H = "易天股份（300812）主力净流入5亿。"
-SM_C = "名臣健康主力净流入5亿。"
+# 提交一修复（整改令三.2）：真正的**单方主体缺失**——一条明确写
+# *ST清越（600146），另一条只写"公司股票"（泛指自指，不暴露主体），
+# 其余一致；不再用两个不同公司冒充缺失。"公司股票"在硬冲突层按主体
+# 缺失处理（泛指占位词），绝不按主体冲突拦截。
+SM_H = "*ST清越（600146）主力净流入5亿。"
+SM_C = "公司股票主力净流入5亿。"
 SM_RESP = {
     (SM_H, SM_C): _jjson("重复", ("主力净流入5亿",), ("主力净流入5亿",),
                          na=("5亿",), nb=("5亿",), tcon="均无时间"),
@@ -299,12 +307,13 @@ SM_RESP = {
 
 
 def test_2_duplicate_with_p_subject_missing_not_demoted(monkeypatch):
-    """§5.1-2：双序重复 + P_SUBJECT_MISSING（恰一侧有主体代码）→ 不由
-    证明层降级，最终取决于判官双序结果（此处双序一致=重复）。"""
+    """§5.1-2：双序重复 + P_SUBJECT_MISSING（恰一侧有主体代码，另一侧
+    只写"公司股票"泛指自指）→ 不由证明层降级，最终取决于判官双序结果
+    （此处双序一致=重复）。"""
     _switches_on(monkeypatch)
     cb = _real_callable(SM_RESP)
     out = decide_service.decide_for_task(
-        _history(SM_H, "易天股份"), [], current=_current(SM_C, "名臣健康"),
+        _history(SM_H, "*ST清越"), [], current=_current(SM_C, "公司股票"),
         judge_callable=cb, coverage_complete=True)
     assert out.decision == "重复"
     assert out.internal_code == "JUDGE_EQUIVALENT"
@@ -316,8 +325,10 @@ def test_2_duplicate_with_p_subject_missing_not_demoted(monkeypatch):
 
 # ============================================================ 3. P_REL_TIME
 
-RT_H = "甲金所今日宣布降准0.5个百分点。"
-RT_C = "乙金所今日宣布降准0.5个百分点。"
+# 提交一修复（整改令三.3）：相同主体、相同事件、相同相对时间——只测
+# "今日"缺绝对锚点，不混入主体冲突。
+RT_H = "甲公司今日宣布降准0.5个百分点。"
+RT_C = "甲公司公告：今日宣布降准0.5个百分点。"
 RT_RESP = {
     (RT_H, RT_C): _jjson("重复", ("今日宣布降准0.5个百分点",),
                          ("今日宣布降准0.5个百分点",),
@@ -336,7 +347,7 @@ def test_3_duplicate_with_p_rel_time_not_demoted(monkeypatch):
     _switches_on(monkeypatch)
     cb = _real_callable(RT_RESP)
     out = decide_service.decide_for_task(
-        _history(RT_H, "甲金所"), [], current=_current(RT_C, "乙金所"),
+        _history(RT_H, "甲公司"), [], current=_current(RT_C, "甲公司"),
         judge_callable=cb, coverage_complete=True)
     assert out.decision == "重复"
     assert out.internal_code == "JUDGE_EQUIVALENT"
@@ -348,12 +359,15 @@ def test_3_duplicate_with_p_rel_time_not_demoted(monkeypatch):
 
 # ============================================================ 4. 无 falsification 双序不重复
 
-ND_H = "甲公司预期业绩增长。"
-ND_C = "乙公司预期业绩增长。"
+# 提交一修复（整改令三）：判"不重复"的文本对同样必须业务正确——同一
+# 主体、不同事件（回购 vs 财报），机器五族轴全不在场（无代码/数值/时间/
+# 阶段/极性差异），故留 P_NO_AXIS 给判官语义裁决。
+ND_H = "甲公司公告回购股份。"
+ND_C = "甲公司发布半年度财报。"
 ND_RESP = {
-    (ND_H, ND_C): _jjson("不重复", ("预期业绩增长",), ("预期业绩增长",),
+    (ND_H, ND_C): _jjson("不重复", ("回购股份",), ("半年度财报",),
                          ncon="无关键数值", tcon="均无时间"),
-    (ND_C, ND_H): _jjson("不重复", ("预期业绩增长",), ("预期业绩增长",),
+    (ND_C, ND_H): _jjson("不重复", ("半年度财报",), ("回购股份",),
                          ncon="无关键数值", tcon="均无时间"),
 }
 
@@ -364,7 +378,7 @@ def test_4_bare_not_duplicate_signs_with_p_no_axis(monkeypatch):
     _switches_on(monkeypatch)
     cb = _real_callable(ND_RESP)
     out = decide_service.decide_for_task(
-        _history(ND_H, "甲公司"), [], current=_current(ND_C, "乙公司"),
+        _history(ND_H, "甲公司"), [], current=_current(ND_C, "甲公司"),
         judge_callable=cb, coverage_complete=True)
     assert out.decision == "不重复"
     assert out.duplicate_ids == ()
@@ -389,7 +403,7 @@ def test_5_contract_binding_errors_still_boundary():
             ctx, verdict="duplicate", **kw))
         out = decide_service.decide_for_task(
             _history(DUP_H, "甲公司"), [],
-            current=_current(DUP_C, "乙公司"),
+            current=_current(DUP_C, "甲公司"),
             judge_callable=judge, judge_in_chain=True, coverage_complete=True)
         assert out.decision == "边界case/疑难case", kwargs
         assert out.duplicate_ids == ()
@@ -406,9 +420,10 @@ def test_6_disagree_timeout_invalid_json_still_boundary(monkeypatch):
     _switches_on(monkeypatch)
     # 双序分歧
     disagree = _double_judge(lambda ctx: _make_proof(
-        ctx, verdict=("duplicate" if ctx["order"] == "ab" else "not_duplicate")))
+        ctx, verdict=("duplicate" if ctx["order"] == "ab" else "not_duplicate"),
+        with_falsification=False))   # 同主体文本对不挂"主体不同"伪证伪
     out = decide_service.decide_for_task(
-        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "乙公司"),
+        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "甲公司"),
         judge_callable=disagree, judge_in_chain=True, coverage_complete=True)
     assert out.decision == "边界case/疑难case"
     assert out.pair_results[0].code == "JUDGE_UNCERTAIN"
@@ -419,7 +434,7 @@ def test_6_disagree_timeout_invalid_json_still_boundary(monkeypatch):
         time.sleep(1.0)
         return _make_proof(ctx, verdict="duplicate")
     out2 = decide_service.decide_for_task(
-        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "乙公司"),
+        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "甲公司"),
         judge_callable=_double_judge(_slow), judge_in_chain=True,
         judge_timeout_s=0.2, coverage_complete=True)
     assert out2.decision == "边界case/疑难case"
@@ -429,7 +444,7 @@ def test_6_disagree_timeout_invalid_json_still_boundary(monkeypatch):
     bad_json = _real_callable({(DUP_H, DUP_C): "not-json{{{",
                                (DUP_C, DUP_H): "也不是JSON"})
     out3 = decide_service.decide_for_task(
-        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "乙公司"),
+        _history(DUP_H, "甲公司"), [], current=_current(DUP_C, "甲公司"),
         judge_callable=bad_json, coverage_complete=True)
     assert out3.decision == "边界case/疑难case"
     assert out3.pair_results[0].outcome == "unresolved"
@@ -476,7 +491,7 @@ def test_8_all_quotes_unbound_full_text_fallback_evidence():
     judge = _double_judge(lambda ctx: _make_proof(
         ctx, verdict="duplicate", unbound_quotes=True,
         mv_passed=False, rules_triggered=("P_OFFSET",)))
-    history, current = _history(DUP_H, "甲公司"), _current(DUP_C, "乙公司")
+    history, current = _history(DUP_H, "甲公司"), _current(DUP_C, "甲公司")
     out = decide_service.decide_for_task(
         history, [], current=current, judge_callable=judge,
         judge_in_chain=True, coverage_complete=True)

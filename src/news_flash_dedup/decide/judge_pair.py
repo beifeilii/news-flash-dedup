@@ -92,11 +92,20 @@ DEFAULT_JUDGE_DECISION_MODE = MODE_LEGACY_PROOF_GATE
 
 
 def judge_decision_mode(environ: Mapping[str, str] | None = None) -> str:
-    """读 DEDUP_JUDGE_DECISION_MODE：合法值原样；缺席/空串/非法值 →
-    默认 legacy_proof_gate（fail-closed 回旧口径，§5.3 阶段一）。"""
+    """读 DEDUP_JUDGE_DECISION_MODE：合法值原样；缺席/空串 → 默认
+    legacy_proof_gate（fail-closed 回旧口径，§5.3 阶段一）；**非法非空值
+    → ValueError 明确报错，不得静默回退**（2026-10-10 整改令二：非法值
+    启动时明确报错）。"""
     raw = ((os.environ if environ is None else environ)
            .get(JUDGE_DECISION_MODE_ENV) or "").strip()
-    return raw if raw in _JUDGE_DECISION_MODES else DEFAULT_JUDGE_DECISION_MODE
+    if not raw:
+        return DEFAULT_JUDGE_DECISION_MODE
+    if raw not in _JUDGE_DECISION_MODES:
+        raise ValueError(
+            f"{JUDGE_DECISION_MODE_ENV}={raw!r} 非法：只允许 "
+            f"{'|'.join(_JUDGE_DECISION_MODES)}（缺席=默认 "
+            f"{DEFAULT_JUDGE_DECISION_MODE}）")
+    return raw
 
 
 # ---------------------------------------------------------------- 合同枚举（§一/§二/§三）
@@ -187,7 +196,6 @@ _HARD_FAILURE_PRIORITY = (
 DEFAULT_JUDGE_TIMEOUT_S = 120.0   # 单顺序判官调用硬超时（注入件自带超时之外的本层兜底）
 
 _REASON_FALLBACK = "（判官本顺序未形成可绑定理由）"
-_REASON_CAP = 300                   # 理由入 detail 的长度上限（提交三 300 字口径预热）
 
 
 class JudgeBudgetExceeded(RuntimeError):
@@ -240,6 +248,10 @@ class JudgePairOutcome:
     # changed 布尔），semantic 模式 None。诊断面，不进公共五字段。
     decision_mode: str = MODE_SEMANTIC_AUTHORITY
     comparison: Mapping | None = None
+    # 提交一修复（2026-10-10 整改令四）：完整原文回退证据显式标记——
+    # 不与精确引文同质量级（此前只能从 warnings 反推，现在结构化字段直给；
+    # 诊断面，不进公共五字段）。legacy 口径无回退证据，恒 False。
+    full_text_fallback_used: bool = False
 
 
 # ---------------------------------------------------------------- 证明构造辅助（缓存键=合同 §一公式）
@@ -645,24 +657,14 @@ def _merge_diagnostics(per_order: Mapping, orders: tuple) -> tuple:
             tuple(dict.fromkeys(findings)))
 
 
-def _clip_reason(reason: str) -> str:
-    """理由入 detail 的整形：去换行 + 上限 _REASON_CAP（防超长原文入
-    审计 detail；内部面纪律，公共五字段永不消费本 detail 生成 reason）。"""
-    flat = " ".join(reason.split())
-    if len(flat) > _REASON_CAP:
-        return flat[:_REASON_CAP] + "…"
-    return flat
-
-
-def _merged_detail(verdict_cn: str, per_order: Mapping) -> str:
-    """双序一致判定的合并自然语言 detail（§5.1 文件 D-3：新 code + 合并
-    detail）。只携双序理由与语义裁决声明，绝不携白名单码/模型原始响应
-    全文/URL（reason 经 _clip_reason 整形）。"""
-    parts = "；".join(
-        f"{order} 序理由：{_clip_reason(per_order[order].reason)}"
-        for order in ORDERS)
-    return (f"判官双序一致判定{verdict_cn}（语义裁决，证明层告警"
-            f"见内部审计）。{parts}。")
+# 提交一修复（2026-10-10 整改令五）：判官源公共理由**固定措辞**——
+# 不得使用"已验证""已逐一核验"等超出实际证据能力的表述；双序模型理由
+# 仍完整留存 proofs 审计件（内部面），公共 detail 只给能力内声明。
+JUDGE_DUPLICATE_REASON = (
+    "判官双序一致认为两条快讯描述同一核心事实，因此判定为重复。")
+JUDGE_NON_DUPLICATE_REASON = (
+    "判官双序一致判定为不重复；未形成确定性规则冲突，"
+    "相关证据质量信息已记录审计。")
 
 
 def _unresolved(reason: str, proofs: Mapping,
@@ -723,10 +725,11 @@ def _semantic_outcome(pair_context: Mapping, per_order: Mapping,
             warnings = warnings + (EVIDENCE_FALLBACK_FULL_TEXT,)
         return JudgePairOutcome(
             outcome="equivalent", code=JUDGE_EQUIVALENT,
-            detail=_merged_detail("重复", per_order),
+            detail=JUDGE_DUPLICATE_REASON,
             used_evidence=evidence, proofs=raw_proofs,
             evidence_status=status, evidence_warnings=warnings,
-            machine_findings=findings)
+            machine_findings=findings,
+            full_text_fallback_used=had_fallback)
 
     # 分支 2：双序 not_duplicate → conflict（不再强制机器证伪轴）
     if verdicts["ab"] == "not_duplicate" and verdicts["ba"] == "not_duplicate":
@@ -769,11 +772,12 @@ def _semantic_outcome(pair_context: Mapping, per_order: Mapping,
                         conflict.current_evidence) + evidence
         return JudgePairOutcome(
             outcome="conflict", code=JUDGE_NON_DUPLICATE,
-            detail=_merged_detail("不重复", per_order),
+            detail=JUDGE_NON_DUPLICATE_REASON,
             used_evidence=evidence, verified_conflicts=conflicts,
             proofs=raw_proofs,
             evidence_status=status, evidence_warnings=warnings,
-            machine_findings=findings)
+            machine_findings=findings,
+            full_text_fallback_used=had_fallback)
 
     # 分支 3：其余一切组合 → unresolved（确定性归因，硬失败优先）
     for reason in _HARD_FAILURE_PRIORITY:
@@ -900,7 +904,12 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
       （合同 §三 映射 UNRESOLVED 白名单码；两口径各自映射表）。
     """
     timeout_s = DEFAULT_JUDGE_TIMEOUT_S if timeout_s is None else timeout_s
-    mode = (decision_mode if decision_mode in _JUDGE_DECISION_MODES
+    if decision_mode is not None and decision_mode not in _JUDGE_DECISION_MODES:
+        raise ValueError(
+            f"decision_mode={decision_mode!r} 非法：只允许 "
+            f"{'|'.join(_JUDGE_DECISION_MODES)}（None=读 "
+            f"{JUDGE_DECISION_MODE_ENV}，默认 {DEFAULT_JUDGE_DECISION_MODE}）")
+    mode = (decision_mode if decision_mode is not None
             else judge_decision_mode())
     if judge_callable is None:
         if mode == MODE_LEGACY_PROOF_GATE:
@@ -975,6 +984,7 @@ __all__ = [
     "JUDGE_NOT_INJECTED", "JUDGE_EXCEPTION", "JUDGE_FAILURE", "JUDGE_DOUBTFUL",
     "EVIDENCE_QUOTES_EMPTY", "EVIDENCE_FALLBACK_FULL_TEXT",
     "MACHINE_VERIFY_REJECTED", "P_NO_AXIS_WARNING",
+    "JUDGE_DUPLICATE_REASON", "JUDGE_NON_DUPLICATE_REASON",
     "DEFAULT_JUDGE_TIMEOUT_S",
     "JudgeBudgetExceeded", "JudgeProofError", "JudgePairOutcome",
     "ValidatedJudgeOrder",

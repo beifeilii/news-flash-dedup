@@ -6,10 +6,12 @@
 钉值面：
 1. v5 已注册 _JUDGE_PROMPTS（v1/v2/v3 原样可切回、v4 维持不注册）；
 2. v5 SHA 稳定（字面量钉 + 重算自证）；
-3. 默认新链显式使用 v5（judge_adapter 装配默认 prompt_version=judge_v5，
-   不依赖 JUDGE_PROMPT_VERSION=judge_v1 隐式默认）；
+3. 提交一修复并入复审条 3（judge_v5 不得无条件默认）：装配默认 prompt
+   随 DEDUP_JUDGE_DECISION_MODE 分发——legacy_proof_gate（默认）→
+   judge_v1；semantic_authority→judge_v5；
 4. v5 正文九条业务条款 + R7 主体回填 / R8 前值修订统一判边界（未冻结
-   产品规则不许抢跑判重复）；
+   产品规则不许抢跑判重复）；复审条 4（v5 预发布修订）：【暂定边界条
+   款】开头补优先级条款，SHA 钉同步重钉；
 5. policy 版本单源无循环依赖（judge_prompt_v5 不反向导入 run_manifest）；
 6. v5 在线链端到端：system prompt=v5 正文、合同证明 prompt_sha/policy
    版本如实、v1 族输出契约 validate_judge 零改动消费、JSON 非法仍
@@ -56,34 +58,48 @@ def test_v5_registered_and_old_versions_untouched():
 
 def test_v5_sha256_stable_literal_pin():
     """§5.2 文件 F：v5 独立 SHA（不改写 v4 沿用旧 SHA）——字面量钉 +
-    重算自证双闸。"""
+    重算自证双闸。提交二复审条 4（v5 预发布修订：补暂定边界条款优先
+    级条款）：SHA 随正文重算，本钉同步重钉。"""
     assert v5.PROMPT_SHA256_V5 == hashlib.sha256(
         v5.JUDGE_PROMPT_V5.encode("utf-8")).hexdigest()
     assert v5.PROMPT_SHA256_V5 == (
-        "d41b6ceaa124821f03f9871133e2e4847fe98cd9a74e5e974187ab54e24b1d57")
+        "25deb3d52cca233561c1b5eeccad3d481c2ecf5cbf76667182cb8f1b55bf77a6")
     # v5 SHA 不与任何旧版本雷同
     assert v5.PROMPT_SHA256_V5 not in (
         lr.PROMPT_SHA256, lr.PROMPT_SHA256_V2, lr.PROMPT_SHA256_V3)
 
 
-# ---------------------------------------------------------------- 2. 默认新链显式 v5
+# ---------------------------------------------------------------- 2. 装配默认随模式分发
 
-def test_adapter_default_config_explicitly_uses_v5(monkeypatch):
-    """§5.2 文件 G-3：build_judge_callable 未显式传 judge/config 时，构造
-    的默认 ResidualJudgeConfig 显式 prompt_version=judge_v5 + mv_mode=
-    audit（不依赖 llm_residual.JUDGE_PROMPT_VERSION=judge_v1 隐式默认）。"""
-    captured = {}
+def test_adapter_default_config_dispatched_by_mode(monkeypatch):
+    """提交一修复并入复审条 3（judge_v5 不得无条件默认，取代原 §5.2
+    G-3"新链默认显式 v5"口径）：build_judge_callable 未显式传 judge/
+    config 时，默认 ResidualJudgeConfig 的 prompt_version 由
+    DEDUP_JUDGE_DECISION_MODE 决定——legacy_proof_gate（默认）→
+    judge_v1；semantic_authority→judge_v5；mv_mode 恒 audit。"""
+    captured = []
 
     class _SpyJudge:
         def __init__(self, cfg, budget=None):
-            captured["cfg"] = cfg
+            captured.append(cfg)
 
     monkeypatch.setattr(lr, "SyncResidualJudge", _SpyJudge)
     cb = judge_adapter.build_judge_callable(
-        environ={"DEDUP_JUDGE_PROOF": "1"})
+        environ={"DEDUP_JUDGE_PROOF": "1"})          # 模式缺席=legacy 默认
     assert cb is not None
-    assert captured["cfg"].prompt_version == "judge_v5"
-    assert captured["cfg"].mv_mode == lr.MV_AUDIT
+    assert captured[-1].prompt_version == "judge_v1"
+    assert captured[-1].mv_mode == lr.MV_AUDIT
+    cb2 = judge_adapter.build_judge_callable(
+        environ={"DEDUP_JUDGE_PROOF": "1",
+                 "DEDUP_JUDGE_DECISION_MODE": "legacy_proof_gate"})
+    assert cb2 is not None
+    assert captured[-1].prompt_version == "judge_v1"
+    cb3 = judge_adapter.build_judge_callable(
+        environ={"DEDUP_JUDGE_PROOF": "1",
+                 "DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
+    assert cb3 is not None
+    assert captured[-1].prompt_version == "judge_v5"
+    assert captured[-1].mv_mode == lr.MV_AUDIT
 
 
 def test_explicit_config_still_honored(monkeypatch):
@@ -123,6 +139,9 @@ CLAUSE_ANCHORS = (
     "看起来可以唯一回填主体", "一律存疑，不得判重复",
     # R8：前值修订→边界（不抢跑）
     "前值修订", "177.9万", "177.5万",
+    # 复审条 4（v5 预发布修订）：暂定边界条款优先级条款
+    "暂定边界条款优先级高于一般重复/不重复规则",
+    "不再适用一般数值冲突规则",
     # 条款 8：置信不足必须输出边界
     "证据不足、置信不足", "必须输出存疑",
     # 条款 9：不输出 action/KEEP/SUPPRESS
@@ -167,8 +186,10 @@ def test_policy_version_single_source_no_reverse_import():
 
 # ---------------------------------------------------------------- 5. v5 在线链端到端
 
+# 提交一修复（整改令三 + 复审条 5 指定文本）：判"重复"的样本必须同
+# 主体、无核心硬冲突（原"甲公司/乙公司营收100万→重复"夹具已废弃）。
 DUP_H = "甲公司9月24日公告营收100万元。"
-DUP_C = "乙公司9月24日公告营收100万元。"
+DUP_C = "甲公司公告称，9月24日营收为100万元。"
 
 
 def _jjson(decision, ea, eb, *, na=(), nb=(), ta=(), tb=(),
@@ -209,12 +230,12 @@ def test_v5_end_to_end_system_prompt_and_proof_versions(monkeypatch):
     PROMPT_SHA256_V5、policy_version=policy_v3（治理口径如实记录）。"""
     monkeypatch.setenv("DEDUP_JUDGE_PROOF", "1")
     resp = {
-        (DUP_H, DUP_C): _jjson("重复", ("9月24日公告营收100万元",),
-                               ("9月24日公告营收100万元",),
+        (DUP_H, DUP_C): _jjson("重复", ("100万元",),
+                               ("100万元",),
                                na=("100万",), nb=("100万",),
                                ta=("9月24日",), tb=("9月24日",)),
-        (DUP_C, DUP_H): _jjson("重复", ("9月24日公告营收100万元",),
-                               ("9月24日公告营收100万元",),
+        (DUP_C, DUP_H): _jjson("重复", ("100万元",),
+                               ("100万元",),
                                na=("100万",), nb=("100万",),
                                ta=("9月24日",), tb=("9月24日",)),
     }

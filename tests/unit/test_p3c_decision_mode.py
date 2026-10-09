@@ -5,20 +5,22 @@
 （2026-10-10，分支 p3-semantic-authority）。
 
 钉值面：
-1. 灰度开关 DEDUP_JUDGE_DECISION_MODE 默认 legacy_proof_gate（缺席/空串/
-   非法值一律回旧口径）——生效结论回到提交一前证明闸语义（证据诊断
-   重升否决项：无引文→EVIDENCE_UNBOUND、passed=false→MV_REJECTED、
-   结论对拍冲突→CONCLUSION_CONTRADICTS、无轴 ND→doubtful 降级、
-   分歧/存疑→SUBJECT_UNRESOLVED）；
+1. 灰度开关 DEDUP_JUDGE_DECISION_MODE 默认 legacy_proof_gate（缺席/空串
+   回旧口径；**非法非空值→ValueError 明确报错不静默**，整改令二）——
+   生效结论回到提交一前证明闸语义（证据诊断重升否决项：无引文→
+   EVIDENCE_UNBOUND、passed=false→MV_REJECTED、结论对拍冲突→
+   CONCLUSION_CONTRADICTS、无轴 ND→doubtful 降级、分歧/存疑→
+   SUBJECT_UNRESOLVED）；
 2. legacy 模式下同一份判官结果**离线**并行计算 semantic 结论记入
    comparison（不增加 LLM 调用——双序调用计数恒为 2）；
 3. 观测指标 judge.semantic.* / judge.order_disagree / judge.evidence.warn /
    judge.evidence.fallback_full_text / judge.evidence.rule.P_* /
    judge.legacy_vs_new.changed 挂 DecideOutcome.judge_diagnostics +
    ProcessingBudget 轻量计数钩子，绝不进公共五字段；
-4. 公共理由：重复=最早重复对已清洗 detail、不重复=首个冲突对已清洗
-   detail（清洗=去 URL/折叠空白/≤300 字），无可用 detail 才落固定
-   兜底；边界理由保持主 issue detail 不变；
+4. 公共理由：判官源=整改令五固定措辞（禁用"已验证/已逐一核验"）；
+   规则链源=最早重复/首个冲突对已清洗 detail（清洗=去 URL/折叠空白/
+   ≤300 字），无可用 detail 才落固定兜底；边界理由保持主 issue
+   detail 不变；
 5. 显式 semantic_authority（env 或 judge_decision_mode 参数）=提交一
    口径直签；参数优先于 env。
 """
@@ -76,8 +78,13 @@ def _fact(record_id, subject):
 
 
 H_ID, C_ID = "a" * 64, "c" * 64
+# 提交一修复（2026-10-10 整改令三）：重复样本=同主体无硬冲突；判官源
+# 不重复样本=同主体不同事件（机器五族轴不在场——有轴的对一律被
+# compare/core_conflict 前置层拦截，判官零调用，见 test_p3fix_core_conflict）。
 DUP_H = "甲公司9月24日公告营收100万元。"
-DUP_C = "乙公司9月24日公告营收100万元。"
+DUP_C = "甲公司公告：9月24日营收100万元。"
+ND2_H = "甲公司公告回购股份。"
+ND2_C = "甲公司发布半年度财报。"
 
 
 def _history(text=DUP_H, subject="甲公司"):
@@ -86,7 +93,7 @@ def _history(text=DUP_H, subject="甲公司"):
     return h
 
 
-def _current(text=DUP_C, subject="乙公司"):
+def _current(text=DUP_C, subject="甲公司"):
     c = _ctx(C_ID, "item-C", text, 3)
     c["facts"] = [_fact(C_ID, subject)]
     return c
@@ -101,6 +108,7 @@ _DOUBLE_POLICY = "policy-v1"
 
 def _make_proof(ctx, *, verdict, mv_passed=True, rules_triggered=(),
                 with_falsification=True, unbound_quotes=False,
+                falsification=None,
                 reason="双序测试理由。"):
     text_a, text_b = ctx["text_a"], ctx["text_b"]
     sha_a = hashlib.sha256(text_a.encode("utf-8")).hexdigest()
@@ -137,7 +145,9 @@ def _make_proof(ctx, *, verdict, mv_passed=True, rules_triggered=(),
         "judged_at": "2026-10-10T00:00:00+00:00",
     }
     if verdict == "not_duplicate" and with_falsification:
-        proof["falsification"] = {
+        # 提交一修复：证伪结构可由调用方按文本对实义覆盖（dimension/
+        # evidence/relation 必须与文本真实差异一致，不挂伪证伪）。
+        proof["falsification"] = falsification or {
             "dimension": "subject",
             "evidence_a": {"text": text_a[0:2], "offset_start": 0, "offset_end": 2},
             "evidence_b": {"text": text_b[0:2], "offset_start": 0, "offset_end": 2},
@@ -170,9 +180,9 @@ def _adjudicate_direct(judge, h_text=DUP_H, c_text=DUP_C, **kw):
     return judge_pair.adjudicate_pair(judge, pctx, **kw)
 
 
-def _decide(judge, **kw):
+def _decide(judge, h_text=DUP_H, c_text=DUP_C, **kw):
     return decide_service.decide_for_task(
-        _history(), [], current=_current(), judge_callable=judge,
+        _history(h_text), [], current=_current(c_text), judge_callable=judge,
         judge_in_chain=True, coverage_complete=True, **kw)
 
 
@@ -189,14 +199,22 @@ def _budget():
 # ============================================================ 1. 开关默认/读值
 
 def test_mode_default_is_legacy_proof_gate(monkeypatch):
-    """§5.3：缺席/空串/非法值一律默认 legacy_proof_gate（fail-closed 回旧）。"""
+    """§5.3 + 整改令二：缺席/空串默认 legacy_proof_gate（fail-closed 回旧）；
+    **非法非空值→ValueError 明确报错，不得静默回退**（env 与显式参数两路）。"""
     monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
     assert judge_pair.judge_decision_mode() == "legacy_proof_gate"
     assert judge_pair.DEFAULT_JUDGE_DECISION_MODE == "legacy_proof_gate"
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV, "")
     assert judge_pair.judge_decision_mode() == "legacy_proof_gate"
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV, "banana")
-    assert judge_pair.judge_decision_mode() == "legacy_proof_gate"
+    with pytest.raises(ValueError, match="DEDUP_JUDGE_DECISION_MODE"):
+        judge_pair.judge_decision_mode()
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    with pytest.raises(ValueError):
+        _adjudicate_direct(judge)                    # 非法 env 启动即报
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    with pytest.raises(ValueError):
+        _adjudicate_direct(judge, decision_mode="banana")   # 非法实参同罪
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
                        "semantic_authority")
     assert judge_pair.judge_decision_mode() == "semantic_authority"
@@ -233,11 +251,12 @@ def test_legacy_restores_veto_with_offline_comparison(monkeypatch):
 
 def test_legacy_bare_not_duplicate_downgrades_to_doubtful(monkeypatch):
     """默认 legacy：无 falsification 的双序 not_duplicate → 旧 §二 降级
-    doubtful（SUBJECT_UNRESOLVED 边界）；semantic 侧=conflict 离线对照。"""
+    doubtful（SUBJECT_UNRESOLVED 边界）；semantic 侧=conflict 离线对照。
+    文本对=同主体不同事件（机器五族轴不在场），判官裸签 ND 业务成立。"""
     monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate",
                                            with_falsification=False))
-    judged = _adjudicate_direct(judge)
+    judged = _adjudicate_direct(judge, ND2_H, ND2_C)
     assert judged.outcome == "unresolved"
     assert judged.code == "SUBJECT_UNRESOLVED"
     assert judged.failure_reason == judge_pair.JUDGE_DOUBTFUL
@@ -258,8 +277,23 @@ def test_legacy_signed_paths_use_legacy_codes(monkeypatch):
     assert "机器验 gate 通过" in judged_dup.detail
     assert judged_dup.comparison["semantic_code"] == "JUDGE_EQUIVALENT"
     assert judged_dup.comparison["changed"] is True
-    judge_nd = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate"))
-    judged_nd = _adjudicate_direct(judge_nd)
+    # ND 带轴：文本对=同主体、事实时间明确不同（机检 time 轴真实存在；
+    # 证伪结构与文本差异一致，不挂伪证伪）
+    t_h, t_c = "甲公司9月24日公告营收100万元。", "甲公司9月25日公告营收100万元。"
+
+    def _fals(ctx):
+        ta, tb = ctx["text_a"], ctx["text_b"]
+        da, db = ("9月24日", "9月25日") if "9月24日" in ta else ("9月25日", "9月24日")
+        return {"dimension": "time",
+                "evidence_a": {"text": da, "offset_start": ta.find(da),
+                               "offset_end": ta.find(da) + len(da)},
+                "evidence_b": {"text": db, "offset_start": tb.find(db),
+                               "offset_end": tb.find(db) + len(db)},
+                "relation": "事实时间不同，证伪同一事实。"}
+
+    judge_nd = _judge(lambda ctx: _make_proof(
+        ctx, verdict="not_duplicate", falsification=_fals(ctx)))
+    judged_nd = _adjudicate_direct(judge_nd, t_h, t_c)
     assert judged_nd.outcome == "conflict"
     assert judged_nd.code == "VERIFIED_CONFLICT"
     assert judged_nd.comparison["semantic_code"] == "JUDGE_NON_DUPLICATE"
@@ -343,7 +377,8 @@ def test_metrics_order_disagree_and_fallback(monkeypatch):
     def _mixed(ctx):
         if ctx["order"] == "ab":
             return _make_proof(ctx, verdict="duplicate")
-        return _make_proof(ctx, verdict="not_duplicate")
+        return _make_proof(ctx, verdict="not_duplicate",
+                           with_falsification=False)   # 同主体文本不挂伪证伪
 
     out = _decide(_judge(_mixed))
     assert out.decision == "边界case/疑难case"
@@ -368,7 +403,8 @@ def test_metrics_legacy_disagree_counts_semantic_side(monkeypatch):
     def _mixed(ctx):
         if ctx["order"] == "ab":
             return _make_proof(ctx, verdict="duplicate")
-        return _make_proof(ctx, verdict="not_duplicate")
+        return _make_proof(ctx, verdict="not_duplicate",
+                           with_falsification=False)
 
     out = _decide(_judge(_mixed))
     assert out.decision == "边界case/疑难case"
@@ -394,53 +430,58 @@ def test_budget_counter_hook(monkeypatch):
         "judge.semantic.duplicate"]
 
 
-# ============================================================ 5. 公共理由（§5.3）
+# ============================================================ 5. 公共理由（§5.3 + 整改令五）
 
-_FIXED_DUP_REASON = "已逐一核验与列表条目的主体和核心事件一致，差异属于已允许的表达或信息差异。"
-_FIXED_CONFLICT_REASON = "本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
+# 整改令五：判官源公共理由=固定措辞；规则链兜底文案去"已验证/已逐一核验"。
+_FIXED_DUP_REASON = "两条快讯经规则链路比对核心要素一致，因此判定为重复。"
+_FIXED_CONFLICT_REASON = "两条快讯经规则链路比对存在核心要素冲突，因此判定为不重复。"
 
 
 def test_public_reason_from_judge_duplicate_detail(monkeypatch):
-    """重复：公共 reason=最早重复对已清洗 detail（判官双序合并理由），
-    不再用固定兜底。"""
+    """重复：公共 reason=判官双序重复固定措辞（整改令五：能力内声明，
+    模型理由只留存 proofs 审计件，不进公共面）。"""
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
                        "semantic_authority")
     judge = _judge(lambda ctx: _make_proof(
         ctx, verdict="duplicate", reason="营收与日期完全一致。"))
     out = _decide(judge)
     assert out.decision == "重复"
-    assert "判官双序一致判定重复" in out.reason
-    assert "营收与日期完全一致" in out.reason
-    assert out.reason != _FIXED_DUP_REASON
+    assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
+    assert out.reason == (
+        "判官双序一致认为两条快讯描述同一核心事实，因此判定为重复。")
+    assert "已验证" not in out.reason and "已逐一核验" not in out.reason
 
 
 def test_public_reason_cap_300_and_url_stripped(monkeypatch):
-    """理由清洗：URL 剥除 + 上限 300 字符（不含超长原文/链接）。"""
-    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
-                       "semantic_authority")
-    long_reason = ("详见 http://evil.example.com/report " + "长" * 400)
-    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate",
-                                           reason=long_reason))
-    out = _decide(judge)
-    assert out.decision == "重复"
+    """理由清洗：URL 剥除 + 上限 300 字符（规则链 detail 携带的链接/
+    超长文本绝不进公共面；判官源理由已是固定措辞，本钉守规则链通道）。"""
+    long_detail = ("已验证至少一条充分冲突：numerics.value。详见 "
+                   "http://evil.example.com/report " + "长" * 400)
+    out = _aggregate_with(_agg_pair(outcome="conflict",
+                                    code="VERIFIED_CONFLICT",
+                                    detail=long_detail))
+    assert out.decision == "不重复"
     assert len(out.reason) <= 300
     assert "http" not in out.reason
     assert "evil.example.com" not in out.reason
 
 
 def test_public_reason_from_judge_non_duplicate_detail(monkeypatch):
-    """不重复（JUDGE_NON_DUPLICATE）：公共 reason=首个冲突对已清洗
-    detail（双序合并理由），不再用固定兜底。"""
+    """不重复（JUDGE_NON_DUPLICATE，判官双序无机器证伪轴）：公共 reason=
+    整改令五固定措辞（不冒称确定性规则冲突，证据质量信息指引审计）。"""
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
                        "semantic_authority")
     judge = _judge(lambda ctx: _make_proof(
-        ctx, verdict="not_duplicate", reason="主体完全不一致。"))
-    out = _decide(judge)
+        ctx, verdict="not_duplicate", with_falsification=False,
+        reason="事件完全不同。"))
+    out = _decide(judge, ND2_H, ND2_C)
     assert out.decision == "不重复"
     assert out.internal_code == "JUDGE_NON_DUPLICATE"
-    assert "判官双序一致判定不重复" in out.reason
-    assert "主体完全不一致" in out.reason
-    assert out.reason != _FIXED_CONFLICT_REASON
+    assert out.reason == judge_pair.JUDGE_NON_DUPLICATE_REASON
+    assert out.reason == (
+        "判官双序一致判定为不重复；未形成确定性规则冲突，"
+        "相关证据质量信息已记录审计。")
+    assert "已验证" not in out.reason and "已逐一核验" not in out.reason
 
 
 def _agg_pair(*, outcome, code, detail):

@@ -35,10 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from news_flash_dedup.decide import judge_version_config
 from news_flash_dedup.decide.llm_residual import (
     DEFAULT_MODEL,
     JUDGE_PROMPT_VERSION,
-    judge_prompt_for_version,
 )
 from news_flash_dedup.decide.policy_version import (
     DEFAULT_POLICY_VERSION,
@@ -198,9 +198,9 @@ def build_run_manifest(
     embedding_space,
     pipeline_version: str = DEFAULT_PIPELINE_VERSION,
     dict_version: str = RULE_DICT_VERSION,
-    prompt_version: str = JUDGE_PROMPT_VERSION,
+    prompt_version: str | None = None,
     prompt_sha256: str | None = None,
-    policy_version: str = DEFAULT_POLICY_VERSION,
+    policy_version: str | None = None,
     model: str = DEFAULT_MODEL,
     code_git_sha: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -212,11 +212,24 @@ def build_run_manifest(
     空间 id 串）。其余缺省取现役常量单源；code_git_sha 三级解析见
     resolve_code_git_sha（缺省 git 子进程，测试请显式注入）。env 同时
     供开关快照与 git sha 环境级解析（单测 hermetic）。
+
+    提交一修复并入提交二复审条 1/2（版本装配单源化 + 如实登记生效版
+    本）：prompt_version 缺省=按 DEDUP_JUDGE_DECISION_MODE 经
+    judge_version_config 分发的**实际生效**版本（legacy_proof_gate 默认
+    →judge_v1；semantic_authority→judge_v5），policy_version/prompt_sha256
+    缺省随 prompt 映射同解（judge_v1/v2/v3→policy_v2、judge_v5→
+    policy_v3）——修掉"实跑 v5 却登记 v1 / 实跑 legacy 却登记 v3"错配；
+    显式实参仍优先（回放/考试通道自供版本身份）。
     """
     items = tuple(inputs)
+    if prompt_version is None:
+        prompt_version = judge_version_config.default_judge_version(
+            env).prompt_version
+    resolved = judge_version_config.judge_version_for_prompt(prompt_version)
     if prompt_sha256 is None:
-        # 注册处单源解析（未知 prompt_version fail-closed ValueError）。
-        prompt_sha256 = judge_prompt_for_version(prompt_version)[1]
+        prompt_sha256 = resolved.prompt_sha256
+    if policy_version is None:
+        policy_version = resolved.policy_version
     if not isinstance(prompt_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", prompt_sha256):
         raise ValueError(f"prompt_sha256 非法：{prompt_sha256!r}（须 64 位小写 hex）")
     for name, value in (("pipeline_version", pipeline_version),

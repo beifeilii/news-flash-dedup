@@ -351,8 +351,10 @@ def aggregate(
         # 提交三（§5.3）：公共理由优先=最早重复对的已清洗 detail
         # （判官重复对=双序合并理由；规则链等价对=规则 detail）；清洗后
         # 为空才落固定兜底。
+        # 提交一修复（2026-10-10 整改令五）：兜底文案去"已逐一核验"等
+        # 超出实际证据能力的表述。
         reason = (_clean_public_reason(primary_equivalent.detail)
-                  or "已逐一核验与列表条目的主体和核心事件一致，差异属于已允许的表达或信息差异。")
+                  or "两条快讯经规则链路比对核心要素一致，因此判定为重复。")
     elif not issues and coverage.complete and not current_ctx.get("subject_missing", False):
         # D25（三轮审计 C-05）：全冲突+覆盖完整场景原统一落本分支——
         # reason 错称"未发现候选"（候选明明存在且冲突证伪）、code 错挂
@@ -368,8 +370,9 @@ def aggregate(
         # 理由），清洗后为空才落固定兜底。
         reason = (_clean_public_reason(conflicts[0].detail)
                   if conflicts else "")
+        # 提交一修复（2026-10-10 整改令五）：兜底文案去"已验证"表述。
         reason = reason or (
-            "本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
+            "两条快讯经规则链路比对存在核心要素冲突，因此判定为不重复。"
             if conflicts
             else "本次健康的限定召回中未发现可比较的重复候选。")
     elif current_ctx.get("subject_missing", False):
@@ -413,7 +416,7 @@ def aggregate(
         reason = (_clean_public_reason(conflicts[0].detail)
                   if conflicts else "")
         reason = reason or (
-            "本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
+            "两条快讯经规则链路比对存在核心要素冲突，因此判定为不重复。"
             if conflicts else "本次健康的限定召回中未发现可比较的重复候选。")
 
     # W2 修复波 2 (a)-10（A3-F7）：扫描集补 CONFLICT_CODES（:21 现役已

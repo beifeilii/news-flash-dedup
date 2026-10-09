@@ -29,6 +29,16 @@ class AuditRecord:
     history_evidence: dict
     current_evidence: dict
     pipeline_version: str
+    # 提交一修复（2026-10-10 整改令四）：判官证据诊断结构化持久化——
+    # 必须进持久化审计文档（普通日志可保留但不是唯一载体）；绝不进公共
+    # 五字段；不并入 payload_hash 规范化集（既有审计哈希稳定性不动）。
+    # full_text_fallback_used=True=走了完整原文回退证据，显式降质标记，
+    # 不与精确引文同质量级。判官未参与的对保持默认（pass/空/False/""）。
+    evidence_status: str = "pass"
+    evidence_warnings: tuple = ()
+    machine_findings: tuple = ()
+    full_text_fallback_used: bool = False
+    judge_decision_mode: str = ""
     payload_hash: str = field(default="")
 
     def __post_init__(self) -> None:
@@ -205,6 +215,14 @@ def build_audit_record(
         history_evidence=history_evidence,
         current_evidence=current_evidence,
         pipeline_version=pair.pipeline_version,
+        # 提交一修复（整改令四）：对级判官诊断结构化入审计文档
+        # （getattr 兜底：手工构造的对级夹具无新字段时保持默认）。
+        evidence_status=getattr(pair, "evidence_status", "pass"),
+        evidence_warnings=tuple(getattr(pair, "evidence_warnings", ())),
+        machine_findings=tuple(getattr(pair, "machine_findings", ())),
+        full_text_fallback_used=bool(
+            getattr(pair, "full_text_fallback_used", False)),
+        judge_decision_mode=getattr(pair, "judge_decision_mode", ""),
     )
 
 

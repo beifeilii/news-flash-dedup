@@ -19,6 +19,7 @@ from typing import Any
 
 from news_flash_dedup.compare import (
     aggregate as aggregate_module,
+    core_conflict as core_conflict_module,
     p15_integration,
     pair_alignment,
     pair_compare,
@@ -27,6 +28,7 @@ from news_flash_dedup.compare.aggregate import (
     CoverageStatus,
     FrozenRecallPlan,
 )
+from news_flash_dedup.compare.pair_compare import VerifiedConflict
 from news_flash_dedup.decide import judge_pair as judge_pair_module
 from news_flash_dedup.decide.extra_event import detect_extra_event
 from news_flash_dedup.decide.types import DecideOutcome
@@ -491,6 +493,20 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
             bump(key, n)
 
     if judge_active:
+        # 提交一修复（2026-10-10 整改令二）：判定模式启动时解析——非法
+        # env/实参值在此处明确抛 ValueError，绝不静默回退（judge_pair
+        # .judge_decision_mode 对非法 env 抛；显式实参在本层验）。
+        if judge_decision_mode is None:
+            active_decision_mode = judge_pair_module.judge_decision_mode()
+        elif judge_decision_mode in (
+                judge_pair_module.MODE_LEGACY_PROOF_GATE,
+                judge_pair_module.MODE_SEMANTIC_AUTHORITY):
+            active_decision_mode = judge_decision_mode
+        else:
+            raise ValueError(
+                f"judge_decision_mode={judge_decision_mode!r} 非法：只允许 "
+                f"{judge_pair_module.MODE_LEGACY_PROOF_GATE}|"
+                f"{judge_pair_module.MODE_SEMANTIC_AUTHORITY}")
         # ① 聚合后判官段：初聚合产出"边界且存在未决对"时，按候选序
         # （pair_results 顺序=首对+候选到达序）对未决对逐对过判官适配层；
         # judge_callable 未注入即默认实现 fail-closed 未决（绝不冒签）。
@@ -501,13 +517,41 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
             for index, pair in enumerate(pair_results):
                 if pair.outcome != "unresolved":
                     continue
+                # 提交一修复（2026-10-10 整改令一）：核心字段确定性硬冲突
+                # 前置层——执行顺序=规则比较→硬冲突前置→硬冲突直接不重复
+                # 并**跳过判官**→无硬冲突才进判官双序合并。命中即 VERIFIED_
+                # CONFLICT（双侧原文证据+人类可读理由），判官零调用。
+                hard = core_conflict_module.detect_core_conflict(
+                    re_freeze_required[pair.history_record_id]["text"],
+                    current_text,
+                    history_record_id=pair.history_record_id,
+                    current_record_id=pair.current_record_id)
+                if hard.has_conflict:
+                    conflict = VerifiedConflict(
+                        field_path=hard.field_path, basis="CORE_CONFLICT",
+                        history_evidence=hard.history_evidence,
+                        current_evidence=hard.current_evidence,
+                        detail=hard.human_reason)
+                    pair_results[index] = replace(
+                        pair, outcome="conflict", code="VERIFIED_CONFLICT",
+                        detail=hard.human_reason,
+                        used_evidence=(hard.history_evidence,
+                                       hard.current_evidence),
+                        verified_conflicts=(conflict,))
+                    pair_codes[pair.history_record_id] = "VERIFIED_CONFLICT"
+                    _jcount("judge.core_conflict.intercepted")
+                    _jcount(f"judge.core_conflict.{hard.conflict_type}")
+                    _logger.info(
+                        "核心硬冲突前置拦截 pair=%s type=%s（判官零调用）",
+                        pair.pair_id, hard.conflict_type)
+                    continue
                 pair_context = judge_pair_module.build_pair_context(
                     pair,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
                     current_text=current_text)
                 judged = judge_pair_module.adjudicate_pair(
                     judge_callable, pair_context, timeout_s=judge_timeout_s,
-                    decision_mode=judge_decision_mode)
+                    decision_mode=active_decision_mode)
                 # 提交一（§5.1 文件 D-3）：证据告警/机检发现只进内部
                 # 诊断日志——绝不进公共五字段、绝不再改判。
                 if judged.evidence_warnings or judged.machine_findings:
@@ -546,21 +590,33 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     _jcount("judge.evidence.fallback_full_text")
                 for finding in judged.machine_findings:
                     _jcount(f"judge.evidence.rule.{finding}")
+                # 提交一修复（2026-10-10 整改令四）：判官证据诊断结构化
+                # 落对级结果（持久化审计由 decide/audit.py 接力）；普通
+                # 日志不再是唯一载体。绝不进公共五字段。
+                judged_diagnostics = dict(
+                    evidence_status=judged.evidence_status,
+                    evidence_warnings=tuple(judged.evidence_warnings),
+                    machine_findings=tuple(judged.machine_findings),
+                    full_text_fallback_used=judged.full_text_fallback_used,
+                    judge_decision_mode=judged.decision_mode)
                 if judged.outcome == "unresolved":
                     # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
                     # 原对级证据字段不动。
                     pair_results[index] = replace(
-                        pair, code=judged.code, detail=judged.detail)
+                        pair, code=judged.code, detail=judged.detail,
+                        **judged_diagnostics)
                 else:
                     # ② 对级映射（§4.2 矩阵）产物落成标准 PairResult：带入
-                    # 新 code（JUDGE_EQUIVALENT/JUDGE_NON_DUPLICATE）、合并
-                    # 后的自然语言 detail、可用引文或完整原文回退证据
-                    # （回退证据只进内部审计）；证据 warnings 不入本对象。
+                    # 新 code（JUDGE_EQUIVALENT/JUDGE_NON_DUPLICATE）、判官
+                    # 源固定措辞 detail、可用引文或完整原文回退证据（回退
+                    # 证据只进内部审计）；证据 warnings/findings 入本对象
+                    # 诊断字段（整改令四），但绝不进公共五字段。
                     pair_results[index] = replace(
                         pair, outcome=judged.outcome, code=judged.code,
                         detail=judged.detail,
                         used_evidence=tuple(judged.used_evidence),
-                        verified_conflicts=tuple(judged.verified_conflicts))
+                        verified_conflicts=tuple(judged.verified_conflicts),
+                        **judged_diagnostics)
                 pair_codes[pair.history_record_id] = judged.code
         # ③ 件级最终聚合（合同 §五 strict 口径）：本结果才是 decide_for_task
         # 的返回、才进 commit_one 写入计划；上方初聚合仅用于定位未决对，

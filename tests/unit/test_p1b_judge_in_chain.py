@@ -94,24 +94,27 @@ def _fact(record_id, subject):
 
 
 H_ID, C_ID, D_ID = "a" * 64, "c" * 64, "b" * 64
-H_TEXT, C1_TEXT, CUR_TEXT = "甲公司完成回购。", "丙公司完成回购。", "乙公司完成回购。"
+# 提交一修复（2026-10-10 整改令三）：判"重复"的文本对必须同主体、无
+# 核心硬冲突；判"不重复"用同主体不同事件文本（机器五族轴不在场）。
+H_TEXT, C1_TEXT, CUR_TEXT = "甲公司完成回购。", "甲公司宣布回购完成。", "甲公司公告：已完成回购。"
+ND_H, ND_C = "甲公司公告回购股份。", "甲公司发布半年度财报。"
 
 
-def _history():
-    h = _ctx(H_ID, "item-A", H_TEXT, 1)
+def _history(text=H_TEXT):
+    h = _ctx(H_ID, "item-A", text, 1)
     h["facts"] = [_fact(H_ID, "甲公司")]
     return h
 
 
-def _candidate1():
-    c = _ctx(D_ID, "item-B", C1_TEXT, 2)
-    c["facts"] = [_fact(D_ID, "丙公司")]
+def _candidate1(text=C1_TEXT):
+    c = _ctx(D_ID, "item-B", text, 2)
+    c["facts"] = [_fact(D_ID, "甲公司")]
     return c
 
 
-def _current():
-    c = _ctx(C_ID, "item-C", CUR_TEXT, 3)
-    c["facts"] = [_fact(C_ID, "乙公司")]
+def _current(text=CUR_TEXT):
+    c = _ctx(C_ID, "item-C", text, 3)
+    c["facts"] = [_fact(C_ID, "甲公司")]
     return c
 
 
@@ -298,11 +301,14 @@ def test_judge_signs_duplicate_final_decision():
 
 
 def test_judge_signs_conflict_final_decision():
-    """双序 not_duplicate+合格 falsification → conflict → 件级不重复
-    （提交一：JUDGE_NON_DUPLICATE；falsification 仍构造审计冲突件）。"""
-    judge = _judge(_sign_conflict)
+    """双序 not_duplicate（同主体不同事件，机器轴不在场，裸签）→ conflict
+    → 件级不重复（提交一：JUDGE_NON_DUPLICATE）。提交一修复：机器可证
+    伪轴的对一律由硬冲突前置层拦截（判官零调用，见 test_p3fix_core_
+    conflict），判官路 ND 只剩无轴形态——不构造审计冲突件。"""
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate",
+                                           with_falsification=False))
     out = decide_service.decide_for_task(
-        _history(), [], current=_current(), judge_callable=judge,
+        _history(ND_H), [], current=_current(ND_C), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
     assert out.decision == "不重复"
     assert out.duplicate_ids == ()
@@ -310,11 +316,7 @@ def test_judge_signs_conflict_final_decision():
     final_pair = out.pair_results[0]
     assert final_pair.outcome == "conflict"
     assert final_pair.code == "JUDGE_NON_DUPLICATE"
-    assert len(final_pair.verified_conflicts) == 1
-    conflict = final_pair.verified_conflicts[0]
-    assert conflict.history_evidence.record_id == H_ID
-    assert conflict.current_evidence.record_id == C_ID
-    assert conflict.history_evidence.quote == H_TEXT[0:2]
+    assert final_pair.verified_conflicts == ()    # 无轴不构造审计冲突件
 
 
 def test_judge_called_in_candidate_order_two_orders_each():
@@ -369,18 +371,20 @@ def _adjudicate(handler, *, h_text=H_TEXT, c_text=CUR_TEXT):
 
 def test_bare_not_duplicate_signs_with_p_no_axis_warning():
     """提交一 §4.2：双序 not_duplicate + 无 falsification → **不重复**
-    （JUDGE_NON_DUPLICATE），P_NO_AXIS 只记证据充分性告警、不再降级。"""
+    （JUDGE_NON_DUPLICATE），P_NO_AXIS 只记证据充分性告警、不再降级。
+    文本对=同主体不同事件（机器五族轴不在场），裸签 ND 业务成立。"""
     judge = _judge(lambda ctx: _make_proof(ctx, verdict="not_duplicate",
                                            with_falsification=False))
     out = decide_service.decide_for_task(
-        _history(), [], current=_current(), judge_callable=judge,
+        _history(ND_H), [], current=_current(ND_C), judge_callable=judge,
         judge_in_chain=True, **_boundary_kwargs())
     assert out.decision == "不重复"
     assert out.duplicate_ids == ()
     assert out.pair_results[0].outcome == "conflict"
     assert out.pair_results[0].code == "JUDGE_NON_DUPLICATE"
     judged = _adjudicate(lambda ctx: _make_proof(
-        ctx, verdict="not_duplicate", with_falsification=False))
+        ctx, verdict="not_duplicate", with_falsification=False),
+        h_text=ND_H, c_text=ND_C)
     assert judged.outcome == "conflict"
     assert "P_NO_AXIS" in judged.evidence_warnings
     assert judged.verified_conflicts == ()        # 无轴不构造审计冲突件
@@ -391,7 +395,8 @@ def test_red_order_disagree_unresolved():
     （提交一：JUDGE_UNCERTAIN 码）。"""
     def _handler(ctx):
         return _make_proof(ctx, verdict=(
-            "duplicate" if ctx["order"] == "ab" else "not_duplicate"))
+            "duplicate" if ctx["order"] == "ab" else "not_duplicate"),
+            with_falsification=False)        # 同主体文本不挂"主体不同"伪证伪
     out = decide_service.decide_for_task(
         _history(), [], current=_current(), judge_callable=_judge(_handler),
         judge_in_chain=True, **_boundary_kwargs())

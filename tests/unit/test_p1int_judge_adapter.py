@@ -89,7 +89,7 @@ def _history(text, subject="甲公司"):
     return h
 
 
-def _current(text, subject="乙公司"):
+def _current(text, subject="甲公司"):
     c = _ctx(C_ID, "item-C", text, 3)
     c["facts"] = [_fact(C_ID, subject)]
     return c
@@ -147,43 +147,51 @@ def _real_callable(responses, *, budget=None, sleep_s=0.0):
     return cb
 
 
-# 文本对（机检口径设计：duplicate 绿/ND 无轴/ND 数值冲突/ND 主体轴）
+# 文本对（提交一修复 2026-10-10 整改令三：判"重复"的样本必须同主体、
+# 无核心硬冲突；真数值冲突/主体互斥样本=硬冲突前置层职责，判官零调用，
+# 服务级断言改钉 VERIFIED_CONFLICT+双侧原文证据）
 DUP_H = "甲公司9月24日公告营收100万元。"
-DUP_C = "乙公司9月24日公告营收100万元。"
-ND0_H = "甲公司预期业绩增长。"
-ND0_C = "乙公司预期业绩增长。"
+DUP_C = "甲公司公告：9月24日营收100万元。"
+ND0_H = "甲公司公告回购股份。"
+ND0_C = "甲公司发布半年度财报。"
 NUM_H = "甲公司9月24日公告营收787.8万元。"
-NUM_C = "乙公司9月24日公告营收789.8万元。"
-SUB_H = "甲公司（600001）主力净流入5亿。"
-SUB_C = "乙公司（002919）主力净流入5亿。"
+NUM_C = "甲公司9月24日公告营收789.8万元。"
+SUB_H = "易天股份（300812）主力净流入5亿。"
+SUB_C = "名臣健康（002919）主力净流入5亿。"
 
 DUP_RESP = {
-    (DUP_H, DUP_C): _jjson("重复", ("9月24日公告营收100万元",),
-                           ("9月24日公告营收100万元",),
+    (DUP_H, DUP_C): _jjson("重复", ("营收100万元",),
+                           ("营收100万元",),
                            na=("100万",), nb=("100万",),
                            ta=("9月24日",), tb=("9月24日",)),
-    (DUP_C, DUP_H): _jjson("重复", ("9月24日公告营收100万元",),
-                           ("9月24日公告营收100万元",),
+    (DUP_C, DUP_H): _jjson("重复", ("营收100万元",),
+                           ("营收100万元",),
                            na=("100万",), nb=("100万",),
                            ta=("9月24日",), tb=("9月24日",)),
 }
 ND0_RESP = {
-    (ND0_H, ND0_C): _jjson("不重复", ("预期业绩增长",), ("预期业绩增长",),
+    (ND0_H, ND0_C): _jjson("不重复", ("回购股份",), ("半年度财报",),
                            ncon="无关键数值", tcon="均无时间"),
-    (ND0_C, ND0_H): _jjson("不重复", ("预期业绩增长",), ("预期业绩增长",),
+    (ND0_C, ND0_H): _jjson("不重复", ("半年度财报",), ("回购股份",),
                            ncon="无关键数值", tcon="均无时间"),
 }
-NUM_RESP = {
-    (NUM_H, NUM_C): _jjson("重复", ("9月24日公告营收787.8万元",),
-                           ("9月24日公告营收789.8万元",),
-                           na=("787.8万",), nb=("789.8万",),
-                           ta=("9月24日",), tb=("9月24日",),
-                           ncon="一致"),
-    (NUM_C, NUM_H): _jjson("重复", ("9月24日公告营收789.8万元",),
-                           ("9月24日公告营收787.8万元",),
-                           na=("789.8万",), nb=("787.8万",),
-                           ta=("9月24日",), tb=("9月24日",),
-                           ncon="一致"),
+# 适配器直射用（无前置层）：假冲突样本——同值不同写法（3286000股=
+# 328.6万股，另侧多报占比=信息补充），机抽双向差异触发 P_NUMERIC 但
+# 业务上应判重复（罐装判"重复"=业务正确；服务级该对骨架不同不被前置
+# 层拦截，机检发现只进诊断）。
+FAKE_NUM_H = "甲公司9月24日减持3286000股，占总股本1.2%。"
+FAKE_NUM_C = "甲公司9月24日减持328.6万股。"
+FAKE_NUM_RESP = {
+    (FAKE_NUM_H, FAKE_NUM_C): _jjson("重复", ("减持3286000股",),
+                                     ("减持328.6万股",),
+                                     na=("3286000",), nb=("328.6万",),
+                                     ta=("9月24日",), tb=("9月24日",),
+                                     ncon="一致"),
+    (FAKE_NUM_C, FAKE_NUM_H): _jjson("重复", ("减持328.6万股",),
+                                     ("减持3286000股",),
+                                     na=("328.6万",), nb=("3286000",),
+                                     ta=("9月24日",), tb=("9月24日",),
+                                     ncon="一致"),
 }
 SUB_RESP = {
     (SUB_H, SUB_C): _jjson("不重复", ("主力净流入5亿",), ("主力净流入5亿",),
@@ -212,24 +220,30 @@ def test_real_judge_signs_duplicate_fact_equivalent(monkeypatch):
     assert pair.outcome == "equivalent" and pair.code == "JUDGE_EQUIVALENT"
     assert len(pair.used_evidence) > 0
     quotes = {e.quote for e in pair.used_evidence}
-    assert "9月24日公告营收100万元" in quotes     # 真引文（非空壳）
+    assert "营收100万元" in quotes                # 真引文（非空壳）
 
 
 def test_real_judge_signs_conflict_with_subject_axis(monkeypatch):
-    """双序不重复+机检主体轴 → JUDGE_NON_DUPLICATE（件级不重复；
-    dimension=subject 直钉，双侧证伪引文绑真 offset，仍构造审计冲突件）。"""
+    """提交一修复（整改令一/三）：主体代码双侧互斥=核心硬冲突——前置层
+    直接判不重复并**跳过判官**（爆炸式 callable 零调用反证）；双侧主体
+    代码原文证据入审计冲突件。"""
     _switches_on(monkeypatch)
-    cb = _real_callable(SUB_RESP)
+
+    def _explode(ctx):                            # 被调用即炸=判官零调用反证
+        raise AssertionError("硬冲突对不得进判官")
+
     out = decide_service.decide_for_task(
-        _history(SUB_H), [], current=_current(SUB_C), judge_callable=cb,
-        coverage_complete=True)
+        _history(SUB_H, "易天股份"), [], current=_current(SUB_C, "名臣健康"),
+        judge_callable=_explode, coverage_complete=True)
     assert out.decision == "不重复"
+    assert out.duplicate_ids == ()
     pair = out.pair_results[0]
-    assert pair.outcome == "conflict" and pair.code == "JUDGE_NON_DUPLICATE"
+    assert pair.outcome == "conflict" and pair.code == "VERIFIED_CONFLICT"
     assert len(pair.verified_conflicts) == 1
     conflict = pair.verified_conflicts[0]
-    assert conflict.field_path == "judge_falsification.subject"
-    assert conflict.history_evidence.quote == "600001"
+    assert conflict.field_path == "core_conflict.subject"
+    assert conflict.basis == "CORE_CONFLICT"
+    assert conflict.history_evidence.quote == "300812"
     assert conflict.current_evidence.quote == "002919"
 
 
@@ -257,27 +271,31 @@ def test_real_judge_empty_not_duplicate_signs_with_p_no_axis(monkeypatch):
     assert "P_NO_AXIS" in judged.evidence_warnings
 
 
-def test_real_judge_machine_numeric_conflict_now_audit_only(monkeypatch):
-    """提交一（解除一票否决）：判官双序 重复 声称数值一致，机抽
-    787.8万/789.8万 双向差异=P_NUMERIC → 仍签发 JUDGE_EQUIVALENT，
-    P_NUMERIC 只进证据诊断（audit 语义，不改判）。"""
+def test_hard_conflict_numeric_skips_judge_signs_verified_conflict(monkeypatch):
+    """提交一修复（整改令一/三）：同槽位数值冲突（787.8万 vs 789.8万，
+    剔数骨架逐字相等）=核心硬冲突——前置层直接判不重复、判官零调用、
+    双侧原文数值证据入审计冲突件；不再允许判官对真数值冲突签重复。"""
     _switches_on(monkeypatch)
-    cb = _real_callable(NUM_RESP)
+
+    def _explode(ctx):
+        raise AssertionError("硬冲突对不得进判官")
+
     out = decide_service.decide_for_task(
-        _history(NUM_H), [], current=_current(NUM_C), judge_callable=cb,
-        coverage_complete=True)
-    assert out.decision == "重复"
-    assert out.duplicate_ids == ("item-A",)
+        _history(NUM_H), [], current=_current(NUM_C),
+        judge_callable=_explode, coverage_complete=True)
+    assert out.decision == "不重复"
+    assert out.duplicate_ids == ()
     pair = out.pair_results[0]
-    assert pair.outcome == "equivalent"
-    assert pair.code == "JUDGE_EQUIVALENT"
-    judged = judge_pair.adjudicate_pair(cb, judge_pair.build_pair_context(
-        SimpleNamespace(pair_id="p-num", history_record_id=H_ID,
-                        current_record_id=C_ID, history_item_id="item-A",
-                        current_item_id="item-C"),
-        history_text=NUM_H, current_text=NUM_C))
-    assert judged.outcome == "equivalent"
-    assert "P_NUMERIC" in judged.machine_findings
+    assert pair.outcome == "conflict" and pair.code == "VERIFIED_CONFLICT"
+    assert len(pair.verified_conflicts) == 1
+    conflict = pair.verified_conflicts[0]
+    assert conflict.field_path == "core_conflict.numeric"
+    assert conflict.basis == "CORE_CONFLICT"
+    assert conflict.history_evidence.quote == "787.8万"
+    assert conflict.current_evidence.quote == "789.8万"
+    # 整改令五：硬冲突公共理由=按冲突类型的固定措辞（禁用"已验证"）
+    assert out.reason == (
+        "两条快讯的核心数值不同，属于同一槽位明确冲突，因此判定为不重复。")
 
 
 def test_real_judge_timeout_unresolved(monkeypatch):
@@ -374,7 +392,9 @@ def test_adapter_proof_passes_validate_and_cache_key(monkeypatch):
     assert validated.evidence_status == "pass"
     assert validated.evidence_warnings == ()
     assert proof["reason"] == "r"                        # 判官理由实传
-    assert proof["policy_version"] == "policy_v3"        # 提交二治理口径单源
+    # 提交一修复并入复审条 1：policy 随 prompt 映射同源（本链显式
+    # judge_v1→policy_v2 原 policy；judge_v5→policy_v3 钉在 v5 测试）
+    assert proof["policy_version"] == "policy_v2"
     assert proof["machine_verify"] == {"mode": "audit", "rules_triggered": [],
                                        "passed": True}
     assert proof["numeric_check"]["conclusion"] == "一致"
@@ -400,9 +420,9 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     assert proof["verdict"] == "not_duplicate"
     validated = judge_pair.validate_proof(proof, ctx)
     assert validated.falsification["dimension"] == "subject"
-    assert validated.falsification["evidence_a"]["text"] == "600001"
+    assert validated.falsification["evidence_a"]["text"] == "300812"
     # time 轴原生直发（宪章 §二-3；合同 v1 曾最近邻并入 stage，v2 原生）
-    t_h, t_c = "甲公司3月4日公告投产。", "乙公司3月5日公告投产。"
+    t_h, t_c = "甲公司3月4日公告投产。", "甲公司3月5日公告投产。"
     resp = {
         (t_h, t_c): _jjson("不重复", ("3月4日公告投产",), ("3月5日公告投产",),
                            ncon="无关键数值", tcon="不一致",
@@ -420,7 +440,7 @@ def test_adapter_falsification_dimension_mapping(monkeypatch):
     assert judge_pair.validate_proof(proof2, ctx2).falsification[
         "dimension"] == "time"
     # polarity 轴原生直发（宪章 §二-5 方向冲突；v1 曾并入 event，v2 原生）
-    p_h, p_c = "甲公司主力净流入5亿。", "乙公司主力净流出5亿。"
+    p_h, p_c = "甲公司主力净流入5亿。", "甲公司主力净流出5亿。"
     resp3 = {
         (p_h, p_c): _jjson("不重复", ("净流入5亿",), ("净流出5亿",),
                            na=("5亿",), nb=("5亿",),
@@ -500,10 +520,13 @@ def test_adapter_empty_not_duplicate_carries_no_falsification(monkeypatch):
 def test_adapter_numeric_mv_rejection_shape(monkeypatch):
     """机验 P_NUMERIC audit 形态（提交一）：P_NUMERIC 入 rules_triggered、
     passed=false、mode="audit"——validate_proof **不再抛错**，如实收入
-    machine_findings/告警诊断，语义 verdict 不动。"""
+    machine_findings/告警诊断，语义 verdict 不动。提交一修复：样本换
+    假冲突（同值不同写法 3286000股=328.6万股+另侧信息补充占比），机抽
+    双向差异触发 P_NUMERIC 但业务上应判重复（真数值冲突样本已移交
+    硬冲突前置层，服务级判官零调用）。"""
     _switches_on(monkeypatch)
-    cb = _real_callable(NUM_RESP)
-    ctx = _order_ctx("p1", NUM_H, NUM_C, "ab")
+    cb = _real_callable(FAKE_NUM_RESP)
+    ctx = _order_ctx("p1", FAKE_NUM_H, FAKE_NUM_C, "ab")
     proof = cb(ctx)
     assert proof["machine_verify"]["passed"] is False
     assert proof["machine_verify"]["mode"] == "audit"
