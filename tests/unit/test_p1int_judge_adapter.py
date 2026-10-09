@@ -127,9 +127,13 @@ def _jjson(decision, ea, eb, *, na=(), nb=(), ta=(), tb=(),
 
 
 def _switches_on(monkeypatch):
-    """真开关：DEDUP_JUDGE_PROOF（真件装配闸）+ DEDUP_JUDGE_IN_CHAIN（主链闸）。"""
+    """真开关：DEDUP_JUDGE_PROOF（真件装配闸）+ DEDUP_JUDGE_IN_CHAIN（主链闸）。
+    提交三（§5.3）：本文件钉语义权威口径（提交一）——灰度开关显式
+    semantic_authority；legacy 默认口径由 test_p3c_decision_mode 守卫。"""
     monkeypatch.setenv(jp.JUDGE_PROOF_ENV, "1")
     monkeypatch.setenv(judge_pair.JUDGE_IN_CHAIN_ENV, "1")
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
+                       judge_pair.MODE_SEMANTIC_AUTHORITY)
 
 
 def _real_callable(responses, *, budget=None, sleep_s=0.0):

@@ -124,6 +124,7 @@ def test_embedding_space_instance_uses_space_id():
 def test_switch_state_snapshot_honors_injected_env():
     env = {"DEDUP_RECALL_MODE": "shadow", "DEDUP_CERT_DECOUPLE": "1",
            "DEDUP_JUDGE_PROOF": "1", "DEDUP_JUDGE_IN_CHAIN": "true",
+           "DEDUP_JUDGE_DECISION_MODE": "semantic_authority",
            "UNRELATED_ENV": "x"}
     manifest = _build(env=env)
     state = dict(manifest.switch_state)
@@ -132,6 +133,8 @@ def test_switch_state_snapshot_honors_injected_env():
     # 提交二（§5.2 文件 H-2）：判官两开关登记入册并如实快照
     assert state["DEDUP_JUDGE_PROOF"] == "1"
     assert state["DEDUP_JUDGE_IN_CHAIN"] == "true"
+    # 提交三（§5.3）：灰度开关登记入册并如实快照
+    assert state["DEDUP_JUDGE_DECISION_MODE"] == "semantic_authority"
     assert state["DEDUP_COVERAGE_FRONTIER"] == ""             # 缺席记空串
     assert "UNRELATED_ENV" not in state                       # 非登记开关不入册
     assert [name for name, _ in manifest.switch_state] == list(rm.KNOWN_SWITCHES)

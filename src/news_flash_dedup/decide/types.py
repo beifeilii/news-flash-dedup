@@ -45,6 +45,10 @@ class DecideOutcome:
     # PairResult，供 commit_one 构造真实审计批次（build_audit_batch）；不进入
     # to_public_dict（五字段封闭不动）。
     pair_results: tuple[Any, ...] = field(default_factory=tuple)
+    # 提交三（§5.3 观测指标）：判官诊断计数 dict（judge.semantic.* /
+    # judge.order_disagree / judge.evidence.* / judge.legacy_vs_new.changed
+    # 等键 → int）。内部审计/观测面——绝不进 to_public_dict。
+    judge_diagnostics: Mapping = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.decision not in _DECISION:

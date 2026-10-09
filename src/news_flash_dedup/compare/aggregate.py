@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -28,6 +29,25 @@ from news_flash_dedup.compare.pair_compare import (
 
 
 _DECISION = Literal["重复", "不重复", "边界case/疑难case"]
+
+# 提交三（§5.3 公共理由）：重复/不重复的公共 reason 优先取对级
+# PairResult.detail 的清洗版（最早重复对 / 首个冲突对），无可用 detail
+# 才落固定兜底文案。清洗=去 URL、折叠空白、上限 300 字符；理由不得
+# 包含内部码（下方扫描闸兜底，不静默洗码）/模型原始响应全文/密钥/超长
+# 原文。
+_REASON_TEXT_CAP = 300
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
+
+def _clean_public_reason(text: str | None) -> str:
+    """公共理由整形：去 URL → 折叠空白 → 截 300 字。空/全被剥除 → ""
+    （调用侧落固定兜底文案）。"""
+    if not isinstance(text, str):
+        return ""
+    cleaned = " ".join(_URL_RE.sub("", text).split())
+    if len(cleaned) > _REASON_TEXT_CAP:
+        cleaned = cleaned[: _REASON_TEXT_CAP - 1] + "…"
+    return cleaned
 
 
 @dataclass(frozen=True)
@@ -328,7 +348,11 @@ def aggregate(
         decision: _DECISION = "重复"
         primary_equivalent = ordered_pairs[0]
         internal_code = primary_equivalent.code
-        reason = "已逐一核验与列表条目的主体和核心事件一致，差异属于已允许的表达或信息差异。"
+        # 提交三（§5.3）：公共理由优先=最早重复对的已清洗 detail
+        # （判官重复对=双序合并理由；规则链等价对=规则 detail）；清洗后
+        # 为空才落固定兜底。
+        reason = (_clean_public_reason(primary_equivalent.detail)
+                  or "已逐一核验与列表条目的主体和核心事件一致，差异属于已允许的表达或信息差异。")
     elif not issues and coverage.complete and not current_ctx.get("subject_missing", False):
         # D25（三轮审计 C-05）：全冲突+覆盖完整场景原统一落本分支——
         # reason 错称"未发现候选"（候选明明存在且冲突证伪）、code 错挂
@@ -339,9 +363,15 @@ def aggregate(
         # 实传 JUDGE_NON_DUPLICATE（不再把语义结论洗成机器已验证结论）。
         decision = "不重复"
         internal_code = conflicts[0].code if conflicts else "NO_DUPLICATE_FOUND"
-        reason = ("本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
-                  if conflicts
-                  else "本次健康的限定召回中未发现可比较的重复候选。")
+        # 提交三（§5.3）：有冲突对时公共理由优先=首个冲突对的已清洗
+        # detail（规则硬冲突 detail / 判官 JUDGE_NON_DUPLICATE 双序合并
+        # 理由），清洗后为空才落固定兜底。
+        reason = (_clean_public_reason(conflicts[0].detail)
+                  if conflicts else "")
+        reason = reason or (
+            "本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
+            if conflicts
+            else "本次健康的限定召回中未发现可比较的重复候选。")
     elif current_ctx.get("subject_missing", False):
         primary = _primary_issue(issues) if issues else PairIssue(
             "SUBJECT_UNRESOLVED", "主体或事件关系无法确认"
@@ -380,8 +410,11 @@ def aggregate(
         # 提交一：与上方分支同源——conflicts[0].code 实传（见上注）。
         decision = "不重复"
         internal_code = conflicts[0].code if conflicts else "NO_DUPLICATE_FOUND"
-        reason = ("本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
-                  if conflicts else "本次健康的限定召回中未发现可比较的重复候选。")
+        reason = (_clean_public_reason(conflicts[0].detail)
+                  if conflicts else "")
+        reason = reason or (
+            "本次限定召回及已完成直接比较中，候选均存在已验证的对应事实差异。"
+            if conflicts else "本次健康的限定召回中未发现可比较的重复候选。")
 
     # W2 修复波 2 (a)-10（A3-F7）：扫描集补 CONFLICT_CODES（:21 现役已
     # import——纯防御收口，现役静态模板 :356-357 零命中=零行为差，

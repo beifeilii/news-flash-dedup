@@ -68,7 +68,7 @@ class ProcessingBudget:
     同 deadline，实例本身不重建语义）。"""
 
     __slots__ = ("_accepted_at_mono", "_config", "_clock_mono",
-                 "_model_calls_spent")
+                 "_model_calls_spent", "_counters")
 
     def __init__(self, *, accepted_at_mono: float,
                  config: RuntimeBudgetConfig,
@@ -77,6 +77,7 @@ class ProcessingBudget:
         self._config = config
         self._clock_mono = clock_mono
         self._model_calls_spent = 0
+        self._counters: dict[str, int] = {}
 
     @classmethod
     def derive(cls, *, accepted_at_mono: float, config: RuntimeBudgetConfig,
@@ -122,6 +123,20 @@ class ProcessingBudget:
     @property
     def model_calls_spent(self) -> int:
         return self._model_calls_spent
+
+    def bump_counter(self, name: str, n: int = 1) -> None:
+        """轻量计数钩子（提交三 §5.3 观测指标）：调用域自定义键
+        （如 judge.semantic.duplicate）累加；不校验键名（机制件不代行
+        词表治理，消费侧自律）；不进公共五字段。"""
+        if type(name) is not str or not name:
+            raise ValueError("counter name must be nonempty str")
+        if type(n) is not int or n < 1:
+            raise ValueError("counter bump must be a positive int")
+        self._counters[name] = self._counters.get(name, 0) + n
+
+    def counter_snapshot(self) -> dict[str, int]:
+        """计数快照（拷贝，确定性 dict 副本）。"""
+        return dict(self._counters)
 
     def prepare_deadline_mono(self) -> float:
         """②准备软预算上界=deadline_mono - commit_target_s（余量划分，

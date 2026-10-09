@@ -28,6 +28,13 @@
   EVIDENCE_FALLBACK_FULL_TEXT 告警——该回退只证明"判定对应的原文版本"，
   不冒充精确字段证明；只进内部审计/诊断，绝不进公共五字段。
 
+提交三（2026-10-10，同方案 §5.3）：**灰度开关**——
+DEDUP_JUDGE_DECISION_MODE=legacy_proof_gate|semantic_authority，默认
+legacy_proof_gate（阶段一）：生效结论回到提交一前证明闸口径，同一份
+判官结果离线并行计算 semantic_authority 结论记入 outcome.comparison
+（不增加 LLM 调用，新旧差异由 service 计 judge.legacy_vs_new.changed）；
+金标回放稳定后切 semantic_authority；旧口径至少保留一个发布周期。
+
 纪律：
 - 超时/异常/合同不合规一律 fail-closed → 对级 unresolved（合同 §三映射）；
 - 对级产出只取三态：equivalent / conflict / unresolved（合同 §四）；
@@ -44,7 +51,7 @@ import hashlib
 import os
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from news_flash_dedup.compare.pair_compare import VerifiedConflict
@@ -64,6 +71,32 @@ def judge_in_chain_enabled(environ: Mapping | None = None) -> bool:
     """读 DEDUP_JUDGE_IN_CHAIN；缺省/非真值 → False（默认关，老行为）。"""
     env = os.environ if environ is None else environ
     return env.get(JUDGE_IN_CHAIN_ENV, "").strip().lower() in _SWITCH_ON_VALUES
+
+
+# 提交三灰度开关（§5.3）：DEDUP_JUDGE_DECISION_MODE=
+# legacy_proof_gate|semantic_authority。
+# - semantic_authority：判官语义结论直签（提交一口径，§4.2 矩阵）；
+# - legacy_proof_gate（**默认**，阶段一）：生效结论回到提交一前证明闸
+#   口径（证据诊断重升否决项：无可绑定引文→EVIDENCE_UNBOUND、
+#   machine_verify.passed=false→MV_REJECTED、结论对拍冲突→
+#   CONCLUSION_CONTRADICTS、not_duplicate 无证伪轴→降级 doubtful），
+#   同一份判官结果**离线**并行计算 semantic_authority 结论记入
+#   outcome.comparison（新旧差异由 service 计入
+#   judge.legacy_vs_new.changed）——不增加任何 LLM 调用；金标回放
+#   稳定后切 semantic_authority；旧口径至少保留一个发布周期。
+JUDGE_DECISION_MODE_ENV = "DEDUP_JUDGE_DECISION_MODE"
+MODE_LEGACY_PROOF_GATE = "legacy_proof_gate"
+MODE_SEMANTIC_AUTHORITY = "semantic_authority"
+_JUDGE_DECISION_MODES = (MODE_LEGACY_PROOF_GATE, MODE_SEMANTIC_AUTHORITY)
+DEFAULT_JUDGE_DECISION_MODE = MODE_LEGACY_PROOF_GATE
+
+
+def judge_decision_mode(environ: Mapping[str, str] | None = None) -> str:
+    """读 DEDUP_JUDGE_DECISION_MODE：合法值原样；缺席/空串/非法值 →
+    默认 legacy_proof_gate（fail-closed 回旧口径，§5.3 阶段一）。"""
+    raw = ((os.environ if environ is None else environ)
+           .get(JUDGE_DECISION_MODE_ENV) or "").strip()
+    return raw if raw in _JUDGE_DECISION_MODES else DEFAULT_JUDGE_DECISION_MODE
 
 
 # ---------------------------------------------------------------- 合同枚举（§一/§二/§三）
@@ -121,6 +154,22 @@ _FAILURE_TO_CODE = {
     JUDGE_EXCEPTION: "SUBJECT_UNRESOLVED",
     JUDGE_FAILURE: "SUBJECT_UNRESOLVED",
     JUDGE_DOUBTFUL: JUDGE_UNCERTAIN,
+}
+
+# legacy_proof_gate 模式（提交三 §5.3）硬失败→内部码映射——提交一前口径：
+# 双序分歧/双序存疑回落 SUBJECT_UNRESOLVED（无 JUDGE_UNCERTAIN 分流）。
+_LEGACY_FAILURE_TO_CODE = {
+    BUDGET_EXCEEDED: "CANDIDATE_BUDGET_EXHAUSTED",
+    TIMEOUT: "DEPENDENCY_TIMEOUT",
+    MV_REJECTED: "EVIDENCE_INVALID",
+    EVIDENCE_UNBOUND: "EVIDENCE_INVALID",
+    INVALID_OUTPUT: "EVIDENCE_INVALID",
+    CONCLUSION_CONTRADICTS: "NUMERIC_ALIGNMENT_FAILED",
+    ORDER_DISAGREE: "SUBJECT_UNRESOLVED",
+    JUDGE_NOT_INJECTED: "SUBJECT_UNRESOLVED",
+    JUDGE_EXCEPTION: "SUBJECT_UNRESOLVED",
+    JUDGE_FAILURE: "SUBJECT_UNRESOLVED",
+    JUDGE_DOUBTFUL: "SUBJECT_UNRESOLVED",
 }
 
 # 未决归因确定性优先序（硬失败先于双序分歧先于存疑；同序多因取首见）
@@ -186,6 +235,11 @@ class JudgePairOutcome:
     evidence_status: str = "pass"     # 双序合并最劣档（fail > warn > pass）
     evidence_warnings: tuple = ()     # 双序告警 token 并集（定序去重）
     machine_findings: tuple = ()      # 双序 P_* 机检发现并集（定序去重）
+    # 提交三（§5.3 灰度）：本次裁决所用口径；comparison 仅 legacy 模式
+    # 实填（新旧两口径离线对照 dict：legacy_*/semantic_* 三元组 +
+    # changed 布尔），semantic 模式 None。诊断面，不进公共五字段。
+    decision_mode: str = MODE_SEMANTIC_AUTHORITY
+    comparison: Mapping | None = None
 
 
 # ---------------------------------------------------------------- 证明构造辅助（缓存键=合同 §一公式）
@@ -612,7 +666,9 @@ def _merged_detail(verdict_cn: str, per_order: Mapping) -> str:
 
 
 def _unresolved(reason: str, proofs: Mapping,
-                per_order: Mapping | None = None) -> JudgePairOutcome:
+                per_order: Mapping | None = None,
+                *, decision_mode: str = MODE_SEMANTIC_AUTHORITY,
+                ) -> JudgePairOutcome:
     code = _FAILURE_TO_CODE[reason]
     status, warnings, findings = ("pass", (), ())
     if per_order:
@@ -622,61 +678,44 @@ def _unresolved(reason: str, proofs: Mapping,
         detail=f"判官未决进人工（{reason}）。",
         failure_reason=reason, proofs=proofs,
         evidence_status=status, evidence_warnings=warnings,
-        machine_findings=findings)
+        machine_findings=findings, decision_mode=decision_mode)
 
 
-def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
-                    timeout_s: float | None = None) -> JudgePairOutcome:
-    """对一对未决候选跑双序判官并按 §4.2 矩阵合并对级结论（提交一）。
+def _legacy_unresolved(reason: str, proofs: Mapping,
+                       per_order: Mapping | None = None) -> JudgePairOutcome:
+    """legacy_proof_gate 模式未决（提交一前口径：码映射走
+    _LEGACY_FAILURE_TO_CODE，分歧/存疑回落 SUBJECT_UNRESOLVED）。"""
+    code = _LEGACY_FAILURE_TO_CODE[reason]
+    status, warnings, findings = ("pass", (), ())
+    if per_order:
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
+    return JudgePairOutcome(
+        outcome="unresolved", code=code,
+        detail=f"判官未决进人工（{reason}）。",
+        failure_reason=reason, proofs=proofs,
+        evidence_status=status, evidence_warnings=warnings,
+        machine_findings=findings, decision_mode=MODE_LEGACY_PROOF_GATE)
 
-    - judge_callable=None → 默认实现 fail-closed 未决（JUDGE_NOT_INJECTED）；
-    - 双序均 duplicate → equivalent（JUDGE_EQUIVALENT）——证明层告警只进
-      审计/诊断，不再有一票否决；
-    - 双序均 not_duplicate → conflict（JUDGE_NON_DUPLICATE）——不再强制
-      机器证伪轴（无轴记 P_NO_AXIS 告警，不降级）；有绑定成功的
-      falsification 时仍构造 VerifiedConflict 审计件；
-    - 双序分歧（ORDER_DISAGREE）/任一存疑（JUDGE_DOUBTFUL）→ 未决
-      （JUDGE_UNCERTAIN）；
-    - 超时/预算/异常/合同不合规/verdict=failure·invalid → 未决
-      （合同 §三 映射 UNRESOLVED 白名单码）。
-    """
-    timeout_s = DEFAULT_JUDGE_TIMEOUT_S if timeout_s is None else timeout_s
-    if judge_callable is None:
-        return _unresolved(JUDGE_NOT_INJECTED, proofs={"ab": None, "ba": None})
 
-    per_order: dict[str, ValidatedJudgeOrder | None] = {}
-    raw_proofs: dict[str, Any] = {"ab": None, "ba": None}
-    hard_failures: list[str] = []
+def _collect_order_evidence_strict(pair_context: Mapping,
+                                   per_order: Mapping) -> tuple:
+    """legacy 模式审计证据：只取成功绑定引文（提交一前无完整原文回退）。"""
+    evidence: list = []
     for order in ORDERS:
+        validated = per_order[order]
         ctx = _order_context(pair_context, order)
-        proof, failure = _call_with_timeout(judge_callable, ctx, timeout_s)
-        raw_proofs[order] = proof
-        if failure is not None:
-            hard_failures.append(failure)
-            per_order[order] = None
-            continue
-        try:
-            validated = validate_proof(proof, ctx)
-        except JudgeProofError as exc:
-            reason = str(exc).split(":", 1)[0]
-            hard_failures.append(reason if reason in _FAILURE_TO_CODE
-                                 else INVALID_OUTPUT)
-            per_order[order] = None
-            continue
-        verdict = validated.verdict
-        if verdict == "failure":
-            hard_failures.append(JUDGE_FAILURE)
-            per_order[order] = None
-        elif verdict == "invalid":
-            hard_failures.append(INVALID_OUTPUT)
-            per_order[order] = None
-        else:
-            per_order[order] = validated
+        evidence.extend(_quotes_to_evidence(validated.quotes_a,
+                                            ctx["record_a_id"]))
+        evidence.extend(_quotes_to_evidence(validated.quotes_b,
+                                            ctx["record_b_id"]))
+    return tuple(evidence)
 
-    verdicts = {order: (per_order[order].verdict if per_order[order] is not None
-                        else None) for order in ORDERS}
 
-    # §4.2 分支 1：双序 duplicate → equivalent（证明告警只进审计）
+def _semantic_outcome(pair_context: Mapping, per_order: Mapping,
+                      raw_proofs: Mapping, hard_failures: list,
+                      verdicts: Mapping) -> JudgePairOutcome:
+    """§4.2 矩阵合并（提交一 semantic_authority 口径）。"""
+    # 分支 1：双序 duplicate → equivalent（证明告警只进审计）
     if verdicts["ab"] == "duplicate" and verdicts["ba"] == "duplicate":
         evidence, had_fallback = _collect_order_evidence(pair_context, per_order)
         status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
@@ -689,7 +728,7 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
             evidence_status=status, evidence_warnings=warnings,
             machine_findings=findings)
 
-    # §4.2 分支 2：双序 not_duplicate → conflict（不再强制机器证伪轴）
+    # 分支 2：双序 not_duplicate → conflict（不再强制机器证伪轴）
     if verdicts["ab"] == "not_duplicate" and verdicts["ba"] == "not_duplicate":
         evidence, had_fallback = _collect_order_evidence(pair_context, per_order)
         status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
@@ -736,7 +775,7 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
             evidence_status=status, evidence_warnings=warnings,
             machine_findings=findings)
 
-    # §4.2 分支 3：其余一切组合 → unresolved（确定性归因，硬失败优先）
+    # 分支 3：其余一切组合 → unresolved（确定性归因，硬失败优先）
     for reason in _HARD_FAILURE_PRIORITY:
         if reason in hard_failures:
             return _unresolved(reason, proofs=raw_proofs, per_order=per_order)
@@ -746,8 +785,189 @@ def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
     return _unresolved(JUDGE_DOUBTFUL, proofs=raw_proofs, per_order=per_order)
 
 
+def _legacy_veto(validated: ValidatedJudgeOrder) -> str | None:
+    """legacy_proof_gate 单顺序否决链（提交一前证明闸语义，按旧优先序）：
+    签发判定无可绑定引文 → EVIDENCE_UNBOUND；机器验 passed=false →
+    MV_REJECTED；duplicate 与机侧结论对拍冲突 → CONCLUSION_CONTRADICTS。
+    未命中 → None。只作用于 duplicate/not_duplicate 签发态。"""
+    if validated.verdict not in ("duplicate", "not_duplicate"):
+        return None
+    warnings = set(validated.evidence_warnings)
+    if EVIDENCE_UNBOUND in warnings or EVIDENCE_QUOTES_EMPTY in warnings:
+        return EVIDENCE_UNBOUND
+    if MACHINE_VERIFY_REJECTED in warnings:
+        return MV_REJECTED
+    if validated.verdict == "duplicate" and CONCLUSION_CONTRADICTS in warnings:
+        return CONCLUSION_CONTRADICTS
+    return None
+
+
+def _legacy_outcome(pair_context: Mapping, per_order: Mapping,
+                    raw_proofs: Mapping, hard_failures: list,
+                    verdicts: Mapping) -> JudgePairOutcome:
+    """legacy_proof_gate 对级合并（提交一前证明闸口径，§5.3 灰度回滚通道）。
+
+    与提交一前 adjudicate_pair 逐条对应：证据诊断在本口径下重升否决项；
+    not_duplicate 无证伪轴降级 doubtful（合同 §二 旧条款）；双序分歧/存疑
+    回落 SUBJECT_UNRESOLVED；审计证据只用绑定成功引文（无回退证据）。
+    """
+    legacy_verdicts: dict[str, str | None] = {}
+    legacy_hard: list[str] = list(hard_failures)
+    for order in ORDERS:
+        validated = per_order[order]
+        if validated is None:
+            legacy_verdicts[order] = None
+            continue
+        veto = _legacy_veto(validated)
+        if veto is not None:
+            legacy_hard.append(veto)
+            legacy_verdicts[order] = None
+            continue
+        if (validated.verdict == "not_duplicate"
+                and validated.falsification is None):
+            legacy_verdicts[order] = "doubtful"   # 旧 §二：无轴降级存疑
+        else:
+            legacy_verdicts[order] = validated.verdict
+
+    if legacy_verdicts["ab"] == "duplicate" and legacy_verdicts["ba"] == "duplicate":
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
+        return JudgePairOutcome(
+            outcome="equivalent", code="FACT_EQUIVALENT",
+            detail="判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。",
+            used_evidence=_collect_order_evidence_strict(pair_context, per_order),
+            proofs=raw_proofs,
+            evidence_status=status, evidence_warnings=warnings,
+            machine_findings=findings, decision_mode=MODE_LEGACY_PROOF_GATE)
+
+    if (legacy_verdicts["ab"] == "not_duplicate"
+            and legacy_verdicts["ba"] == "not_duplicate"):
+        # 到达此处两侧 falsification 必非 None（None 已降级 doubtful）
+        status, warnings, findings = _merge_diagnostics(per_order, ORDERS)
+        fals = per_order["ab"].falsification
+        ctx_ab = _order_context(pair_context, "ab")
+        conflict = VerifiedConflict(
+            field_path=f"judge_falsification.{fals['dimension']}",
+            basis="JUDGE_FALSIFICATION",
+            history_evidence=EvidenceRef(
+                record_id=ctx_ab["record_a_id"], field="text",
+                quote=fals["evidence_a"]["text"],
+                start=fals["evidence_a"]["offset_start"],
+                end=fals["evidence_a"]["offset_end"]),
+            current_evidence=EvidenceRef(
+                record_id=ctx_ab["record_b_id"], field="text",
+                quote=fals["evidence_b"]["text"],
+                start=fals["evidence_b"]["offset_start"],
+                end=fals["evidence_b"]["offset_end"]),
+            detail=fals["relation"])
+        return JudgePairOutcome(
+            outcome="conflict", code="VERIFIED_CONFLICT",
+            detail=(f"判官双序一致证伪同一事实（维度 {fals['dimension']}），"
+                    "双侧证伪引文已绑定原文且机器验 gate 通过。"),
+            used_evidence=(conflict.history_evidence,
+                           conflict.current_evidence),
+            verified_conflicts=(conflict,), proofs=raw_proofs,
+            evidence_status=status, evidence_warnings=warnings,
+            machine_findings=findings, decision_mode=MODE_LEGACY_PROOF_GATE)
+
+    for reason in _HARD_FAILURE_PRIORITY:
+        if reason in legacy_hard:
+            return _legacy_unresolved(reason, proofs=raw_proofs,
+                                      per_order=per_order)
+    if {v for v in legacy_verdicts.values() if v} == {"duplicate", "not_duplicate"}:
+        return _legacy_unresolved(ORDER_DISAGREE, proofs=raw_proofs,
+                                  per_order=per_order)
+    return _legacy_unresolved(JUDGE_DOUBTFUL, proofs=raw_proofs,
+                              per_order=per_order)
+
+
+def adjudicate_pair(judge_callable: Callable | None, pair_context: Mapping, *,
+                    timeout_s: float | None = None,
+                    decision_mode: str | None = None) -> JudgePairOutcome:
+    """对一对未决候选跑双序判官并合并对级结论（提交三 §5.3 灰度版）。
+
+    decision_mode=None → 读 DEDUP_JUDGE_DECISION_MODE（默认
+    legacy_proof_gate）；显式传参优先（测试/回放通道）。
+
+    - judge_callable=None → 默认实现 fail-closed 未决（JUDGE_NOT_INJECTED）；
+    - semantic_authority（提交一 §4.2 矩阵）：双序 duplicate →
+      equivalent（JUDGE_EQUIVALENT）；双序 not_duplicate → conflict
+      （JUDGE_NON_DUPLICATE，无轴记 P_NO_AXIS 不降级）；分歧/存疑 →
+      JUDGE_UNCERTAIN；证明层告警只进审计/诊断，无一票否决；
+    - legacy_proof_gate（默认）：生效结论=提交一前证明闸口径（证据诊断
+      重升否决项），同一份判官结果**离线**并行计算 semantic 结论记入
+      comparison（不增加 LLM 调用）；
+    - 超时/预算/异常/合同不合规/verdict=failure·invalid → 未决
+      （合同 §三 映射 UNRESOLVED 白名单码；两口径各自映射表）。
+    """
+    timeout_s = DEFAULT_JUDGE_TIMEOUT_S if timeout_s is None else timeout_s
+    mode = (decision_mode if decision_mode in _JUDGE_DECISION_MODES
+            else judge_decision_mode())
+    if judge_callable is None:
+        if mode == MODE_LEGACY_PROOF_GATE:
+            return _legacy_unresolved(JUDGE_NOT_INJECTED,
+                                      proofs={"ab": None, "ba": None})
+        return _unresolved(JUDGE_NOT_INJECTED, proofs={"ab": None, "ba": None})
+
+    per_order: dict[str, ValidatedJudgeOrder | None] = {}
+    raw_proofs: dict[str, Any] = {"ab": None, "ba": None}
+    hard_failures: list[str] = []
+    for order in ORDERS:
+        ctx = _order_context(pair_context, order)
+        proof, failure = _call_with_timeout(judge_callable, ctx, timeout_s)
+        raw_proofs[order] = proof
+        if failure is not None:
+            hard_failures.append(failure)
+            per_order[order] = None
+            continue
+        try:
+            validated = validate_proof(proof, ctx)
+        except JudgeProofError as exc:
+            reason = str(exc).split(":", 1)[0]
+            hard_failures.append(reason if reason in _FAILURE_TO_CODE
+                                 else INVALID_OUTPUT)
+            per_order[order] = None
+            continue
+        verdict = validated.verdict
+        if verdict == "failure":
+            hard_failures.append(JUDGE_FAILURE)
+            per_order[order] = None
+        elif verdict == "invalid":
+            hard_failures.append(INVALID_OUTPUT)
+            per_order[order] = None
+        else:
+            per_order[order] = validated
+
+    verdicts = {order: (per_order[order].verdict if per_order[order] is not None
+                        else None) for order in ORDERS}
+
+    # 同一份判官结果：semantic 结论恒算（legacy 模式下离线对照用，
+    # 不增加 LLM 调用——per_order/raw_proofs 均为已跑结果）。
+    semantic = _semantic_outcome(pair_context, per_order, raw_proofs,
+                                 hard_failures, verdicts)
+    if mode == MODE_SEMANTIC_AUTHORITY:
+        return replace(semantic, decision_mode=MODE_SEMANTIC_AUTHORITY)
+
+    legacy = _legacy_outcome(pair_context, per_order, raw_proofs,
+                             hard_failures, verdicts)
+    comparison = {
+        "legacy_outcome": legacy.outcome,
+        "legacy_code": legacy.code,
+        "legacy_failure_reason": legacy.failure_reason,
+        "semantic_outcome": semantic.outcome,
+        "semantic_code": semantic.code,
+        "semantic_failure_reason": semantic.failure_reason,
+        "changed": ((legacy.outcome, legacy.code, legacy.failure_reason)
+                    != (semantic.outcome, semantic.code,
+                        semantic.failure_reason)),
+    }
+    return replace(legacy, comparison=comparison)
+
+
 __all__ = [
     "JUDGE_IN_CHAIN_ENV", "judge_in_chain_enabled",
+    "JUDGE_DECISION_MODE_ENV", "judge_decision_mode",
+    "MODE_LEGACY_PROOF_GATE", "MODE_SEMANTIC_AUTHORITY",
+    "DEFAULT_JUDGE_DECISION_MODE",
     "ORDERS", "PROOF_VERDICTS", "FALSIFICATION_DIMENSIONS", "CHECK_CONCLUSIONS",
     "JUDGE_EQUIVALENT", "JUDGE_NON_DUPLICATE", "JUDGE_UNCERTAIN",
     "MV_REJECTED", "ORDER_DISAGREE", "INVALID_OUTPUT", "TIMEOUT",

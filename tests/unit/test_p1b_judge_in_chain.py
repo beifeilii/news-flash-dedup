@@ -50,6 +50,15 @@ from news_flash_dedup.decide import judge_pair
 from news_flash_dedup.decide import service as decide_service
 
 
+@pytest.fixture(autouse=True)
+def _semantic_decision_mode(monkeypatch):
+    """提交三（§5.3 灰度）：本文件钉的是判官语义权威口径（提交一），
+    灰度开关显式置 semantic_authority；legacy_proof_gate 默认口径与新旧
+    对照由 tests/unit/test_p3c_decision_mode.py 专项守卫。"""
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
+                       judge_pair.MODE_SEMANTIC_AUTHORITY)
+
+
 # ---------------------------------------------------------------- 夹具
 
 def _ctx(record_id, item_id, text, arrival_seq, **kw):

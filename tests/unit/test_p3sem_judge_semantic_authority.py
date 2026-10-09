@@ -122,6 +122,15 @@ def _jjson(decision, ea, eb, *, na=(), nb=(), ta=(), tb=(),
     }, ensure_ascii=False)
 
 
+@pytest.fixture(autouse=True)
+def _semantic_decision_mode(monkeypatch):
+    """提交三（§5.3 灰度）：本文件钉的是判官语义权威口径（提交一八条
+    验收），灰度开关显式置 semantic_authority；legacy_proof_gate 默认
+    口径与新旧对照由 test_p3c_decision_mode.py 专项守卫。"""
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
+                       judge_pair.MODE_SEMANTIC_AUTHORITY)
+
+
 def _switches_on(monkeypatch):
     monkeypatch.setenv(jp.JUDGE_PROOF_ENV, "1")
     monkeypatch.setenv(judge_pair.JUDGE_IN_CHAIN_ENV, "1")

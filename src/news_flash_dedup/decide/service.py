@@ -206,7 +206,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                      budget=None,
                      judge_callable=None,
                      judge_in_chain: bool | None = None,
-                     judge_timeout_s: float | None = None) -> DecideOutcome:
+                     judge_timeout_s: float | None = None,
+                     judge_decision_mode: str | None = None) -> DecideOutcome:
     """集合级决策（P17 03:57 修订 §6.1）：当前条 vs 全部 `required` 候选。
 
     流水线（窗口V 实述勘正：旧述第 3 步 `detect_extra_event(history,
@@ -245,6 +246,14 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     detail 与可用引文/完整原文回退证据；证明层告警（P_*、引文绑定、
     machine_verify.passed）不再有一票否决，只进内部诊断日志；
     `DecideOutcome.to_public_dict()` 五字段合同不变。
+
+    提交三（2026-10-10，同方案 §5.3）：`judge_decision_mode` 灰度闸——
+    None=读 DEDUP_JUDGE_DECISION_MODE（默认 legacy_proof_gate，旧证明闸
+    口径生效+新口径离线对照计 judge.legacy_vs_new.changed，不增 LLM
+    调用）；显式 semantic_authority=提交一口径直签。判官诊断计数挂
+    `DecideOutcome.judge_diagnostics`（judge.semantic.* /
+    judge.order_disagree / judge.evidence.* / judge.legacy_vs_new.changed），
+    budget 在场时同步 bump_counter 轻量钩子；计数绝不进公共五字段。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -462,6 +471,25 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     # 读 env）：关=上方初聚合结果原样下行，老行为逐字节。
     judge_active = (judge_pair_module.judge_in_chain_enabled()
                     if judge_in_chain is None else bool(judge_in_chain))
+    # 提交三（§5.3 观测指标）：判官诊断计数（内部观测面；budget 在场时
+    # 同步轻量计数钩子 bump_counter——同一份计数双通道，绝不进公共
+    # 五字段）。语义面键释义：
+    #   judge.semantic.duplicate/not_duplicate/unresolved——semantic
+    #     authority 口径结论计数（legacy 模式下取离线对照的 semantic 侧）；
+    #   judge.order_disagree——semantic 侧双序分歧（ORDER_DISAGREE）；
+    #   judge.evidence.warn——存在任一证据告警/机检发现的对数（对级）；
+    #   judge.evidence.fallback_full_text——走完整原文回退证据的对数；
+    #   judge.evidence.rule.P_*——各机检规则触发次数（token 级）；
+    #   judge.legacy_vs_new.changed——legacy 生效结论与 semantic 离线
+    #     结论不一致的对数。
+    judge_diagnostics: dict[str, int] = {}
+
+    def _jcount(key: str, n: int = 1) -> None:
+        judge_diagnostics[key] = judge_diagnostics.get(key, 0) + n
+        bump = getattr(budget, "bump_counter", None)
+        if bump is not None:            # 鸭子类型防御：无钩子的预算件不阻断
+            bump(key, n)
+
     if judge_active:
         # ① 聚合后判官段：初聚合产出"边界且存在未决对"时，按候选序
         # （pair_results 顺序=首对+候选到达序）对未决对逐对过判官适配层；
@@ -478,7 +506,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
                     current_text=current_text)
                 judged = judge_pair_module.adjudicate_pair(
-                    judge_callable, pair_context, timeout_s=judge_timeout_s)
+                    judge_callable, pair_context, timeout_s=judge_timeout_s,
+                    decision_mode=judge_decision_mode)
                 # 提交一（§5.1 文件 D-3）：证据告警/机检发现只进内部
                 # 诊断日志——绝不进公共五字段、绝不再改判。
                 if judged.evidence_warnings or judged.machine_findings:
@@ -487,6 +516,36 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         pair.pair_id, judged.evidence_status,
                         list(judged.evidence_warnings),
                         list(judged.machine_findings))
+                # 提交三（§5.3 观测指标）：semantic 侧结论恒计（legacy
+                # 模式下取离线对照值——同一份判官结果，不增 LLM 调用）。
+                if judged.comparison is not None:
+                    sem_outcome = judged.comparison["semantic_outcome"]
+                    sem_failure = judged.comparison["semantic_failure_reason"]
+                    if judged.comparison["changed"]:
+                        _jcount("judge.legacy_vs_new.changed")
+                        _logger.info(
+                            "判官新旧口径差异 pair=%s legacy=%s/%s semantic=%s/%s",
+                            pair.pair_id, judged.comparison["legacy_outcome"],
+                            judged.comparison["legacy_code"], sem_outcome,
+                            judged.comparison["semantic_code"])
+                else:
+                    sem_outcome = judged.outcome
+                    sem_failure = judged.failure_reason
+                if sem_outcome == "equivalent":
+                    _jcount("judge.semantic.duplicate")
+                elif sem_outcome == "conflict":
+                    _jcount("judge.semantic.not_duplicate")
+                else:
+                    _jcount("judge.semantic.unresolved")
+                if sem_failure == judge_pair_module.ORDER_DISAGREE:
+                    _jcount("judge.order_disagree")
+                if judged.evidence_warnings or judged.machine_findings:
+                    _jcount("judge.evidence.warn")
+                if (judge_pair_module.EVIDENCE_FALLBACK_FULL_TEXT
+                        in judged.evidence_warnings):
+                    _jcount("judge.evidence.fallback_full_text")
+                for finding in judged.machine_findings:
+                    _jcount(f"judge.evidence.rule.{finding}")
                 if judged.outcome == "unresolved":
                     # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
                     # 原对级证据字段不动。
@@ -536,6 +595,7 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         raw_hash=current_raw_hash,
         pipeline_version=pipeline_version,
         pair_results=tuple(pair_results),  # R9 F4：外露对级结果供 commit 审计批次
+        judge_diagnostics=judge_diagnostics,  # 提交三：判官观测计数（内部面）
     )
 
 
