@@ -272,13 +272,23 @@ def _sha256(text: str) -> str:
 
 # ---------------------------------------------------------------- pair_context 构造
 
-def build_pair_context(pair, *, history_text: str, current_text: str) -> dict:
+def build_pair_context(pair, *, history_text: str, current_text: str,
+                       machine_evidence: Mapping | None = None) -> dict:
     """由 PairResult + 双侧正文构造判官注入上下文（纯 JSON 数据）。
 
     order 维度由 adjudicate_pair 按 "ab"（a=history 先）/ "ba"（a=current 先）
     双序各自展开（_order_context）。"ab" 与 llm_residual 的 hc 同向。
+
+    machine_evidence（一期 v6-lite，2026-10-11 分支 p3-v6-phase1）：可选
+    机器候选证据注入件（decide/judge_machine_evidence.build_machine_
+    evidence 产物——R8 修订候选证据+R7 条件①前置硬闸证据；仅
+    semantic_authority 模式由 decide/service 装配注入）。纯 JSON 增量
+    字段：缓存键/证明/审计消费面均不读它（compute_cache_key 内容寻址
+    键不受影响），legacy 面 machine_evidence=None=缺席零字段（现役键集
+    逐字节不变，基线 2d0d418 行为全等）。机器只产证据绝不直接判，判官
+    终审。
     """
-    return {
+    ctx = {
         "pair_id": pair.pair_id,
         "history_record_id": pair.history_record_id,
         "current_record_id": pair.current_record_id,
@@ -289,6 +299,9 @@ def build_pair_context(pair, *, history_text: str, current_text: str) -> dict:
         "history_text_sha256": _sha256(history_text),
         "current_text_sha256": _sha256(current_text),
     }
+    if machine_evidence is not None:
+        ctx["machine_evidence"] = machine_evidence
+    return ctx
 
 
 def _order_context(pair_context: Mapping, order: str) -> dict:

@@ -29,7 +29,7 @@ P0-6 数值族保留加审：787.8万/789.8万 正例（判官零调用）+32860
    328.6万股 同值不同写法反例（§3-A/§3-B-bis）；
 P1-1 单源传递：JudgeVersionConfig 在 decide_for_task 入口创建一次，
    adapter/manifest/audit 三处版本一致（§9 钉测：env 空+显式实参
-   semantic_authority→三层 v5/policy_v3）；
+   semantic_authority→三层 v6/policy_v4——一期 v6-lite 起映射 v6）；
 P1-2 diagnostics_hash：五诊断字段规范化哈希入 AuditRecord，payload_hash
    原样不动（§10 钉测）。
 """
@@ -910,12 +910,14 @@ def test_baseline_default_mode_unresolved_mappings(monkeypatch):
 
 
 # ============================================================ 8. 提交二复审条 1/2/3
-# 版本装配单源化 + RunManifest 如实登记生效版本 + judge_v5 随模式分发
+# 版本装配单源化 + RunManifest 如实登记生效版本 + 模式分发（一期
+# v6-lite 起 semantic_authority→judge_v6+policy_v4）
 
 def test_version_config_prompt_policy_mapping():
     """复审条 1：统一版本配置对象 prompt→policy 映射——judge_v1/v2/v3→
     policy_v2（各自原 policy=judge_proof 证明门控宪章版）；judge_v5→
-    policy_v3；未注册 prompt/未登记映射一律 fail-closed。"""
+    policy_v3；judge_v6→policy_v4（一期 v6-lite 登记）；未注册 prompt/
+    未登记映射一律 fail-closed。"""
     for v in ("judge_v1", "judge_v2", "judge_v3"):
         vc = jvc.judge_version_for_prompt(v)
         assert vc.policy_version == "policy_v2"
@@ -924,21 +926,25 @@ def test_version_config_prompt_policy_mapping():
         assert vc.decision_mode == ""
     vc5 = jvc.judge_version_for_prompt("judge_v5")
     assert vc5.policy_version == "policy_v3"
+    vc6 = jvc.judge_version_for_prompt("judge_v6")
+    assert vc6.policy_version == "policy_v4"
     with pytest.raises(ValueError):                 # 未注册 prompt
         jvc.judge_version_for_prompt("judge_v4")
 
 
 def test_version_config_mode_dispatch_and_env_default():
     """复审条 3：judge_v5 不得无条件默认——模式分发表 legacy_proof_gate
-    （默认）→judge_v1+policy_v2；semantic_authority→judge_v5+policy_v3；
-    非法模式 fail-closed；缺省读 env（缺席/空串=legacy）。"""
+    （默认）→judge_v1+policy_v2；semantic_authority→judge_v6+policy_v4
+    （一期 v6-lite 起映射 v6，2026-10-11 分支 p3-v6-phase1；此前为
+    judge_v5+policy_v3）；非法模式 fail-closed；缺省读 env（缺席/空串=
+    legacy）。"""
     vc_legacy = jvc.judge_version_for_mode(judge_pair.MODE_LEGACY_PROOF_GATE)
     assert (vc_legacy.prompt_version, vc_legacy.policy_version) == (
         "judge_v1", "policy_v2")
     assert vc_legacy.decision_mode == "legacy_proof_gate"
     vc_sem = jvc.judge_version_for_mode(judge_pair.MODE_SEMANTIC_AUTHORITY)
     assert (vc_sem.prompt_version, vc_sem.policy_version) == (
-        "judge_v5", "policy_v3")
+        "judge_v6", "policy_v4")
     assert vc_sem.decision_mode == "semantic_authority"
     with pytest.raises(ValueError):
         jvc.judge_version_for_mode("banana")
@@ -948,7 +954,7 @@ def test_version_config_mode_dispatch_and_env_default():
         {"DEDUP_JUDGE_DECISION_MODE": ""}).prompt_version == "judge_v1"
     assert jvc.default_judge_version(
         {"DEDUP_JUDGE_DECISION_MODE": "semantic_authority"}
-    ).prompt_version == "judge_v5"
+    ).prompt_version == "judge_v6"
     with pytest.raises(ValueError):                 # 非法 env 同罪不静默
         jvc.default_judge_version({"DEDUP_JUDGE_DECISION_MODE": "banana"})
 
@@ -975,7 +981,7 @@ def test_adapter_effective_versions_match_manifest_records(monkeypatch):
 
     for mode, want_prompt, want_policy in (
             ("legacy_proof_gate", "judge_v1", "policy_v2"),
-            ("semantic_authority", "judge_v5", "policy_v3")):
+            ("semantic_authority", "judge_v6", "policy_v4")):
         env = {"DEDUP_JUDGE_PROOF": "1", "DEDUP_JUDGE_DECISION_MODE": mode}
         vc = jvc.default_judge_version(env)
         # ① adapter 装配默认配置同源（条 1/3）
@@ -1018,9 +1024,9 @@ def test_adapter_effective_versions_match_manifest_records(monkeypatch):
 
 def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
     """终审 P1-1 钉测：env 空+显式实参 semantic_authority → decide_for_task
-    入口创建 JudgeVersionConfig 一次（judge_v5/policy_v3），adapter/
-    manifest/audit 三处版本一致。判官全假件零真 API（装配间谍+罐装
-    call_fn；真装配件被间谍替换的段不触 LLM）。"""
+    入口创建 JudgeVersionConfig 一次（judge_v6/policy_v4——一期 v6-lite 起
+    semantic 映射 v6），adapter/manifest/audit 三处版本一致。判官全假件
+    零真 API（装配间谍+罐装 call_fn；真装配件被间谍替换的段不触 LLM）。"""
     import json as _json
     monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
 
@@ -1045,7 +1051,7 @@ def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
     vc = out.judge_version_config
     assert vc is not None
     assert (vc.prompt_version, vc.policy_version, vc.decision_mode) == (
-        "judge_v5", "policy_v3", "semantic_authority")
+        "judge_v6", "policy_v4", "semantic_authority")
     assert captured["version_config"] is vc       # 判官装配收到入口同一 vc
     assert out.decision == "边界case/疑难case"     # 未注入 fail-closed（不冒签）
     # 内部审计面外露，绝不进公共五字段
@@ -1053,7 +1059,7 @@ def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
     monkeypatch.undo()                            # 恢复真装配件（env 复原）
 
     # （b）adapter：同一 vc 装配罐装真件（call_fn 罐装，零真 API）→
-    # 证明 prompt_sha256/policy/cache key 素材全部同源自 v5/policy_v3
+    # 证明 prompt_sha256/policy/cache key 素材全部同源自 v6/policy_v4
     resp = _json.dumps({
         "decision": "重复", "reason": "r",
         "evidence_a": ["100万元"], "evidence_b": ["100万元"],
@@ -1063,7 +1069,7 @@ def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
                        "times_b": ["9月24日"]},
     }, ensure_ascii=False)
     cfg = judge_adapter.default_judge_config(None, version_config=vc)
-    assert cfg.prompt_version == "judge_v5"       # adapter 不再回落 env 读 v1
+    assert cfg.prompt_version == "judge_v6"       # adapter 不再回落 env 读 v1
     judge = lr.SyncResidualJudge(
         lr.ResidualJudgeConfig(prompt_version=cfg.prompt_version),
         call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
@@ -1076,8 +1082,8 @@ def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
            "record_a_id": H_ID, "record_b_id": C_ID,
            "text_a": t_h, "text_b": t_c}
     proof = cb(ctx)
-    assert proof["prompt_sha256"] == vc.prompt_sha256   # v5 提示词摘要
-    assert proof["policy_version"] == vc.policy_version == "policy_v3"
+    assert proof["prompt_sha256"] == vc.prompt_sha256   # v6 提示词摘要
+    assert proof["policy_version"] == vc.policy_version == "policy_v4"
     assert proof["cache_key"] == judge_pair.compute_cache_key(
         proof["model_version"], vc.prompt_sha256, vc.policy_version,
         "ab", proof["text_a_sha256"], proof["text_b_sha256"])
@@ -1086,9 +1092,9 @@ def test_p1_1_single_source_version_config_explicit_arg(monkeypatch):
     manifest = rm.build_run_manifest(
         inputs=("rec-a",), embedding_space="fake_space",
         code_git_sha=_GIT_SHA0, judge_version_config=vc)
-    assert manifest.prompt_version == "judge_v5" == vc.prompt_version
+    assert manifest.prompt_version == "judge_v6" == vc.prompt_version
     assert manifest.prompt_sha256 == vc.prompt_sha256
-    assert manifest.policy_version == "policy_v3" == vc.policy_version
+    assert manifest.policy_version == "policy_v4" == vc.policy_version
 
     # （d）audit：对级 PairResult→AuditRecord 的 judge_decision_mode 与
     # 入口 vc 同源（semantic_authority）；mode→版本映射单源自证
@@ -1165,9 +1171,10 @@ def test_review_mode_config_conflict_raises(monkeypatch):
 def test_review_config_internal_fixed_mapping_mismatch_raises():
     """复审钉测②：JudgeVersionConfig 构造时固定映射校验——
     legacy_proof_gate→judge_v1+policy_v2、semantic_authority→
-    judge_v5+policy_v3；mode/prompt/policy 任一维不匹配即 ValueError
-    （fail-closed，绝不静默）。prompt_sha256 一律用注册表真实哈希
-    （全量校验后占位哈希在构造器即拒——见 §9-ter 专项钉）。"""
+    judge_v6+policy_v4（一期 v6-lite 起映射 v6）；mode/prompt/policy
+    任一维不匹配即 ValueError（fail-closed，绝不静默）。prompt_sha256
+    一律用注册表真实哈希（全量校验后占位哈希在构造器即拒——见 §9-ter
+    专项钉）。"""
     sha_v1 = lr.judge_prompt_for_version("judge_v1")[1]
     sha_v5 = lr.judge_prompt_for_version("judge_v5")[1]
     # 语义模式配 v1 提示词 → 拒
@@ -1192,6 +1199,14 @@ def test_review_config_internal_fixed_mapping_mismatch_raises():
             prompt_sha256=sha_v5,
             policy_version="policy_v3",
             decision_mode="legacy_proof_gate")
+    # 语义模式配 judge_v5+policy_v3（v5 自洽但模式现值=v6）→ 拒
+    # （一期 v6-lite：semantic 映射 v6，v5 仅 prompt 直解回放通道可达）
+    with pytest.raises(ValueError, match="固定映射冲突"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v5",
+            prompt_sha256=sha_v5,
+            policy_version="policy_v3",
+            decision_mode="semantic_authority")
     # 非法模式字面量 → 拒（构造器同闸报非法模式）
     with pytest.raises(ValueError, match="非法"):
         jvc.JudgeVersionConfig(
@@ -1210,14 +1225,15 @@ def test_review_config_internal_fixed_mapping_mismatch_raises():
     assert ok.prompt_sha256 == sha_v2
 
 
-def test_review_v1_judge_with_v5_config_raises(monkeypatch):
+def test_review_v1_judge_with_semantic_config_raises(monkeypatch):
     """复审钉测③：v1 判官（显式 judge.config.prompt_version=judge_v1）
-    配 v5 version_config → build_judge_callable 装配即 ValueError（判官
-    实际 v1、证明可记成 v5/policy_v3 的架空形态在装配层拦死）；
-    proof_for_order 对实际生效配置再对拍一次（双闸）。"""
+    配 semantic version_config（一期 v6-lite 起为 v6/policy_v4）→
+    build_judge_callable 装配即 ValueError（判官实际 v1、证明可记成
+    v6/policy_v4 的架空形态在装配层拦死）；proof_for_order 对实际生效
+    配置再对拍一次（双闸）。"""
     import json as _json
     monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
-    v5_vc = jvc.judge_version_for_mode("semantic_authority")
+    semantic_vc = jvc.judge_version_for_mode("semantic_authority")
     resp = _json.dumps({
         "decision": "重复", "reason": "r",
         "evidence_a": ["100万元"], "evidence_b": ["100万元"],
@@ -1232,31 +1248,31 @@ def test_review_v1_judge_with_v5_config_raises(monkeypatch):
         call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
     with pytest.raises(ValueError, match="不一致"):
         judge_adapter.build_judge_callable(
-            judge=v1_judge, version_config=v5_vc,
+            judge=v1_judge, version_config=semantic_vc,
             environ={"DEDUP_JUDGE_PROOF": "1"})
-    # 显式 config 实参同闸：v1 ResidualJudgeConfig 配 v5 vc → 拒
+    # 显式 config 实参同闸：v1 ResidualJudgeConfig 配 semantic vc → 拒
     with pytest.raises(ValueError, match="不一致"):
         judge_adapter.build_judge_callable(
             config=lr.ResidualJudgeConfig(prompt_version="judge_v1"),
-            version_config=v5_vc,
+            version_config=semantic_vc,
             environ={"DEDUP_JUDGE_PROOF": "1"})
-    # proof_for_order 直射双闸：v1 判官+vc(v5) → 拒（证明元数据与
-    # cache_key 必须记判官实际生效版本）
+    # proof_for_order 直射双闸：v1 判官+semantic vc（v6）→ 拒（证明
+    # 元数据与 cache_key 必须记判官实际生效版本）
     ctx = {"pair_id": "p-v1v5", "order": "ab",
            "item_a_id": "item-A", "item_b_id": "item-C",
            "record_a_id": H_ID, "record_b_id": C_ID,
            "text_a": "甲公司公告营收100万元。",
            "text_b": "甲公司公告称，营收为100万元。"}
     with pytest.raises(ValueError, match="实际生效"):
-        judge_adapter.proof_for_order(v1_judge, ctx, version_config=v5_vc)
+        judge_adapter.proof_for_order(v1_judge, ctx, version_config=semantic_vc)
 
 
 def test_review_consistent_config_passes_end_to_end(monkeypatch):
     """复审钉测④：完全一致配置通过——mode+config 同传一致（semantic
-    authority+vc(v5/policy_v3)）→ 入口接受单源 config；v5 判官+同源
-    v5 config → 装配/证明/cache_key 全同源（判官罐装零真 API）；v1
-    判官+同源 v1 config → 同过。coordinator/worker 预装配同配置一路
-    传入（装配与判定同源）。"""
+    authority+vc(v6/policy_v4，一期 v6-lite 起映射 v6)）→ 入口接受单源
+    config；v6 判官+同源 v6 config → 装配/证明/cache_key 全同源（判官
+    罐装零真 API）；v1 判官+同源 v1 config → 同过。coordinator/worker
+    预装配同配置一路传入（装配与判定同源）。"""
     import json as _json
     monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
     semantic_vc = jvc.judge_version_for_mode("semantic_authority")
@@ -1281,7 +1297,7 @@ def test_review_consistent_config_passes_end_to_end(monkeypatch):
     assert captured["version_config"] is semantic_vc
     monkeypatch.undo()
 
-    # （ii）v5 判官+同源 v5 config → 装配过、证明四维+cache_key 同源
+    # （ii）v6 判官+同源 v6 config → 装配过、证明四维+cache_key 同源
     resp = _json.dumps({
         "decision": "重复", "reason": "r",
         "evidence_a": ["100万元"], "evidence_b": ["100万元"],
@@ -1290,14 +1306,14 @@ def test_review_consistent_config_passes_end_to_end(monkeypatch):
         "time_check": {"conclusion": "一致", "times_a": ["9月24日"],
                        "times_b": ["9月24日"]},
     }, ensure_ascii=False)
-    v5_judge = lr.SyncResidualJudge(
-        lr.ResidualJudgeConfig(prompt_version="judge_v5"),
+    v6_judge = lr.SyncResidualJudge(
+        lr.ResidualJudgeConfig(prompt_version="judge_v6"),
         call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
     cb = judge_adapter.build_judge_callable(
-        judge=v5_judge, version_config=semantic_vc,
+        judge=v6_judge, version_config=semantic_vc,
         environ={"DEDUP_JUDGE_PROOF": "1"})
     assert cb is not None
-    ctx = {"pair_id": "p-v5ok", "order": "ab",
+    ctx = {"pair_id": "p-v6ok", "order": "ab",
            "item_a_id": "item-A", "item_b_id": "item-C",
            "record_a_id": H_ID, "record_b_id": C_ID,
            "text_a": t_h, "text_b": t_c}
@@ -1389,32 +1405,32 @@ def test_review_consistent_config_passes_end_to_end(monkeypatch):
 
 def test_review2_correct_mode_wrong_sha_rejected():
     """复审第二轮钉测①：正确模式+错 SHA 拒——semantic_authority 模式
-    配 judge_v5+policy_v3（模式/策略全对）但 prompt_sha256 为全零/错值
-    → 构造即 ValueError（全量校验 ②：哈希=注册表真实值，占位哈希不
-    得冒充合法配置）。"""
-    sha_v5 = lr.judge_prompt_for_version("judge_v5")[1]
+    配 judge_v6+policy_v4（模式/策略全对，一期 v6-lite 起映射 v6）但
+    prompt_sha256 为全零/错值 → 构造即 ValueError（全量校验 ②：哈希=
+    注册表真实值，占位哈希不得冒充合法配置）。"""
+    sha_v6 = lr.judge_prompt_for_version("judge_v6")[1]
     # 全零哈希（复审复现件）
     with pytest.raises(ValueError, match="注册表真实哈希不符"):
         jvc.JudgeVersionConfig(
-            prompt_version="judge_v5",
+            prompt_version="judge_v6",
             prompt_sha256="0" * 64,
-            policy_version="policy_v3",
+            policy_version="policy_v4",
             decision_mode="semantic_authority")
     # 错值哈希（非全零但不同于注册表）
-    wrong_sha = ("f" if sha_v5[0] != "f" else "e") + sha_v5[1:]
+    wrong_sha = ("f" if sha_v6[0] != "f" else "e") + sha_v6[1:]
     with pytest.raises(ValueError, match="注册表真实哈希不符"):
         jvc.JudgeVersionConfig(
-            prompt_version="judge_v5",
+            prompt_version="judge_v6",
             prompt_sha256=wrong_sha,
-            policy_version="policy_v3",
+            policy_version="policy_v4",
             decision_mode="semantic_authority")
     # 真实哈希+全对 → 过（对照）
     ok = jvc.JudgeVersionConfig(
-        prompt_version="judge_v5",
-        prompt_sha256=sha_v5,
-        policy_version="policy_v3",
+        prompt_version="judge_v6",
+        prompt_sha256=sha_v6,
+        policy_version="policy_v4",
         decision_mode="semantic_authority")
-    assert ok.prompt_sha256 == sha_v5
+    assert ok.prompt_sha256 == sha_v6
 
 
 def test_review2_empty_mode_wrong_policy_or_sha_rejected():

@@ -30,6 +30,7 @@ from news_flash_dedup.compare.aggregate import (
 )
 from news_flash_dedup.compare.pair_compare import VerifiedConflict
 from news_flash_dedup.decide import judge_adapter as judge_adapter_module
+from news_flash_dedup.decide import judge_machine_evidence as judge_machine_evidence_module
 from news_flash_dedup.decide import judge_pair as judge_pair_module
 from news_flash_dedup.decide import judge_version_config as judge_version_config_module
 from news_flash_dedup.decide.extra_event import detect_extra_event
@@ -277,7 +278,7 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     `judge_version_config` 同传时一致则接受、不一致直接 ValueError（禁
     静默选边——防"实际合并模式=新、提示词/policy=旧"架空单源）；config
     自身经构造器校验固定映射（legacy_proof_gate→judge_v1+policy_v2、
-    semantic_authority→judge_v5+policy_v3）与全量校验（注册哈希/固定
+    semantic_authority→judge_v6+policy_v4，一期 v6-lite 起映射 v6）与全量校验（注册哈希/固定
     策略）。仅传 mode（或皆缺）时按 mode 分发同一映射（config 构造器
     校验兜底）。env 仅在两实参皆缺时参与（缺席/空串=默认
     legacy_proof_gate）。
@@ -290,6 +291,17 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     （env→默认 legacy_proof_gate，非法 env 报错）解析为具体模式字面量，
     写入 active_decision_mode 并流经 PairResult→AuditRecord 审计留痕，
     不得留空串。
+
+    一期 v6-lite（2026-10-11，分支 p3-v6-phase1，产品批准范围就两条
+    规则）：semantic_authority 模式映射 judge_v6+policy_v4（judge_prompt_
+    v6.py——v5 全量继承+R8 修订改值/R7 受约束回填两条条款修订）；判官
+    循环内注入机器候选证据（judge_machine_evidence.build_machine_
+    evidence——R8 修订候选证据复用 core_conflict 退役区 _REVISION_RE +
+    R7 条件①前置硬闸证券代码/主体抽取现有件），机器**绝不直接判**、
+    判官终审；R7 shadow 三计数 judge.backfill.triggered/signed/vetoed
+    入 judge_diagnostics（仅 semantic 模式）。默认模式仍
+    legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
+    2d0d418 全等。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -327,7 +339,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #   直接 ValueError，绝不静默选边（修"实际合并模式=新、提示词/
     #   policy=旧"的单源架空形态）。config 自身的固定映射校验
     #   （legacy_proof_gate→judge_v1+policy_v2、semantic_authority→
-    #   judge_v5+policy_v3）由其构造器 fail-closed 兜底。创建后的
+    #   judge_v6+policy_v4——一期 v6-lite 起映射 v6）由其构造器
+    #   fail-closed 兜底。创建后的
     # JudgeVersionConfig 单源依次供给判官装配（build_judge_callable/
     # proof_for_order）、本服务模式分流、cache key 素材、run manifest
     # 登记与审计记录。env 仅在两实参皆缺时参与（缺席/空串=默认
@@ -587,6 +600,13 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #   judge.evidence.rule.P_*——各机检规则触发次数（token 级）；
     #   judge.legacy_vs_new.changed——legacy 生效结论与 semantic 离线
     #     结论不一致的对数。
+    # 一期 v6-lite（2026-10-11，分支 p3-v6-phase1）R7 shadow 三计数：
+    #   judge.backfill.triggered——条件①机器前置硬闸通过（有且仅有一方
+    #     缺主体且另一方明确写了主体）的对数（仅 semantic 模式）；
+    #   judge.backfill.signed——triggered 且判官双序一致判"重复"（回填
+    #     条款完成签发）的对数；
+    #   judge.backfill.vetoed——triggered 但未签发（条件②-⑥任一不满足
+    #     强制存疑转边界，或判官另判）的对数。
     judge_diagnostics: dict[str, int] = {}
 
     def _jcount(key: str, n: int = 1) -> None:
@@ -630,6 +650,19 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 _logger.warning(
                     "硬冲突检测器异常 fail-open 放行给判官 detector=%s: %r",
                     detector_name, exc)
+
+            # 一期 v6-lite（2026-10-11，分支 p3-v6-phase1）：机器候选证据
+            # 注入——仅 semantic_authority 模式装配（legacy 面零调用，默认
+            # 生产行为与基线 2d0d418 全等）；机器只产证据**绝不直接判**，
+            # 判官终审（R8 修订候选证据复用 core_conflict 退役区 _REVISION_RE；
+            # R7 条件①前置硬闸用证券代码/主体抽取现有件）。主体抽取现有件
+            # 取数映射：pair 的 history 侧可为首对 history 或任一 candidate。
+            machine_evidence_enabled = (
+                active_decision_mode
+                == judge_pair_module.MODE_SEMANTIC_AUTHORITY)
+            records_by_id = {history["record_id"]: history}
+            for _cand in candidate_list:
+                records_by_id[_cand["record_id"]] = _cand
 
             for index, pair in enumerate(pair_results):
                 if pair.outcome != "unresolved":
@@ -677,10 +710,31 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                             "核心硬冲突前置拦截 pair=%s type=%s（判官零调用）",
                             pair.pair_id, hard.conflict_type)
                         continue
+                # 一期 v6-lite：机器候选证据注入（semantic 模式专属）——
+                # R8 修订候选证据 + R7 条件①前置硬闸证据（纯 JSON 增量
+                # 字段入 pair_context；缓存键/证明/审计消费面不读它）。
+                machine_evidence = None
+                if machine_evidence_enabled:
+                    machine_evidence = (
+                        judge_machine_evidence_module.build_machine_evidence(
+                            re_freeze_required[pair.history_record_id]["text"],
+                            current_text,
+                            history_facts=records_by_id.get(
+                                pair.history_record_id, {}).get("facts") or (),
+                            current_facts=current.get("facts") or ()))
                 pair_context = judge_pair_module.build_pair_context(
                     pair,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
-                    current_text=current_text)
+                    current_text=current_text,
+                    machine_evidence=machine_evidence)
+                # R7 shadow 计数①：条件①机器前置硬闸通过=回填条款被触发
+                # （双方都缺主体→硬闸不置位，回填不得触发，落判官存疑边界）；
+                # signed/vetoed 在判官双序结论出来后分账（见下方）。
+                backfill_gate_open = bool(
+                    machine_evidence is not None
+                    and machine_evidence["subject_backfill"]["unilateral_missing"])
+                if backfill_gate_open:
+                    _jcount("judge.backfill.triggered")
                 judged = judge_pair_module.adjudicate_pair(
                     judge_callable, pair_context, timeout_s=judge_timeout_s,
                     decision_mode=active_decision_mode)
@@ -713,6 +767,16 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     _jcount("judge.semantic.not_duplicate")
                 else:
                     _jcount("judge.semantic.unresolved")
+                # R7 shadow 计数②③（一期 v6-lite）：触发的对按 semantic 侧
+                # 双序结论分账——equivalent=回填条款完成签发（signed，原因
+                # 码"主体单方缺失高置信对齐"随判官 reason 入证明审计件）；
+                # 其余=条件②-⑥任一不满足强制存疑转边界或判官另判
+                # （vetoed）。未触发不计数；legacy 恒不计数。
+                if backfill_gate_open:
+                    if sem_outcome == "equivalent":
+                        _jcount("judge.backfill.signed")
+                    else:
+                        _jcount("judge.backfill.vetoed")
                 if sem_failure == judge_pair_module.ORDER_DISAGREE:
                     _jcount("judge.order_disagree")
                 if judged.evidence_warnings or judged.machine_findings:

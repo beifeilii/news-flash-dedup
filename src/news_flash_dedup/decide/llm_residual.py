@@ -250,11 +250,26 @@ from news_flash_dedup.decide.judge_prompt_v5 import (
     PROMPT_SHA256_V5,
 )
 
+# judge_v6（2026-10-11 一期 v6-lite，分支 p3-v6-phase1）：policy_v4 冻结
+# 口径版（R8 修订改值→不重复/同值省略过程→重复/只补背景→重复；R7 主体
+# 单方缺失受约束回填六条件+原因码"主体单方缺失高置信对齐"），正文与
+# SHA 单源在 decide/judge_prompt_v6.py（独立文件，不改写 v1/v2/v3/v5
+# 原文、不沿用旧 SHA）；此处仅增量注册——v1 仍为全局隐式默认，v5 保留
+# 注册供回放对比（prompt 直解通道可达），v6 经 semantic_authority 模式
+# 映射生效（judge_version_config._MODE_TO_VERSION）。默认模式仍
+# legacy_proof_gate=judge_v1，生产行为零变化。
+from news_flash_dedup.decide.judge_prompt_v6 import (
+    JUDGE_PROMPT_V6,
+    JUDGE_PROMPT_VERSION_V6,
+    PROMPT_SHA256_V6,
+)
+
 _JUDGE_PROMPTS = {
     JUDGE_PROMPT_VERSION: (JUDGE_PROMPT_V1, PROMPT_SHA256),
     JUDGE_PROMPT_VERSION_V2: (JUDGE_PROMPT_V2, PROMPT_SHA256_V2),
     JUDGE_PROMPT_VERSION_V3: (JUDGE_PROMPT_V3, PROMPT_SHA256_V3),
     JUDGE_PROMPT_VERSION_V5: (JUDGE_PROMPT_V5, PROMPT_SHA256_V5),
+    JUDGE_PROMPT_VERSION_V6: (JUDGE_PROMPT_V6, PROMPT_SHA256_V6),
 }
 
 
@@ -960,6 +975,7 @@ __all__ = [
     "JUDGE_PROMPT_VERSION_V2", "JUDGE_PROMPT_V2", "PROMPT_SHA256_V2",
     "JUDGE_PROMPT_VERSION_V3", "JUDGE_PROMPT_V3", "PROMPT_SHA256_V3",
     "JUDGE_PROMPT_VERSION_V5", "JUDGE_PROMPT_V5", "PROMPT_SHA256_V5",
+    "JUDGE_PROMPT_VERSION_V6", "JUDGE_PROMPT_V6", "PROMPT_SHA256_V6",
     "DEFAULT_MODEL", "DEFAULT_BASE_URL", "DECISIONS", "MV_AUDIT", "MV_GATE",
     "judge_prompt_sha256", "judge_prompt_for_version", "residual_cache_key",
     "residual_cache_key_hardened",

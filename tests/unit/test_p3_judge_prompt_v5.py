@@ -37,9 +37,11 @@ from news_flash_dedup.lib import run_manifest as rm
 # ---------------------------------------------------------------- 1. 注册钉
 
 def test_v5_registered_and_old_versions_untouched():
-    """§5.2 文件 G-1/2：v5 注册；v1/v2/v3 逐字原样（可切回）；v4 仍不注册。"""
+    """§5.2 文件 G-1/2：v5 注册；v1/v2/v3 逐字原样（可切回）；v4 仍不注册。
+    一期 v6-lite（2026-10-11 分支 p3-v6-phase1）增量：judge_v6 注册
+    （semantic_authority 模式映射现值；v5 保留注册供回放对比）。"""
     assert sorted(lr._JUDGE_PROMPTS) == ["judge_v1", "judge_v2", "judge_v3",
-                                         "judge_v5"]
+                                         "judge_v5", "judge_v6"]
     text, sha = lr.judge_prompt_for_version("judge_v5")
     assert text == v5.JUDGE_PROMPT_V5 and sha == v5.PROMPT_SHA256_V5
     # 旧版本零漂移（注册处取值=模块常量同一对象）
@@ -76,7 +78,8 @@ def test_adapter_default_config_dispatched_by_mode(monkeypatch):
     G-3"新链默认显式 v5"口径）：build_judge_callable 未显式传 judge/
     config 时，默认 ResidualJudgeConfig 的 prompt_version 由
     DEDUP_JUDGE_DECISION_MODE 决定——legacy_proof_gate（默认）→
-    judge_v1；semantic_authority→judge_v5；mv_mode 恒 audit。"""
+    judge_v1；semantic_authority→judge_v6（一期 v6-lite 起映射 v6，
+    2026-10-11 分支 p3-v6-phase1；此前为 judge_v5）；mv_mode 恒 audit。"""
     captured = []
 
     class _SpyJudge:
@@ -98,7 +101,7 @@ def test_adapter_default_config_dispatched_by_mode(monkeypatch):
         environ={"DEDUP_JUDGE_PROOF": "1",
                  "DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
     assert cb3 is not None
-    assert captured[-1].prompt_version == "judge_v5"
+    assert captured[-1].prompt_version == "judge_v6"
     assert captured[-1].mv_mode == lr.MV_AUDIT
 
 

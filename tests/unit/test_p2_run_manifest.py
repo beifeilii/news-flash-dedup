@@ -90,14 +90,16 @@ def test_policy_version_literal_defaults():
 
 def test_manifest_records_mode_dispatched_effective_versions():
     """提交一修复并入复审条 2：RunManifest 如实记录实际生效 prompt/
-    policy——semantic_authority 环境缺省登记 judge_v5+PROMPT_SHA256_V5+
-    policy_v3；legacy（默认）登记 judge_v1+policy_v2；显式 prompt 实参
-    时 policy 随 prompt 映射同解。"""
+    policy——semantic_authority 环境缺省登记 judge_v6+PROMPT_SHA256_V6+
+    policy_v4（一期 v6-lite 起映射 v6，2026-10-11 分支 p3-v6-phase1；
+    此前为 judge_v5+policy_v3）；legacy（默认）登记 judge_v1+policy_v2；
+    显式 prompt 实参时 policy 随 prompt 映射同解（v5=回放对比通道）。"""
     from news_flash_dedup.decide import judge_prompt_v5 as v5
+    from news_flash_dedup.decide import judge_prompt_v6 as v6
     m_sem = _build(env={"DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
-    assert m_sem.prompt_version == "judge_v5"
-    assert m_sem.prompt_sha256 == v5.PROMPT_SHA256_V5
-    assert m_sem.policy_version == "policy_v3"
+    assert m_sem.prompt_version == "judge_v6"
+    assert m_sem.prompt_sha256 == v6.PROMPT_SHA256_V6
+    assert m_sem.policy_version == "policy_v4"
     m_legacy = _build(env={"DEDUP_JUDGE_DECISION_MODE": "legacy_proof_gate"})
     assert m_legacy.prompt_version == "judge_v1"
     assert m_legacy.prompt_sha256 == PROMPT_SHA256
@@ -108,6 +110,9 @@ def test_manifest_records_mode_dispatched_effective_versions():
     m_v5 = _build(prompt_version="judge_v5")
     assert m_v5.policy_version == "policy_v3"
     assert m_v5.prompt_sha256 == v5.PROMPT_SHA256_V5
+    m_v6 = _build(prompt_version="judge_v6")
+    assert m_v6.policy_version == "policy_v4"
+    assert m_v6.prompt_sha256 == v6.PROMPT_SHA256_V6
 
 
 # ---------- 可序列化 ----------

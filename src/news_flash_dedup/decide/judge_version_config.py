@@ -9,18 +9,28 @@
 - 条 3（judge_v5 不得无条件默认）：版本分发由
   DEDUP_JUDGE_DECISION_MODE 决定——legacy_proof_gate（默认）→
   judge_v1+policy_v2+旧证明门控合并（合并语义=judge_pair legacy 口径）；
-  semantic_authority→judge_v5+policy_v3+语义权威合并。
+  semantic_authority→judge_v6+policy_v4+语义权威合并（一期 v6-lite 起
+  semantic 模式映射 v6；此前为 judge_v5+policy_v3）。
 
 终审复审补丁（2026-10-10，P1-1 未核销小补丁）：本配置对象为**唯一权威**
 ——decision_mode 非空时构造即校验固定映射（legacy_proof_gate→
-judge_v1+policy_v2、semantic_authority→judge_v5+policy_v3），任一维不
+judge_v1+policy_v2、semantic_authority→judge_v6+policy_v4），任一维不
 匹配即 ValueError fail-closed，绝不静默选边（修"判官实际 v1、证明记成
 v5/policy_v3"的架空形态）。
 
 prompt→policy 映射（条 1）：judge_v1/v2/v3→policy_v2（各自原
 policy=judge_proof.PROOF_POLICY_VERSION 证明门控宪章版）；judge_v5→
-policy_v3。新 prompt 版本注册后必须在本表显式登记——未登记 fail-closed
-（绝不静默落错 policy）。
+policy_v3；judge_v6→policy_v4（一期 v6-lite，2026-10-11 分支
+p3-v6-phase1 登记）。新 prompt 版本注册后必须在本表显式登记——未登记
+fail-closed（绝不静默落错 policy）。
+
+一期 v6-lite（2026-10-11，分支 p3-v6-phase1）：
+- _MODE_TO_VERSION/_MODE_TO_PROMPT 的 semantic_authority 映射更新为
+  judge_v6+policy_v4（judge_prompt_v6.py 新建：v5 全量继承+R8 修订
+  改值/R7 受约束回填两条条款修订）；默认模式仍 legacy_proof_gate
+  （judge_v1+policy_v2）——生产行为零变化，v6 只经 semantic 开关生效；
+- judge_v5 保留注册供回放对比：prompt 直解通道（judge_version_for_
+  prompt("judge_v5")，decision_mode=空串）仍可达 policy_v3。
 """
 
 from __future__ import annotations
@@ -38,22 +48,27 @@ _PROMPT_TO_POLICY = {
     _lr.JUDGE_PROMPT_VERSION_V2: _judge_proof.PROOF_POLICY_VERSION,  # v2→v2
     _lr.JUDGE_PROMPT_VERSION_V3: _judge_proof.PROOF_POLICY_VERSION,  # v3→v2
     _lr.JUDGE_PROMPT_VERSION_V5: _pv.POLICY_VERSION_V3,              # v5→v3
+    _lr.JUDGE_PROMPT_VERSION_V6: _pv.POLICY_VERSION_V4,              # v6→v4
 }
 
-# 模式 → prompt（条 3 分发表；模式字面量单源=judge_pair）
+# 模式 → prompt（条 3 分发表；模式字面量单源=judge_pair）。一期 v6-lite
+# （2026-10-11）：semantic_authority→judge_v6（v5 保留注册供回放对比，
+# prompt 直解通道可达）。
 _MODE_TO_PROMPT = {
     _judge_pair.MODE_LEGACY_PROOF_GATE: _lr.JUDGE_PROMPT_VERSION,
-    _judge_pair.MODE_SEMANTIC_AUTHORITY: _lr.JUDGE_PROMPT_VERSION_V5,
+    _judge_pair.MODE_SEMANTIC_AUTHORITY: _lr.JUDGE_PROMPT_VERSION_V6,
 }
 
 # 终审复审补丁：模式 → (prompt, policy) 固定映射（决策模式带版本语义，
 # 构造即校验唯一权威口径）。v2/v3 提示词按 prompt 直解路径使用（decision_
-# mode=空串，不受模式固定映射约束——回放/考试通道自供版本身份）。
+# mode=空串，不受模式固定映射约束——回放/考试通道自供版本身份）。一期
+# v6-lite（2026-10-11）：semantic_authority→judge_v6+policy_v4（v5+policy_v3
+# 不再经模式映射，仅 prompt 直解回放）。
 _MODE_TO_VERSION = {
     _judge_pair.MODE_LEGACY_PROOF_GATE:
         (_lr.JUDGE_PROMPT_VERSION, _judge_proof.PROOF_POLICY_VERSION),
     _judge_pair.MODE_SEMANTIC_AUTHORITY:
-        (_lr.JUDGE_PROMPT_VERSION_V5, _pv.POLICY_VERSION_V3),
+        (_lr.JUDGE_PROMPT_VERSION_V6, _pv.POLICY_VERSION_V4),
 }
 
 
@@ -66,16 +81,17 @@ class JudgeVersionConfig:
 
     终审复审补丁（唯一权威）：decision_mode 非空时构造即按
     _MODE_TO_VERSION 固定映射校验 prompt/policy——legacy_proof_gate→
-    judge_v1+policy_v2、semantic_authority→judge_v5+policy_v3；任一维
-    不匹配直接 ValueError（fail-closed，绝不静默选边/记错版本）。
+    judge_v1+policy_v2、semantic_authority→judge_v6+policy_v4（一期
+    v6-lite 起映射 v6）；任一维不匹配直接 ValueError（fail-closed，
+    绝不静默选边/记错版本）。
 
     终审复审第二轮（全量校验）：**无论 decision_mode 是否为空**均校验
     三维——①prompt_version 已注册（llm_residual 注册表 fail-closed，
     未知即 ValueError）；②prompt_sha256 == 注册表中该版本的真实哈希
     （全零/错哈希即拒——不得拿占位哈希冒充合法配置）；③policy_version
     == 该 prompt 的固定策略（judge_v1/v2/v3→policy_v2、judge_v5→
-    policy_v3）。decision_mode="" 只豁免"模式↔提示词映射"校验，不豁免
-    哈希与策略校验。
+    policy_v3、judge_v6→policy_v4）。decision_mode="" 只豁免"模式↔
+    提示词映射"校验，不豁免哈希与策略校验。
     """
     prompt_version: str
     prompt_sha256: str
@@ -140,8 +156,8 @@ def judge_version_for_prompt(prompt_version: str,
 
 
 def judge_version_for_mode(decision_mode: str) -> JudgeVersionConfig:
-    """按判定模式分发（条 3：legacy→v1+policy_v2，semantic→v5+policy_v3；
-    非法模式 fail-closed）。"""
+    """按判定模式分发（条 3：legacy→v1+policy_v2，semantic→v6+policy_v4
+    ——一期 v6-lite 起 semantic 映射 v6；非法模式 fail-closed）。"""
     prompt_version = _MODE_TO_PROMPT.get(decision_mode)
     if prompt_version is None:
         raise ValueError(
