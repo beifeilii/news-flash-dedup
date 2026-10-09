@@ -212,7 +212,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                      judge_in_chain: bool | None = None,
                      judge_timeout_s: float | None = None,
                      judge_decision_mode: str | None = None,
-                     judge_version_config=None) -> DecideOutcome:
+                     judge_version_config=None,
+                     allow_prompt_direct: bool = False) -> DecideOutcome:
     """集合级决策（P17 03:57 修订 §6.1）：当前条 vs 全部 `required` 候选。
 
     流水线（窗口V 实述勘正：旧述第 3 步 `detect_extra_event(history,
@@ -276,9 +277,19 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     `judge_version_config` 同传时一致则接受、不一致直接 ValueError（禁
     静默选边——防"实际合并模式=新、提示词/policy=旧"架空单源）；config
     自身经构造器校验固定映射（legacy_proof_gate→judge_v1+policy_v2、
-    semantic_authority→judge_v5+policy_v3）。仅传 mode（或皆缺）时按
-    mode 分发同一映射（config 构造器校验兜底）。env 仅在两实参皆缺时
-    参与（缺席/空串=默认 legacy_proof_gate）。
+    semantic_authority→judge_v5+policy_v3）与全量校验（注册哈希/固定
+    策略）。仅传 mode（或皆缺）时按 mode 分发同一映射（config 构造器
+    校验兜底）。env 仅在两实参皆缺时参与（缺席/空串=默认
+    legacy_proof_gate）。
+
+    终审复审第二轮（空模式与生产隔离，allow_prompt_direct）：收到
+    decision_mode="" 的 config（按 prompt 直解、v2/v3 提示词的回放/考试
+    形态）时——`allow_prompt_direct` 缺省 False：生产入口直接 ValueError
+    （空模式 config 不得进生产决策链）；显式传 True（回放/考试工具专属）
+    才放行，且生效合并模式必须**显式确定并记录**：经标准单源链
+    （env→默认 legacy_proof_gate，非法 env 报错）解析为具体模式字面量，
+    写入 active_decision_mode 并流经 PairResult→AuditRecord 审计留痕，
+    不得留空串。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -346,10 +357,28 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         judge_version_cfg = judge_version_config
         active_decision_mode = judge_version_config.decision_mode
         if active_decision_mode == "":
-            # 按 prompt 直解的 config（decision_mode=空串，回放/考试
-            # 通道）——生效模式回落 env（缺席=默认 legacy_proof_gate），
-            # 版本面仍以 config 为单源。
-            active_decision_mode = judge_pair_module.judge_decision_mode()
+            # 终审复审第二轮（空模式与生产隔离）：按 prompt 直解的
+            # config（decision_mode=空串，回放/考试通道形态）——生产
+            # 入口（allow_prompt_direct 缺省 False）直接 ValueError；
+            # 回放/考试工具显式传 True 才放行，且生效合并模式必须显式
+            # 确定并记录：经标准单源链（env→默认 legacy_proof_gate，
+            # 非法 env 报错）解析为具体模式字面量，写入
+            # active_decision_mode 并流经 PairResult→AuditRecord 审计
+            # 留痕，不得留空串。
+            if not allow_prompt_direct:
+                raise ValueError(
+                    f"judge_version_config.decision_mode 为空串（按 prompt "
+                    f"直解形态，prompt_version="
+                    f"{judge_version_config.prompt_version!r}）：生产入口"
+                    f"拒绝空模式 config。回放/考试通道须显式传 "
+                    f"allow_prompt_direct=True，且生效合并模式将按标准"
+                    f"单源链显式确定并审计留痕。")
+            active_decision_mode = (
+                judge_pair_module.judge_decision_mode())
+            if not active_decision_mode:
+                raise ValueError(
+                    "生效合并模式解析为空串（不可达：单源链默认 "
+                    "legacy_proof_gate）——空模式不得流经生产审计面")
     else:
         active_decision_mode = (judge_decision_mode
                                 if judge_decision_mode is not None

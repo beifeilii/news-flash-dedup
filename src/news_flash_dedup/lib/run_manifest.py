@@ -226,12 +226,35 @@ def build_run_manifest(
     decide_for_task 入口创建、经 DecideOutcome.judge_version_config 外露
     的同一 JudgeVersionConfig）时，prompt_version/prompt_sha256/
     policy_version 缺省项从其同源读取——显式实参语义权威（env 空时
-    manifest 不得各自回落 env 读值）；显式字符串实参仍最优先（回放
-    /考试通道自供版本身份）。
+    manifest 不得各自回落 env 读值）。
+
+    终审复审第二轮（防覆盖）：judge_version_config 在场时，显式
+    prompt_version/prompt_sha256/policy_version 实参**只允许不传或与
+    config 完全一致**——任何不一致直接 ValueError（修"传 v5 config 却
+    用显式字符串登记 v1"的覆盖通道）。回放需要任意组合（提示词/策略/
+    哈希不配套）走单独回放接口，不得经生产 manifest 普通参数绕过。
     """
     items = tuple(inputs)
-    if prompt_version is None and judge_version_config is not None:
-        prompt_version = judge_version_config.prompt_version
+    if judge_version_config is not None:
+        # 终审复审第二轮（防覆盖）：显式实参与 config 同传只允许完全
+        # 一致（不传=从 config 同源；传且相等=显式确认；传且不等=拒绝）
+        explicit = {"prompt_version": prompt_version,
+                    "prompt_sha256": prompt_sha256,
+                    "policy_version": policy_version}
+        config_values = {
+            "prompt_version": judge_version_config.prompt_version,
+            "prompt_sha256": judge_version_config.prompt_sha256,
+            "policy_version": judge_version_config.policy_version,
+        }
+        for name, value in explicit.items():
+            if value is not None and value != config_values[name]:
+                raise ValueError(
+                    f"{name}={value!r} 与 judge_version_config 同传不一致"
+                    f"（防覆盖：config 在场时显式实参只允许不传或与 "
+                    f"{config_values[name]!r} 完全一致；回放需任意组合走"
+                    f"单独回放接口，不得经生产 manifest 绕过）")
+        if prompt_version is None:
+            prompt_version = judge_version_config.prompt_version
         if prompt_sha256 is None:
             prompt_sha256 = judge_version_config.prompt_sha256
         if policy_version is None:

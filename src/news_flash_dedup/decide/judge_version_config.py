@@ -61,12 +61,21 @@ _MODE_TO_VERSION = {
 class JudgeVersionConfig:
     """统一版本配置对象（条 1）：prompt_version/prompt_sha256/
     policy_version/decision_mode 四维同源。decision_mode 为分发来源
-    （按 prompt 直解时=空串）。
+    （按 prompt 直解时=空串——生产入口须经 allow_prompt_direct 显式放
+    行，见 decide/service.py）。
 
     终审复审补丁（唯一权威）：decision_mode 非空时构造即按
     _MODE_TO_VERSION 固定映射校验 prompt/policy——legacy_proof_gate→
     judge_v1+policy_v2、semantic_authority→judge_v5+policy_v3；任一维
     不匹配直接 ValueError（fail-closed，绝不静默选边/记错版本）。
+
+    终审复审第二轮（全量校验）：**无论 decision_mode 是否为空**均校验
+    三维——①prompt_version 已注册（llm_residual 注册表 fail-closed，
+    未知即 ValueError）；②prompt_sha256 == 注册表中该版本的真实哈希
+    （全零/错哈希即拒——不得拿占位哈希冒充合法配置）；③policy_version
+    == 该 prompt 的固定策略（judge_v1/v2/v3→policy_v2、judge_v5→
+    policy_v3）。decision_mode="" 只豁免"模式↔提示词映射"校验，不豁免
+    哈希与策略校验。
     """
     prompt_version: str
     prompt_sha256: str
@@ -74,6 +83,28 @@ class JudgeVersionConfig:
     decision_mode: str = ""
 
     def __post_init__(self) -> None:
+        # ①② 全量校验（空模式不豁免）：注册表单源取真实哈希
+        _text, want_sha = _lr.judge_prompt_for_version(self.prompt_version)
+        if self.prompt_sha256 != want_sha:
+            raise ValueError(
+                f"JudgeVersionConfig.prompt_sha256 与注册表真实哈希不符："
+                f"prompt_version={self.prompt_version!r} 要求 "
+                f"{want_sha}，实得 {self.prompt_sha256!r}（全零/错哈希"
+                f"即拒——占位哈希不得冒充合法配置）")
+        # ③ 全量校验（空模式不豁免）：prompt→固定策略
+        want_policy = _PROMPT_TO_POLICY.get(self.prompt_version)
+        if want_policy is None:
+            raise ValueError(
+                f"prompt_version={self.prompt_version!r} 未登记 policy 映射"
+                f"（条 1 显式登记制；合法：{sorted(_PROMPT_TO_POLICY)}）")
+        if self.policy_version != want_policy:
+            raise ValueError(
+                f"JudgeVersionConfig.policy_version 与固定策略不符："
+                f"prompt_version={self.prompt_version!r} 要求 "
+                f"{want_policy!r}，实得 {self.policy_version!r}（唯一权威，"
+                f"冲突即错）")
+        # 模式↔提示词映射：仅 decision_mode 非空时校验（空串=按 prompt
+        # 直解路径，回放/考试通道自供版本身份，模式语义由入口显式确定）
         if self.decision_mode == "":
             return
         expected = _MODE_TO_VERSION.get(self.decision_mode)
@@ -81,13 +112,13 @@ class JudgeVersionConfig:
             raise ValueError(
                 f"decision_mode={self.decision_mode!r} 非法：只允许 "
                 f"{'|'.join(sorted(_MODE_TO_VERSION))}")
-        want_prompt, want_policy = expected
+        want_prompt, want_policy_mode = expected
         if (self.prompt_version != want_prompt
-                or self.policy_version != want_policy):
+                or self.policy_version != want_policy_mode):
             raise ValueError(
                 f"JudgeVersionConfig 与固定映射冲突：decision_mode="
                 f"{self.decision_mode!r} 要求 prompt_version={want_prompt!r}"
-                f"+policy_version={want_policy!r}，实得 prompt_version="
+                f"+policy_version={want_policy_mode!r}，实得 prompt_version="
                 f"{self.prompt_version!r}+policy_version="
                 f"{self.policy_version!r}（唯一权威，冲突即错）")
 

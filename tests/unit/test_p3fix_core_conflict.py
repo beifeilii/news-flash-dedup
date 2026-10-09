@@ -1103,42 +1103,48 @@ def test_review_config_internal_fixed_mapping_mismatch_raises():
     """复审钉测②：JudgeVersionConfig 构造时固定映射校验——
     legacy_proof_gate→judge_v1+policy_v2、semantic_authority→
     judge_v5+policy_v3；mode/prompt/policy 任一维不匹配即 ValueError
-    （fail-closed，绝不静默）。"""
+    （fail-closed，绝不静默）。prompt_sha256 一律用注册表真实哈希
+    （全量校验后占位哈希在构造器即拒——见 §9-ter 专项钉）。"""
+    sha_v1 = lr.judge_prompt_for_version("judge_v1")[1]
+    sha_v5 = lr.judge_prompt_for_version("judge_v5")[1]
     # 语义模式配 v1 提示词 → 拒
     with pytest.raises(ValueError, match="固定映射冲突"):
         jvc.JudgeVersionConfig(
             prompt_version="judge_v1",
-            prompt_sha256="0" * 64,
+            prompt_sha256=sha_v1,
             policy_version="policy_v2",
             decision_mode="semantic_authority")
-    # 语义模式配 policy_v2（提示词对）→ 拒
-    with pytest.raises(ValueError, match="固定映射冲突"):
+    # 语义模式配 policy_v2（提示词对）→ 拒（全量校验 ③ 先拦：v5 提示词
+    # 固定策略=policy_v3，不待模式映射即 fail-closed）
+    with pytest.raises(ValueError, match="固定策略不符"):
         jvc.JudgeVersionConfig(
             prompt_version="judge_v5",
-            prompt_sha256="0" * 64,
+            prompt_sha256=sha_v5,
             policy_version="policy_v2",
             decision_mode="semantic_authority")
     # legacy 模式配 v5 提示词 → 拒
     with pytest.raises(ValueError, match="固定映射冲突"):
         jvc.JudgeVersionConfig(
             prompt_version="judge_v5",
-            prompt_sha256="0" * 64,
+            prompt_sha256=sha_v5,
             policy_version="policy_v3",
             decision_mode="legacy_proof_gate")
     # 非法模式字面量 → 拒（构造器同闸报非法模式）
     with pytest.raises(ValueError, match="非法"):
         jvc.JudgeVersionConfig(
             prompt_version="judge_v1",
-            prompt_sha256="0" * 64,
+            prompt_sha256=sha_v1,
             policy_version="policy_v2",
             decision_mode="banana")
     # decision_mode=空串（按 prompt 直解路径，回放/考试通道）不受固定
-    # 映射约束——v2/v3 提示词合法在案
+    # 映射约束——v2/v3 提示词配注册表真实哈希合法在案
+    sha_v2 = lr.judge_prompt_for_version("judge_v2")[1]
     ok = jvc.JudgeVersionConfig(
         prompt_version="judge_v2",
-        prompt_sha256="0" * 64,
+        prompt_sha256=sha_v2,
         policy_version="policy_v2")
     assert ok.decision_mode == ""
+    assert ok.prompt_sha256 == sha_v2
 
 
 def test_review_v1_judge_with_v5_config_raises(monkeypatch):
@@ -1312,6 +1318,199 @@ def test_review_consistent_config_passes_end_to_end(monkeypatch):
     assert shadow_asm["version_config"] is semantic_vc
     assert shadow_svc["config"] is semantic_vc
     assert shadow_out is out
+
+
+# ============================================================ 9-ter. 终审复审第二轮钉测
+# P1-1 复审第二轮三条缺口（全量校验+manifest 防覆盖+空模式生产隔离）：
+# 判官全假件零真 API（罐装双序假证明/装配间谍，无任何真 LLM 调用）。
+
+def test_review2_correct_mode_wrong_sha_rejected():
+    """复审第二轮钉测①：正确模式+错 SHA 拒——semantic_authority 模式
+    配 judge_v5+policy_v3（模式/策略全对）但 prompt_sha256 为全零/错值
+    → 构造即 ValueError（全量校验 ②：哈希=注册表真实值，占位哈希不
+    得冒充合法配置）。"""
+    sha_v5 = lr.judge_prompt_for_version("judge_v5")[1]
+    # 全零哈希（复审复现件）
+    with pytest.raises(ValueError, match="注册表真实哈希不符"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v5",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v3",
+            decision_mode="semantic_authority")
+    # 错值哈希（非全零但不同于注册表）
+    wrong_sha = ("f" if sha_v5[0] != "f" else "e") + sha_v5[1:]
+    with pytest.raises(ValueError, match="注册表真实哈希不符"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v5",
+            prompt_sha256=wrong_sha,
+            policy_version="policy_v3",
+            decision_mode="semantic_authority")
+    # 真实哈希+全对 → 过（对照）
+    ok = jvc.JudgeVersionConfig(
+        prompt_version="judge_v5",
+        prompt_sha256=sha_v5,
+        policy_version="policy_v3",
+        decision_mode="semantic_authority")
+    assert ok.prompt_sha256 == sha_v5
+
+
+def test_review2_empty_mode_wrong_policy_or_sha_rejected():
+    """复审第二轮钉测②：空模式+错 policy/SHA 拒——decision_mode=""
+    只豁免"模式↔提示词映射"，不豁免哈希与策略校验；空模式带错
+    policy（prompt→固定策略不符）或全零/错哈希 → 构造即 ValueError；
+    未注册 prompt（v4）同样 fail-closed。"""
+    sha_v2 = lr.judge_prompt_for_version("judge_v2")[1]
+    # 空模式+全零哈希 → 拒（复审复现件：全零哈希冒充合法配置）
+    with pytest.raises(ValueError, match="注册表真实哈希不符"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v2",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v2")
+    # 空模式+错 policy（v2 提示词配 policy_v3）→ 拒
+    with pytest.raises(ValueError, match="固定策略不符"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v2",
+            prompt_sha256=sha_v2,
+            policy_version="policy_v3")
+    # 空模式+未注册 prompt（judge_v4）→ 拒（注册表 fail-closed）
+    with pytest.raises(ValueError, match="未知"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v4",
+            prompt_sha256=sha_v2,
+            policy_version="policy_v2")
+    # 空模式+全对 → 过（对照：真实哈希+固定策略）
+    ok = jvc.JudgeVersionConfig(
+        prompt_version="judge_v2",
+        prompt_sha256=sha_v2,
+        policy_version="policy_v2")
+    assert ok.decision_mode == ""
+
+
+def test_review2_manifest_explicit_conflict_with_config_rejected():
+    """复审第二轮钉测③：manifest 显式字段与 config 冲突拒——
+    build_run_manifest 传 judge_version_config 后，显式 prompt_version/
+    prompt_sha256/policy_version 只允许不传或与 config 完全一致；任何
+    不一致 → ValueError（防覆盖：不得"传 v5 config 却显式登记 v1"）。"""
+    semantic_vc = jvc.judge_version_for_mode("semantic_authority")
+    kw = dict(inputs=("rec-a",), embedding_space="fake_space",
+              code_git_sha=_GIT_SHA0)
+    # 三维逐一冲突 → 各自拒绝
+    with pytest.raises(ValueError, match="不一致"):
+        rm.build_run_manifest(
+            prompt_version="judge_v1",            # 冲突：config=v5
+            judge_version_config=semantic_vc, **kw)
+    with pytest.raises(ValueError, match="不一致"):
+        rm.build_run_manifest(
+            prompt_sha256="0" * 64,                # 冲突：config=真实 v5 sha
+            judge_version_config=semantic_vc, **kw)
+    with pytest.raises(ValueError, match="不一致"):
+        rm.build_run_manifest(
+            policy_version="policy_v2",            # 冲突：config=policy_v3
+            judge_version_config=semantic_vc, **kw)
+    # 与 config 完全一致的显式实参 → 放行（显式确认语义）
+    m_eq = rm.build_run_manifest(
+        prompt_version=semantic_vc.prompt_version,
+        prompt_sha256=semantic_vc.prompt_sha256,
+        policy_version=semantic_vc.policy_version,
+        judge_version_config=semantic_vc, **kw)
+    assert m_eq.prompt_version == semantic_vc.prompt_version
+    assert m_eq.prompt_sha256 == semantic_vc.prompt_sha256
+    assert m_eq.policy_version == semantic_vc.policy_version
+    # 不传显式 → 从 config 同源（原 §9 行为不破）
+    m_src = rm.build_run_manifest(
+        judge_version_config=semantic_vc, **kw)
+    assert m_src.prompt_version == semantic_vc.prompt_version
+    assert m_src.prompt_sha256 == semantic_vc.prompt_sha256
+    assert m_src.policy_version == semantic_vc.policy_version
+    # config 缺席时显式实参路径原样（回放走单独回放接口的语义面）
+    m_plain = rm.build_run_manifest(
+        prompt_version="judge_v1", code_git_sha=_GIT_SHA0,
+        inputs=("rec-a",), embedding_space="fake_space")
+    assert m_plain.prompt_version == "judge_v1"
+
+
+def test_review2_empty_mode_config_rejected_in_production(monkeypatch):
+    """复审第二轮钉测④：生产入口收空模式 config 拒/显式回放模式放行
+    ——decide_for_task 收 decision_mode="" 的 config（按 prompt 直解、
+    v2 提示词形态）：allow_prompt_direct 缺省 False → ValueError（生产
+    拒绝）；显式传 True（回放/考试工具专属）→ 放行。"""
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    replay_vc = jvc.judge_version_for_prompt("judge_v2")
+    assert replay_vc.decision_mode == ""
+    # 生产入口（缺省 flag=False）→ 拒
+    with pytest.raises(ValueError, match="拒绝空模式"):
+        decide_service.decide_for_task(
+            _history("甲公司公告回购股份。", "甲公司"), [],
+            current=_current("甲公司发布半年度财报。", "甲公司"),
+            judge_callable=_judge(lambda ctx: _make_proof(
+                ctx, verdict="duplicate")),
+            judge_in_chain=True, coverage_complete=True,
+            judge_version_config=replay_vc)
+    # 显式回放模式（flag=True）→ 放行
+    out = decide_service.decide_for_task(
+        _history("甲公司公告回购股份。", "甲公司"), [],
+        current=_current("甲公司发布半年度财报。", "甲公司"),
+        judge_callable=_judge(lambda ctx: _make_proof(
+            ctx, verdict="duplicate")),
+        judge_in_chain=True, coverage_complete=True,
+        judge_version_config=replay_vc,
+        allow_prompt_direct=True)
+    assert out.decision == "重复"
+    assert out.judge_version_config is replay_vc
+
+
+def test_review2_replay_merge_mode_explicit_and_auditable(monkeypatch):
+    """复审第二轮钉测⑤：回放 v2/v3 时实际合并模式显式稳定可审计
+    ——allow_prompt_direct=True 放行空模式 config 后，生效合并模式经
+    标准单源链显式确定（env→默认 legacy_proof_gate），写入
+    active_decision_mode 并流经 PairResult→AuditRecord（端到端 commit
+    写入计划），不得留空串；env=semantic_authority 时同样显式稳定
+    （可复现、可审计）。"""
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    t_h, t_c = "甲公司9月24日公告营收100万元。", "甲公司公告：9月24日营收100万元。"
+    replay_vc = jvc.judge_version_for_prompt("judge_v2")
+
+    # （i）env 缺席 → 显式确定 legacy_proof_gate（默认），审计留痕
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    history = _history(t_h, "甲公司")
+    current = _current(t_c, "甲公司")
+    out = decide_service.decide_for_task(
+        history, [], current=current, judge_callable=judge,
+        judge_in_chain=True, coverage_complete=True,
+        judge_version_config=replay_vc, allow_prompt_direct=True)
+    assert out.judge_version_config is replay_vc
+    pair = out.pair_results[0]
+    assert pair.judge_decision_mode == "legacy_proof_gate"   # 显式非空
+    record = audit_module.build_audit_record(pair)
+    assert record.judge_decision_mode == "legacy_proof_gate"
+    assert "diagnostics_hash" in record.to_doc()
+    # 端到端：commit 写入计划审计文档同样留痕（稳定可审计）
+    ctx = CommitContext(
+        scope_id="default", business_date="2026-09-26", arrival_seq=3,
+        current=current, candidates=(history,), visible_seq=10,
+        prepared_seq=10, coverage_complete=True)
+    plan = build_commit_write_plan(ctx, out, audit_complete=True)
+    plan_record = plan.audit_batch.records[0]
+    assert plan_record.judge_decision_mode == "legacy_proof_gate"
+
+    # （ii）env=semantic_authority → 显式确定 semantic_authority（可复现）
+    monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
+                       "semantic_authority")
+    judge_sem = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out_sem = decide_service.decide_for_task(
+        history, [], current=current, judge_callable=judge_sem,
+        judge_in_chain=True, coverage_complete=True,
+        judge_version_config=replay_vc, allow_prompt_direct=True)
+    pair_sem = out_sem.pair_results[0]
+    assert pair_sem.judge_decision_mode == "semantic_authority"
+    record_sem = audit_module.build_audit_record(pair_sem)
+    assert record_sem.judge_decision_mode == "semantic_authority"
+    assert (record_sem.diagnostics_hash != record.diagnostics_hash
+            )   # 审计模式不同→诊断哈希可区分（可审计面稳定分账）
+
+    # （iii）版本面仍以 config 为单源（v2 提示词身份不漂移）
+    assert out_sem.judge_version_config is replay_vc
+    assert out_sem.judge_version_config.prompt_version == "judge_v2"
 
 
 # ============================================================ 10. 终审 P1-2 diagnostics_hash 钉测
