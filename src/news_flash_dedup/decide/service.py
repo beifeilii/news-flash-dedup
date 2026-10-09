@@ -265,16 +265,20 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     legacy_proof_gate 下整块跳过（判官照常被调用），端到端公共
     decision/reason/duplicate_ids 与基线 2d0d418 完全一致。
 
-    终审 P1-1（2026-10-10 单源传递）：判官版本配置（JudgeVersionConfig）
-    在本入口创建一次（显式 `judge_version_config` 实参 > 显式
-    `judge_decision_mode` 实参 > env DEDUP_JUDGE_DECISION_MODE > 默认
-    legacy_proof_gate），依次传给：判官装配（judge_callable 未注入且
-    判官在主链时经 build_judge_callable/proof_for_order 消费同一配置）、
-    本服务模式分流、cache key 素材（proof_for_order 同源 prompt/policy）、
-    run manifest 登记（DecideOutcome.judge_version_config 外露供
-    build_run_manifest 消费）、审计记录（judge_decision_mode 经对级
-    PairResult→AuditRecord 同源）。显式实参语义权威：env 空时
-    adapter/manifest/audit 三层不得各自回落 env 读值。
+    终审 P1-1（2026-10-10 单源传递）+复审补丁（唯一权威）：判官版本配置
+    （JudgeVersionConfig）在本入口创建一次，依次传给：判官装配
+    （judge_callable 未注入且判官在主链时经 build_judge_callable/
+    proof_for_order 消费同一配置）、本服务模式分流、cache key 素材
+    （proof_for_order 同源 prompt/policy）、run manifest 登记
+    （DecideOutcome.judge_version_config 外露供 build_run_manifest 消费）、
+    审计记录（judge_decision_mode 经对级 PairResult→AuditRecord 同源）。
+    JudgeVersionConfig 为**唯一权威**：`judge_decision_mode` 与
+    `judge_version_config` 同传时一致则接受、不一致直接 ValueError（禁
+    静默选边——防"实际合并模式=新、提示词/policy=旧"架空单源）；config
+    自身经构造器校验固定映射（legacy_proof_gate→judge_v1+policy_v2、
+    semantic_authority→judge_v5+policy_v3）。仅传 mode（或皆缺）时按
+    mode 分发同一映射（config 构造器校验兜底）。env 仅在两实参皆缺时
+    参与（缺席/空串=默认 legacy_proof_gate）。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -304,17 +308,19 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     current_text = current["text"]
 
     # ------------------------------------------------------------------
-    # 终审 P1-1（2026-10-10 单源传递）：判官版本配置在本入口创建一次。
-    # 模式解析（整改令二：非法 env/实参值明确报错，绝不静默回退）：
-    # 显式 judge_decision_mode 实参 > 显式 judge_version_config 实参
-    # 自带 decision_mode > env DEDUP_JUDGE_DECISION_MODE（缺席/空串=
-    # 默认 legacy_proof_gate）。创建后的 JudgeVersionConfig 单源依次
-    # 供给判官装配（build_judge_callable/proof_for_order）、本服务
-    # 模式分流、cache key 素材、run manifest 登记与审计记录——修掉
-    # "显式 judge_decision_mode 实参与 adapter/manifest 各读环境变量"
-    # 的分裂：显式实参语义权威时三层必须全部同一版本（semantic_
-    # authority→judge_v5/policy_v3；legacy_proof_gate→judge_v1/
-    # policy_v2）。
+    # 终审 P1-1（2026-10-10 单源传递）+复审补丁（唯一权威，冲突即错）：
+    # 判官版本配置在本入口创建一次。JudgeVersionConfig 为唯一权威——
+    # judge_decision_mode 与 judge_version_config 同传时：
+    #   一致（mode 固定映射与 config 四维吻合）→接受，config 即单源；
+    #   不一致（如 mode=semantic_authority 却传 legacy v1/v2 config）→
+    #   直接 ValueError，绝不静默选边（修"实际合并模式=新、提示词/
+    #   policy=旧"的单源架空形态）。config 自身的固定映射校验
+    #   （legacy_proof_gate→judge_v1+policy_v2、semantic_authority→
+    #   judge_v5+policy_v3）由其构造器 fail-closed 兜底。创建后的
+    # JudgeVersionConfig 单源依次供给判官装配（build_judge_callable/
+    # proof_for_order）、本服务模式分流、cache key 素材、run manifest
+    # 登记与审计记录。env 仅在两实参皆缺时参与（缺席/空串=默认
+    # legacy_proof_gate；非法值 judge_pair 明确报错，整改令二口径）。
     if judge_decision_mode is not None:
         if judge_decision_mode not in (
                 judge_pair_module.MODE_LEGACY_PROOF_GATE,
@@ -323,15 +329,31 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 f"judge_decision_mode={judge_decision_mode!r} 非法：只允许 "
                 f"{judge_pair_module.MODE_LEGACY_PROOF_GATE}|"
                 f"{judge_pair_module.MODE_SEMANTIC_AUTHORITY}")
-        active_decision_mode = judge_decision_mode
-    elif (judge_version_config is not None
-          and getattr(judge_version_config, "decision_mode", "")):
-        active_decision_mode = judge_version_config.decision_mode
-    else:
-        active_decision_mode = judge_pair_module.judge_decision_mode()
-    if judge_version_config is not None:
+    if judge_decision_mode is not None and judge_version_config is not None:
+        # 唯一权威对拍：mode 的固定映射 vs 传入 config 四维——不一致即错
+        mode_config = (
+            judge_version_config_module.judge_version_for_mode(
+                judge_decision_mode))
+        if judge_version_config != mode_config:
+            raise ValueError(
+                f"judge_decision_mode={judge_decision_mode!r} 与 "
+                f"judge_version_config 不一致（唯一权威，冲突即错）：mode "
+                f"固定映射要求 {mode_config}，实得 {judge_version_config}。"
+                f"同传一致则接受，不一致不得静默选边。")
         judge_version_cfg = judge_version_config
+        active_decision_mode = judge_decision_mode
+    elif judge_version_config is not None:
+        judge_version_cfg = judge_version_config
+        active_decision_mode = judge_version_config.decision_mode
+        if active_decision_mode == "":
+            # 按 prompt 直解的 config（decision_mode=空串，回放/考试
+            # 通道）——生效模式回落 env（缺席=默认 legacy_proof_gate），
+            # 版本面仍以 config 为单源。
+            active_decision_mode = judge_pair_module.judge_decision_mode()
     else:
+        active_decision_mode = (judge_decision_mode
+                                if judge_decision_mode is not None
+                                else judge_pair_module.judge_decision_mode())
         judge_version_cfg = (
             judge_version_config_module.judge_version_for_mode(
                 active_decision_mode))

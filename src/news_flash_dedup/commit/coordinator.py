@@ -181,6 +181,7 @@ def commit_one(
     request_id: str | None = None,          # P2 P17-3 前置（窗口X 并线）：None=D24 回退链不变
     budget=None,                            # W2 ⑩①-4（N43 挂账清偿）：ProcessingBudget|None；None=现役逐字节
     judge_callable=None,                    # P1 联调（2026-10-09 P1-a）：None=按 env 装配真件（DEDUP_JUDGE_PROOF 关→None=未注入 fail-closed 未决）
+    judge_version_config=None,              # 终审复审补丁：判官版本单源（None=装配/服务各自按 env 分发）
 ) -> CommitOutcome:
     """commit_one 编排（fake 仓储注测）。
 
@@ -190,6 +191,11 @@ def commit_one(
     3. 审计前置：构建 audit_batch（audit_complete=False → 拒绝 CAS 不写入）；
     4. CAS 主记录写入（仅 audit_complete=True 时）；
     5. 推进 decision_watermark（仅 CAS 成功后）。
+
+    终审复审补丁（唯一权威单源传递）：judge_version_config 在场时判官
+    预装配（judge_callable 未注入时）与 decide_for_task 同一配置一路
+    传入（装配与判定同源同版本，禁止各读环境变量）；缺省维持原 env
+    分发口径（judge_callable 显式注入时配置由注入方保证，装配零接触）。
     """
     # 标尺 1：STALE 端到端双场景（prepared_seq / lexical_watermark）
     # W2Fγ（WA4b-35③）：type() 鸭子对象绕型拆除——以真 WatermarkSnapshot
@@ -234,9 +240,12 @@ def commit_one(
         # 关→build_judge_callable 返 None=未注入，adjudicate_pair 默认实现
         # fail-closed 未决，绝不冒签）。DEDUP_JUDGE_IN_CHAIN 关=判官段整体
         # 跳过（decide_for_task 内闸，老行为逐字节）。
+        # 终审复审补丁：judge_version_config 在场时预装配与 decide_for_task
+        # 同一配置一路传入（唯一权威单源——禁止各读环境变量：装配侧
+        # version_config=、服务侧 judge_version_config= 同对象）。
         if judge_callable is None:
             judge_callable = judge_adapter_module.build_judge_callable(
-                budget=budget)
+                budget=budget, version_config=judge_version_config)
         decide = decide_service.decide_for_task(
             history=history,
             candidates=remaining_candidates,
@@ -249,6 +258,7 @@ def commit_one(
             dictionary_version=dictionary_version,
             budget=budget,  # W2 ⑩①-4：T011 归因面透传（None=零 diff）
             judge_callable=judge_callable,  # P1 联调：真件/None（未注入 fail-closed）
+            judge_version_config=judge_version_config,  # 终审复审：单源一路传递
         )
     else:
         # R9 外部审核 F3 修复（主窗口 06:5x）：分区首条（零候选）——无历史

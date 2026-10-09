@@ -127,11 +127,13 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     ctx=judge_pair._order_context 产物（含 order/item ids/text_a/text_b）。
     预算尽 → JudgeBudgetExceeded（合同 BUDGET_EXCEEDED 异常通道）。
 
-    终审 P1-1（单源传递）：version_config 在场（decide_for_task 入口创建
-    的同一 JudgeVersionConfig）时 prompt_sha/policy 从其同源读取——显式
-    实参语义权威，不再各自回落 env/配置重解；缺省维持原口径（按
-    judge.config.prompt_version 经 judge_version_config 单解）。cache key
-    素材（compute_cache_key 的 prompt_sha/policy 位）同对象消费。
+    终审 P1-1（单源传递）+复审补丁（唯一权威）：version_config 在场
+    （decide_for_task 入口创建的同一 JudgeVersionConfig）时，先与判官
+    **实际生效配置**（judge.config.prompt_version）对拍——不一致直接
+    ValueError（v1 判官配 v5 config=记错版本的架空形态，禁），一致才用
+    其同源读 prompt_sha/policy 并喂证明元数据与 cache_key；缺省维持
+    原口径（按 judge.config.prompt_version 经 judge_version_config 单
+    解——证明元数据与 cache key 恒用判官实际生效配置，绝不记错版本）。
     """
     order = ctx["order"]
     internal_order = _ORDER_TO_INTERNAL[order]      # "ab"→"hc"、"ba"→"ch"
@@ -143,9 +145,21 @@ def proof_for_order(judge: "llm_residual.SyncResidualJudge",
     # 未登记 fail-closed）——禁止各自取默认值；cache_key 同对象消费。
     # judge_proof 证明组件内部机检口径仍为 v2 宪章（PROOF_POLICY_VERSION
     # 不变，旧证明工件复验兼容）——治理口径与诊断口径分层，如实各记。
-    vc = (version_config if version_config is not None
-          else judge_version_config.judge_version_for_prompt(
-              cfg.prompt_version))
+    # 终审复审补丁：version_config 必须与判官实际生效 prompt_version
+    # 一致——证明元数据（prompt_sha256/policy_version）与 cache_key 只
+    # 记判官实际生效的版本，不同配置直接拒绝（唯一权威，冲突即错）。
+    if version_config is not None:
+        if version_config.prompt_version != cfg.prompt_version:
+            raise ValueError(
+                f"version_config.prompt_version="
+                f"{version_config.prompt_version!r} 与判官实际生效配置 "
+                f"judge.config.prompt_version={cfg.prompt_version!r} 不"
+                f"一致（唯一权威，冲突即错：证明元数据与 cache_key 必须记"
+                f"判官实际生效版本，不得记错版本）")
+        vc = version_config
+    else:
+        vc = judge_version_config.judge_version_for_prompt(
+            cfg.prompt_version)
     prompt_sha = vc.prompt_sha256
     policy = vc.policy_version
     sha_a = judge_proof.text_sha256(text_a)
@@ -279,6 +293,28 @@ def default_judge_config(
                             environ).prompt_version))
 
 
+def _validate_version_config_alignment(
+        *, judge=None, config=None, version_config=None) -> None:
+    """终审复审补丁（唯一权威对拍）：显式 judge（其 config.prompt_
+    version）或显式 config（ResidualJudgeConfig.prompt_version）与
+    version_config.prompt_version 不一致 → ValueError 拒绝（v1 判官配
+    v5 config=装配层架空形态，禁）。None 维度不参与对拍（按原口径
+    同源分发）。"""
+    if version_config is None:
+        return
+    actual = None
+    if judge is not None:
+        actual = judge.config.prompt_version
+    elif config is not None:
+        actual = config.prompt_version
+    if actual is not None and actual != version_config.prompt_version:
+        raise ValueError(
+            f"判官装配版本不一致（唯一权威，冲突即错）：显式传入的实际 "
+            f"prompt_version={actual!r} 与 version_config."
+            f"prompt_version={version_config.prompt_version!r} 不符。"
+            f"装配必须用同一 JudgeVersionConfig 同源构造，不得静默选边。")
+
+
 def build_judge_callable(
         *, judge: "llm_residual.SyncResidualJudge | None" = None,
         config: "llm_residual.ResidualJudgeConfig | None" = None,
@@ -297,9 +333,16 @@ def build_judge_callable(
     创建的同一 JudgeVersionConfig）时装配配置与每顺序证明（proof_
     for_order）均从其同源读取 prompt/policy——显式实参语义权威，
     adapter 层不再各自回落 env 读值；缺省维持原 env 分发口径。
+
+    终审复审补丁（唯一权威，冲突即错）：显式 judge/config 的
+    prompt_version 与 version_config 不一致 → ValueError 拒绝（判官
+    实际 v1、证明记成 v5 的架空形态在装配层即拦死）；一致才装配，
+    proof_for_order 内对实际生效配置再对拍一次（双闸）。
     """
     if not judge_proof.judge_proof_enabled(environ):
         return None
+    _validate_version_config_alignment(
+        judge=judge, config=config, version_config=version_config)
     if judge is None:
         judge = llm_residual.SyncResidualJudge(
             config or default_judge_config(environ,

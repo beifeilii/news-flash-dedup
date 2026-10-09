@@ -27,6 +27,7 @@ from typing import Any
 from news_flash_dedup.admission import BUSINESS_ZONE, CONTROL_INDEX
 from news_flash_dedup.batch_admission import HEAD_ID
 from news_flash_dedup.batch_es_store import ElasticsearchBatchStore
+from news_flash_dedup.decide.judge_version_config import default_judge_version
 from news_flash_dedup.es_admission_schema import day_index
 from news_flash_dedup.product.readiness import ReadinessPort
 from news_flash_dedup.product.task_query import TaskQueryPort
@@ -235,6 +236,11 @@ def create_host(*, es_client: Any, index_prefix: str, scope_id: str = "default",
         raise ValueError("scope_id must be non-empty")
     clock = clock or (lambda: datetime.now(timezone.utc))
     mode = mode_from_environment(env)               # 模式闸单源解析
+    # 终审复审补丁（唯一权威单源传递）：判官版本配置在组合根创建一次
+    # （default_judge_version 按 DEDUP_JUDGE_DECISION_MODE 分发），同一
+    # JudgeVersionConfig 一路传给 DedupWorker（影子腿预装配+生效腿
+    # commit_one→decide_for_task），禁止下游再各自读环境变量。
+    judge_version_config = default_judge_version(env)
 
     watermark_provider = ElasticsearchWatermarkProvider(es_client, index_prefix)
     prepare_worker = PrepareWorker(es_client, index_prefix, clock=clock)
@@ -248,7 +254,8 @@ def create_host(*, es_client: Any, index_prefix: str, scope_id: str = "default",
         watermark_provider=watermark_provider, scanner=scanner,
         commit_store=commit_store, artifact_sink=artifact_sink, clock=clock,
         max_stale_retries=max_stale_retries,
-        dictionary=dictionary, dictionary_version=dictionary_version)
+        dictionary=dictionary, dictionary_version=dictionary_version,
+        judge_version_config=judge_version_config)
 
     store = ElasticsearchBatchStore(es_client, index_prefix=index_prefix)
     query_port = TaskQueryPort(store, scope_id=scope_id, clock=clock)

@@ -11,6 +11,12 @@
   judge_v1+policy_v2+旧证明门控合并（合并语义=judge_pair legacy 口径）；
   semantic_authority→judge_v5+policy_v3+语义权威合并。
 
+终审复审补丁（2026-10-10，P1-1 未核销小补丁）：本配置对象为**唯一权威**
+——decision_mode 非空时构造即校验固定映射（legacy_proof_gate→
+judge_v1+policy_v2、semantic_authority→judge_v5+policy_v3），任一维不
+匹配即 ValueError fail-closed，绝不静默选边（修"判官实际 v1、证明记成
+v5/policy_v3"的架空形态）。
+
 prompt→policy 映射（条 1）：judge_v1/v2/v3→policy_v2（各自原
 policy=judge_proof.PROOF_POLICY_VERSION 证明门控宪章版）；judge_v5→
 policy_v3。新 prompt 版本注册后必须在本表显式登记——未登记 fail-closed
@@ -40,23 +46,57 @@ _MODE_TO_PROMPT = {
     _judge_pair.MODE_SEMANTIC_AUTHORITY: _lr.JUDGE_PROMPT_VERSION_V5,
 }
 
+# 终审复审补丁：模式 → (prompt, policy) 固定映射（决策模式带版本语义，
+# 构造即校验唯一权威口径）。v2/v3 提示词按 prompt 直解路径使用（decision_
+# mode=空串，不受模式固定映射约束——回放/考试通道自供版本身份）。
+_MODE_TO_VERSION = {
+    _judge_pair.MODE_LEGACY_PROOF_GATE:
+        (_lr.JUDGE_PROMPT_VERSION, _judge_proof.PROOF_POLICY_VERSION),
+    _judge_pair.MODE_SEMANTIC_AUTHORITY:
+        (_lr.JUDGE_PROMPT_VERSION_V5, _pv.POLICY_VERSION_V3),
+}
+
 
 @dataclass(frozen=True)
 class JudgeVersionConfig:
     """统一版本配置对象（条 1）：prompt_version/prompt_sha256/
     policy_version/decision_mode 四维同源。decision_mode 为分发来源
-    （按 prompt 直解时=空串）。"""
+    （按 prompt 直解时=空串）。
+
+    终审复审补丁（唯一权威）：decision_mode 非空时构造即按
+    _MODE_TO_VERSION 固定映射校验 prompt/policy——legacy_proof_gate→
+    judge_v1+policy_v2、semantic_authority→judge_v5+policy_v3；任一维
+    不匹配直接 ValueError（fail-closed，绝不静默选边/记错版本）。
+    """
     prompt_version: str
     prompt_sha256: str
     policy_version: str
     decision_mode: str = ""
+
+    def __post_init__(self) -> None:
+        if self.decision_mode == "":
+            return
+        expected = _MODE_TO_VERSION.get(self.decision_mode)
+        if expected is None:
+            raise ValueError(
+                f"decision_mode={self.decision_mode!r} 非法：只允许 "
+                f"{'|'.join(sorted(_MODE_TO_VERSION))}")
+        want_prompt, want_policy = expected
+        if (self.prompt_version != want_prompt
+                or self.policy_version != want_policy):
+            raise ValueError(
+                f"JudgeVersionConfig 与固定映射冲突：decision_mode="
+                f"{self.decision_mode!r} 要求 prompt_version={want_prompt!r}"
+                f"+policy_version={want_policy!r}，实得 prompt_version="
+                f"{self.prompt_version!r}+policy_version="
+                f"{self.policy_version!r}（唯一权威，冲突即错）")
 
 
 def judge_version_for_prompt(prompt_version: str,
                              *, decision_mode: str = "") -> JudgeVersionConfig:
     """按 prompt 版本直解（显式注入 judge 的合同证明路径；未知
     prompt_version 由注册处 fail-closed，未登记 policy 映射本层
-    fail-closed）。"""
+    fail-closed；decision_mode 非空时由构造器按固定映射校验）。"""
     _text, prompt_sha = _lr.judge_prompt_for_version(prompt_version)
     policy = _PROMPT_TO_POLICY.get(prompt_version)
     if policy is None:

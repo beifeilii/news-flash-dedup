@@ -46,6 +46,7 @@ from news_flash_dedup.commit.coordinator import (
     CommitContext,
     build_commit_write_plan,
 )
+from news_flash_dedup.commit.fake_store import FakeCommitStore
 from news_flash_dedup.compare import core_conflict as cc
 from news_flash_dedup.compare.pair_compare import UNRESOLVED_CODES
 from news_flash_dedup.decide import audit as audit_module
@@ -1063,6 +1064,254 @@ def test_p1_1_version_config_param_beats_env(monkeypatch):
     vc = out.judge_version_config
     assert (vc.prompt_version, vc.policy_version, vc.decision_mode) == (
         "judge_v1", "policy_v2", "legacy_proof_gate")
+
+
+# ============================================================ 9-bis. 终审复审补丁钉测
+# P1-1 未核销小补丁（唯一权威，冲突即错）：JudgeVersionConfig 为唯一权威
+# ——同传 mode+config 冲突报错；config 内部固定映射不匹配报错；v1 判官
+# 配 v5 config 报错；完全一致配置通过。判官全假件零真 API。
+
+def test_review_mode_config_conflict_raises(monkeypatch):
+    """复审钉测①：judge_decision_mode=semantic_authority 与
+    judge_version_config=legacy(v1) 同传 → ValueError（唯一权威，冲突
+    即错，禁静默选边——防"实际合并模式=新、提示词/policy=旧"架空）。"""
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    legacy_vc = jvc.judge_version_for_mode("legacy_proof_gate")
+    with pytest.raises(ValueError, match="不一致"):
+        decide_service.decide_for_task(
+            _history("甲公司公告回购股份。", "甲公司"), [],
+            current=_current("甲公司发布半年度财报。", "甲公司"),
+            judge_callable=_judge(lambda ctx: _make_proof(
+                ctx, verdict="duplicate")),
+            judge_in_chain=True, coverage_complete=True,
+            judge_decision_mode="semantic_authority",
+            judge_version_config=legacy_vc)
+    # 反向同理：legacy 模式配 semantic v5 config → 报错
+    semantic_vc = jvc.judge_version_for_mode("semantic_authority")
+    with pytest.raises(ValueError, match="不一致"):
+        decide_service.decide_for_task(
+            _history("甲公司公告回购股份。", "甲公司"), [],
+            current=_current("甲公司发布半年度财报。", "甲公司"),
+            judge_callable=_judge(lambda ctx: _make_proof(
+                ctx, verdict="duplicate")),
+            judge_in_chain=True, coverage_complete=True,
+            judge_decision_mode="legacy_proof_gate",
+            judge_version_config=semantic_vc)
+
+
+def test_review_config_internal_fixed_mapping_mismatch_raises():
+    """复审钉测②：JudgeVersionConfig 构造时固定映射校验——
+    legacy_proof_gate→judge_v1+policy_v2、semantic_authority→
+    judge_v5+policy_v3；mode/prompt/policy 任一维不匹配即 ValueError
+    （fail-closed，绝不静默）。"""
+    # 语义模式配 v1 提示词 → 拒
+    with pytest.raises(ValueError, match="固定映射冲突"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v1",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v2",
+            decision_mode="semantic_authority")
+    # 语义模式配 policy_v2（提示词对）→ 拒
+    with pytest.raises(ValueError, match="固定映射冲突"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v5",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v2",
+            decision_mode="semantic_authority")
+    # legacy 模式配 v5 提示词 → 拒
+    with pytest.raises(ValueError, match="固定映射冲突"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v5",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v3",
+            decision_mode="legacy_proof_gate")
+    # 非法模式字面量 → 拒（构造器同闸报非法模式）
+    with pytest.raises(ValueError, match="非法"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v1",
+            prompt_sha256="0" * 64,
+            policy_version="policy_v2",
+            decision_mode="banana")
+    # decision_mode=空串（按 prompt 直解路径，回放/考试通道）不受固定
+    # 映射约束——v2/v3 提示词合法在案
+    ok = jvc.JudgeVersionConfig(
+        prompt_version="judge_v2",
+        prompt_sha256="0" * 64,
+        policy_version="policy_v2")
+    assert ok.decision_mode == ""
+
+
+def test_review_v1_judge_with_v5_config_raises(monkeypatch):
+    """复审钉测③：v1 判官（显式 judge.config.prompt_version=judge_v1）
+    配 v5 version_config → build_judge_callable 装配即 ValueError（判官
+    实际 v1、证明可记成 v5/policy_v3 的架空形态在装配层拦死）；
+    proof_for_order 对实际生效配置再对拍一次（双闸）。"""
+    import json as _json
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    v5_vc = jvc.judge_version_for_mode("semantic_authority")
+    resp = _json.dumps({
+        "decision": "重复", "reason": "r",
+        "evidence_a": ["100万元"], "evidence_b": ["100万元"],
+        "numeric_check": {"conclusion": "一致", "numbers_a": ["100万"],
+                          "numbers_b": ["100万"]},
+        "time_check": {"conclusion": "一致", "times_a": ["9月24日"],
+                       "times_b": ["9月24日"]},
+    }, ensure_ascii=False)
+    # v1 判官（罐装 call_fn，零真 API）
+    v1_judge = lr.SyncResidualJudge(
+        lr.ResidualJudgeConfig(prompt_version="judge_v1"),
+        call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
+    with pytest.raises(ValueError, match="不一致"):
+        judge_adapter.build_judge_callable(
+            judge=v1_judge, version_config=v5_vc,
+            environ={"DEDUP_JUDGE_PROOF": "1"})
+    # 显式 config 实参同闸：v1 ResidualJudgeConfig 配 v5 vc → 拒
+    with pytest.raises(ValueError, match="不一致"):
+        judge_adapter.build_judge_callable(
+            config=lr.ResidualJudgeConfig(prompt_version="judge_v1"),
+            version_config=v5_vc,
+            environ={"DEDUP_JUDGE_PROOF": "1"})
+    # proof_for_order 直射双闸：v1 判官+vc(v5) → 拒（证明元数据与
+    # cache_key 必须记判官实际生效版本）
+    ctx = {"pair_id": "p-v1v5", "order": "ab",
+           "item_a_id": "item-A", "item_b_id": "item-C",
+           "record_a_id": H_ID, "record_b_id": C_ID,
+           "text_a": "甲公司公告营收100万元。",
+           "text_b": "甲公司公告称，营收为100万元。"}
+    with pytest.raises(ValueError, match="实际生效"):
+        judge_adapter.proof_for_order(v1_judge, ctx, version_config=v5_vc)
+
+
+def test_review_consistent_config_passes_end_to_end(monkeypatch):
+    """复审钉测④：完全一致配置通过——mode+config 同传一致（semantic
+    authority+vc(v5/policy_v3)）→ 入口接受单源 config；v5 判官+同源
+    v5 config → 装配/证明/cache_key 全同源（判官罐装零真 API）；v1
+    判官+同源 v1 config → 同过。coordinator/worker 预装配同配置一路
+    传入（装配与判定同源）。"""
+    import json as _json
+    monkeypatch.delenv(judge_pair.JUDGE_DECISION_MODE_ENV, raising=False)
+    semantic_vc = jvc.judge_version_for_mode("semantic_authority")
+    t_h, t_c = "甲公司9月24日公告营收100万元。", "甲公司公告：9月24日营收100万元。"
+
+    # （i）入口同传一致 → 接受，vc 即单源（装配间谍捕获同一 vc）
+    captured = {}
+
+    def _spy_build(*, judge=None, config=None, budget=None,
+                   environ=None, version_config=None):
+        captured["version_config"] = version_config
+        return None
+
+    monkeypatch.setattr(decide_service.judge_adapter_module,
+                        "build_judge_callable", _spy_build)
+    out = decide_service.decide_for_task(
+        _history(t_h, "甲公司"), [], current=_current(t_c, "甲公司"),
+        judge_callable=None, judge_in_chain=True, coverage_complete=True,
+        judge_decision_mode="semantic_authority",
+        judge_version_config=semantic_vc)
+    assert out.judge_version_config is semantic_vc
+    assert captured["version_config"] is semantic_vc
+    monkeypatch.undo()
+
+    # （ii）v5 判官+同源 v5 config → 装配过、证明四维+cache_key 同源
+    resp = _json.dumps({
+        "decision": "重复", "reason": "r",
+        "evidence_a": ["100万元"], "evidence_b": ["100万元"],
+        "numeric_check": {"conclusion": "一致", "numbers_a": ["100万"],
+                          "numbers_b": ["100万"]},
+        "time_check": {"conclusion": "一致", "times_a": ["9月24日"],
+                       "times_b": ["9月24日"]},
+    }, ensure_ascii=False)
+    v5_judge = lr.SyncResidualJudge(
+        lr.ResidualJudgeConfig(prompt_version="judge_v5"),
+        call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
+    cb = judge_adapter.build_judge_callable(
+        judge=v5_judge, version_config=semantic_vc,
+        environ={"DEDUP_JUDGE_PROOF": "1"})
+    assert cb is not None
+    ctx = {"pair_id": "p-v5ok", "order": "ab",
+           "item_a_id": "item-A", "item_b_id": "item-C",
+           "record_a_id": H_ID, "record_b_id": C_ID,
+           "text_a": t_h, "text_b": t_c}
+    proof = cb(ctx)
+    assert proof["prompt_sha256"] == semantic_vc.prompt_sha256
+    assert proof["policy_version"] == semantic_vc.policy_version
+    assert proof["cache_key"] == judge_pair.compute_cache_key(
+        proof["model_version"], semantic_vc.prompt_sha256,
+        semantic_vc.policy_version,
+        "ab", proof["text_a_sha256"], proof["text_b_sha256"])
+
+    # （iii）v1 判官+同源 v1 config（legacy_vc）→ 装配/证明同过同源
+    legacy_vc = jvc.judge_version_for_mode("legacy_proof_gate")
+    v1_judge = lr.SyncResidualJudge(
+        lr.ResidualJudgeConfig(prompt_version="judge_v1"),
+        call_fn=lambda model, system, user, timeout_s=None: (resp, 0.01))
+    cb1 = judge_adapter.build_judge_callable(
+        judge=v1_judge, version_config=legacy_vc,
+        environ={"DEDUP_JUDGE_PROOF": "1"})
+    assert cb1 is not None
+    proof1 = cb1(ctx)
+    assert proof1["prompt_sha256"] == legacy_vc.prompt_sha256
+    assert proof1["policy_version"] == legacy_vc.policy_version
+
+    # （iv）coordinator 预装配单源：commit_one 传 judge_version_config
+    # （装配间谍捕获）+服务入口收到同一对象（间谍 decide_for_task）
+    asm_captured = {}
+
+    def _spy_asm_build(*, judge=None, config=None, budget=None,
+                       environ=None, version_config=None):
+        asm_captured["version_config"] = version_config
+        return None
+
+    svc_captured = {}
+
+    def _spy_decide(*args, **kwargs):
+        svc_captured["config"] = kwargs.get("judge_version_config")
+        return out    # 复用（i）终态（重复），装配/入参面已断言即可
+
+    monkeypatch.setattr(decide_service.judge_adapter_module,
+                        "build_judge_callable", _spy_asm_build)
+    monkeypatch.setattr(decide_service, "decide_for_task", _spy_decide)
+    from news_flash_dedup.commit.coordinator import (
+        CommitContext as _CC, commit_one as _commit_one)
+    store = FakeCommitStore()
+    _ctx_kw = dict(
+        scope_id="default", business_date="2026-09-26", arrival_seq=3,
+        current=_current(t_c, "甲公司"),
+        candidates=(_history(t_h, "甲公司"),),
+        visible_seq=10, prepared_seq=10, coverage_complete=True)
+    outcome = _commit_one(_CC(**_ctx_kw), store, audit_complete=True,
+                          judge_version_config=semantic_vc)
+    assert asm_captured["version_config"] is semantic_vc
+    assert svc_captured["config"] is semantic_vc
+    assert outcome.state == "committed"
+    monkeypatch.undo()
+
+    # （v）worker 预装配同型：shadow_decide 传同一配置（装配/服务同源）
+    from news_flash_dedup.recall import worker as recall_worker
+    shadow_asm: dict = {}
+
+    def _spy_shadow_asm(*, judge=None, config=None, budget=None,
+                        environ=None, version_config=None):
+        shadow_asm["version_config"] = version_config
+        return None
+
+    shadow_svc: dict = {}
+
+    def _spy_shadow_decide(*args, **kwargs):
+        shadow_svc["config"] = kwargs.get("judge_version_config")
+        return out
+
+    monkeypatch.setattr(recall_worker.judge_adapter_module,
+                        "build_judge_callable", _spy_shadow_asm)
+    monkeypatch.setattr(recall_worker.decide_service, "decide_for_task",
+                        _spy_shadow_decide)
+    shadow_out = recall_worker.shadow_decide(
+        _current(t_c, "甲公司"), (_history(t_h, "甲公司"),),
+        coverage_complete=True, visible_seq=10, prepared_seq=10,
+        judge_version_config=semantic_vc)
+    assert shadow_asm["version_config"] is semantic_vc
+    assert shadow_svc["config"] is semantic_vc
+    assert shadow_out is out
 
 
 # ============================================================ 10. 终审 P1-2 diagnostics_hash 钉测
