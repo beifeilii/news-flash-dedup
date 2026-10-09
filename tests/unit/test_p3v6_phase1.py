@@ -21,6 +21,17 @@
   正文出现另一明确主体）→条件④拦截 ④新增独立事实（净利润+现金流
   双指标）→条件⑤拦截。
 
+主窗补充令（2026-10-11，R7 条件③时间维度三分支，老板场景裁定）：
+  双方都无时间+其他字段全对上+仅一方缺主体→**可以判重复**（时间双
+  方都缺=无槽位可冲突不挡路；主体走回填通道）；防"跨期撞稿"（公司
+  每季度同口径回购两期无时间稿）——条件③修订为时间维度满足之一：
+  a)双方都有时间且一致；b)一方有一方无（按信息补充）；c)双方都无
+  时间→条件②升为硬门槛（须两个以上不同角色核心数值一致，仅单一数
+  值一致→强制存疑转边界）；双方都有时间但取值不同→不重复（案例1
+  口径，不经回填规则）。shadow 对 c) 情形单列可区分（.no_time 孪生
+  计数，标签带时间态；机器时间域=日期闭形正则∪阶段词表∪相对词表∪
+  facts 时间槽现有件）。
+
 版本与映射钉：judge_prompt_v6.py 新建（v5 全量继承+两条条款修订）；
   llm_residual 注册 judge_v6+真实 SHA；_PROMPT_TO_POLICY 增 judge_v6→
   policy_v4；_MODE_TO_VERSION 的 semantic_authority→judge_v6+policy_v4
@@ -133,13 +144,14 @@ class _MockLLM:
         return self.responses[(a, b)], 0.01
 
 
-def _jjson(decision, reason, ea, eb, *, na=(), nb=(), ta=(), tb=()):
+def _jjson(decision, reason, ea, eb, *, na=(), nb=(), ta=(), tb=(),
+           ncon="一致", tcon="一致"):
     return json.dumps({
         "decision": decision, "reason": reason,
         "evidence_a": list(ea), "evidence_b": list(eb),
-        "numeric_check": {"conclusion": "一致", "numbers_a": list(na),
+        "numeric_check": {"conclusion": ncon, "numbers_a": list(na),
                           "numbers_b": list(nb)},
-        "time_check": {"conclusion": "一致", "times_a": list(ta),
+        "time_check": {"conclusion": tcon, "times_a": list(ta),
                        "times_b": list(tb)},
     }, ensure_ascii=False)
 
@@ -250,12 +262,13 @@ def test_v6_registered_v5_kept_for_replay():
 
 
 def test_v6_sha256_real_and_distinct():
-    """一期钉②：v6 真实 SHA（重算自证）+字面量钉；不与 v1/v2/v3/v5
-    雷同；v5 SHA 零漂移（本窗口不得触碰 v5 提示词）。"""
+    """一期钉②（补充令后 v6 条款③修订→SHA 随之更新）：v6 真实 SHA（重算
+    自证）+字面量钉；不与 v1/v2/v3/v5 雷同；v5 SHA 零漂移（本窗口不得
+    触碰 v5 提示词）。"""
     assert v6.PROMPT_SHA256_V6 == hashlib.sha256(
         v6.JUDGE_PROMPT_V6.encode("utf-8")).hexdigest()
     assert v6.PROMPT_SHA256_V6 == (
-        "414fcfb6af7664023bb707dd69da01cd4447b0bc5fa4bd5e9275004a717f18b0")
+        "458b2213260c54ff36d43324433765a5032b0975db8481ead6d677c4c6e500c2")
     assert v6.PROMPT_SHA256_V6 not in (
         lr.PROMPT_SHA256, lr.PROMPT_SHA256_V2, lr.PROMPT_SHA256_V3,
         v5.PROMPT_SHA256_V5)
@@ -269,7 +282,8 @@ def test_v6_prompt_clauses_and_v5_inheritance():
     （a）v6 含 R8 修订改值条款锚点（改值→不重复/同值省略过程→重复/
     只补背景→重复/角色指标时间对不上→存疑）；
     （b）v6 含 R7 受约束回填条款锚点（六条件+原因码"主体单方缺失高
-    置信对齐"+强制存疑+双方都缺主体不适用）；
+    置信对齐"+强制存疑+双方都缺主体不适用+主窗补充令条件③时间维度
+    三分支 a/b/c 与 c 硬门槛、双方时间不同→不重复不经回填）；
     （c）优先级条款保留（v6 语义：先按本条款裁决）；
     （d）v5 暂定边界表述（"产品规则未冻结""一律存疑，不得判重复"）在
     v6 不复现——两条规则已冻结；
@@ -282,18 +296,26 @@ def test_v6_prompt_clauses_and_v5_inheritance():
                    "一方仅补充修订背景、双方有效值相同的，判重复",
                    "修订对应的角色、指标或时间对不上", "判存疑"):
         assert anchor in t6, anchor
-    # （b）R7 条款锚点（六条件）
+    # （b）R7 条款锚点（六条件+补充令条件③时间维度三分支）
     for anchor in ("主体单方缺失受约束回填",
                    "有且仅有一方缺主体、且另一方明确写了主体",
                    "至少两个不同角色的核心数值一致",
                    "单一金额一致不足以支撑回填",
-                   "有明确事件，且有事实时间或阶段",
+                   "有明确事件，且时间维度满足以下之一",
+                   "①双方都有时间且一致",
+                   "②一方有时间、另一方没有（按单方信息补充处理，不构成时间冲突）",
+                   "③双方都无时间——此时条件（a）为硬门槛：必须至少两个"
+                   "不同角色的核心数值一致，仅单一数值一致的，强制判存疑"
+                   "转边界，不得判重复（防无时间锚的同口径跨期撞稿）",
                    "缺主体一方的正文中没有出现另一个明确主体",
                    "无新增独立事实", "新指标、新事件、新对象均不属于信息补充",
                    "任一条件不满足，强制判存疑",
+                   "双方都有时间但取值不一致的，判不重复，不经本条回填规则",
                    "双方都缺主体时本条不适用，判存疑",
                    "主体单方缺失高置信对齐"):
         assert anchor in t6, anchor
+    # 补充令前旧措辞不复现（条件③已升格为三分支枚举）
+    assert "有事实时间或阶段" not in t6
     # （c）优先级条款保留（冻结后语义）
     assert "产品规则条款优先级高于一般重复/不重复规则" in t6
     assert "先按本条款裁决，不再适用一般数值冲突规则" in t6
@@ -484,6 +506,57 @@ def test_fact_subject_values_extraction():
     assert jme.fact_subject_values({"facts": []}) == ()
 
 
+def test_time_dimension_gate_three_branches():
+    """R7 条件③时间维度三分支（主窗补充令 2026-10-11）unit 钉——机检
+    可判域=日期型（extract_time_mentions 闭形正则）∪阶段词（extract_
+    stage_set 闭词表）∪相对时间词（relative_time_tokens_in 闭词表）∪
+    facts 时间槽现有件（fact_time_values）：
+    a) both_present：双侧都有时间/阶段表述（表面形入证据）；
+    b) unilateral_missing：一方有一方无；
+    c) both_missing：双侧都无（shadow .no_time 标签判据位）；
+    机器只报在场不比对（时间是否一致=判官域，机器不预判）。"""
+    # a) 双侧日期（闭形正则）
+    gate = jme.time_dimension_gate(
+        "台积电9月24日公布营收250亿美元。", "该公司9月24日公布营收250亿美元。")
+    assert gate["time_state"] == "both_present"
+    assert gate["history_time_mentions"] == ["9月24日"]
+    assert gate["current_time_mentions"] == ["9月24日"]
+    assert gate["history_has_time"] is True
+    assert gate["current_has_time"] is True
+    # b) 一方有一方无
+    gate2 = jme.time_dimension_gate(
+        "台积电9月24日公布营收250亿美元。", "该公司公布营收250亿美元。")
+    assert gate2["time_state"] == "unilateral_missing"
+    assert gate2["history_has_time"] is True
+    assert gate2["current_has_time"] is False
+    # c) 双方都无（无日期/无阶段词/无相对词）
+    gate3 = jme.time_dimension_gate(
+        "台积电公告营收250亿美元，全球市占率69%。",
+        "该公司公告营收250亿美元，全球市占率69%。")
+    assert gate3["time_state"] == "both_missing"
+    assert gate3["history_time_mentions"] == []
+    assert gate3["current_time_mentions"] == []
+    assert gate3["history_has_time"] is False
+    # 阶段词（收盘）/相对词（今日）同属机检可判域
+    gate4 = jme.time_dimension_gate("公司股票今日大涨5%。", "公司股票收盘大涨5%。")
+    assert gate4["time_state"] == "both_present"
+    assert "今日" in gate4["history_time_mentions"]
+    assert "收盘" in gate4["current_time_mentions"]
+    # facts 时间槽现有件通道（正文无时间表述但抽取层有时间）
+    gate5 = jme.time_dimension_gate(
+        "台积电公告营收250亿美元。", "该公司公告营收250亿美元。",
+        history_times=("三季度",))
+    assert gate5["time_state"] == "unilateral_missing"
+    assert gate5["history_time_mentions"] == ["三季度"]
+    assert jme.fact_time_values((
+        {"time": {"expression": {"status": "present", "raw_value": "三季度",
+                                 "evidence": []}}},)) == ("三季度",)
+    assert jme.fact_time_values((
+        {"time": {"expression": {"status": "missing", "raw_value": None,
+                                 "evidence": []}}},)) == ()
+    assert jme.fact_time_values(None) == ()
+
+
 def test_build_pair_context_machine_evidence_injection():
     """机器候选证据注入判官上下文：build_pair_context(machine_evidence=
     None)→键缺席（legacy 面零增量字段、键集与基线一致）；传证据→
@@ -555,7 +628,7 @@ def test_r8_revision_changes_value_not_duplicate(monkeypatch):
     assert len(spy.ctxs) == 2
     for ctx in spy.ctxs:
         ev = ctx["machine_evidence"]
-        assert ev["version"] == "v6_lite_phase1"
+        assert ev["version"] == "v6_lite_phase1b"
         assert ev["revision_candidates"]["hit_any_side"] is True
         assert ev["revision_candidates"]["history"] == []
         cur = ev["revision_candidates"]["current"]
@@ -813,18 +886,130 @@ def test_r7_counter_new_independent_fact_vetoed(monkeypatch):
     assert "judge.backfill.signed" not in out.judge_diagnostics
 
 
+# —— 主窗补充令（2026-10-11，条件③时间维度三分支）两枚新钉 ——
+
+NOTIME_H = "台积电公告营收250亿美元，全球市占率69%。"
+NOTIME_C = "该公司公告营收250亿美元，全球市占率69%。"
+
+NOTIME_REASON = (
+    "主体单方缺失高置信对齐：双方都无时间，条件（a）硬门槛以两个不同"
+    "角色核心数值（营收250亿美元、市占率69%）满足，判重复。")
+
+
+def _notime_dup_responses():
+    return {
+        (NOTIME_H, NOTIME_C): _jjson(
+            "重复", NOTIME_REASON,
+            ("营收250亿美元",), ("营收250亿美元",),
+            na=("250亿", "69%"), nb=("250亿", "69%"),
+            tcon="均无时间"),
+        (NOTIME_C, NOTIME_H): _jjson(
+            "重复", NOTIME_REASON,
+            ("营收250亿美元",), ("营收250亿美元",),
+            na=("250亿", "69%"), nb=("250亿", "69%"),
+            tcon="均无时间"),
+    }
+
+
+def test_r7_notime_multi_values_backfill_duplicate(monkeypatch):
+    """补充令正钉①（条件③c+多数值过闸）：双方都无时间/阶段表述+两个
+    不同角色核心数值一致（营收250亿美元+市占率69%）+仅一方缺主体→
+    **可判重复**（JUDGE_EQUIVALENT，老板场景裁定：时间双方都缺=无
+    槽位可冲突不挡路，主体走回填通道）；条件（a）硬门槛以多数值满足
+    （防跨期撞稿口径下放行）；机器时间维度证据 both_missing 可观测+
+    shadow c) 情形单列：triggered/signed 与 .no_time 孪生各=1，vetoed
+    缺席。"""
+    spy, mock = _v6_real_callable(monkeypatch, _notime_dup_responses())
+    out = _decide(NOTIME_H, "台积电", NOTIME_C, None, spy)
+    assert out.decision == "重复"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
+    assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
+    for ctx in spy.ctxs:
+        gate = ctx["machine_evidence"]["subject_backfill"]
+        assert gate["unilateral_missing"] is True
+        assert gate["history_subjects"] == ["台积电"]
+        tdim = ctx["machine_evidence"]["time_dimension"]
+        assert tdim["time_state"] == "both_missing"
+        assert tdim["history_time_mentions"] == []
+        assert tdim["current_time_mentions"] == []
+        assert tdim["history_has_time"] is False
+        assert tdim["current_has_time"] is False
+    # 原因码随证明件留痕（判官理由通道）
+    assert all("主体单方缺失高置信对齐" in p["reason"] for p in spy.proofs)
+    # shadow：基础三计数聚合+c) 情形单列孪生（标签带时间态）
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.signed"] == 1
+    assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
+    assert out.judge_diagnostics["judge.backfill.signed.no_time"] == 1
+    assert "judge.backfill.vetoed" not in out.judge_diagnostics
+    assert "judge.backfill.vetoed.no_time" not in out.judge_diagnostics
+
+
+SINGLEVAL_H = "万科公告以2.3亿元竞得一宗地块。"
+SINGLEVAL_C = "该公司公告以2.3亿元竞得一宗地块。"
+
+
+def test_r7_notime_single_value_hard_gate_boundary(monkeypatch):
+    """补充令正钉②（条件③c 硬门槛拦截）：双方都无时间+仅单一数值
+    一致（2.3亿元）+仅一方缺主体→回填**不得签发**——条件（a）硬门槛
+    （仅单一数值一致不足以支撑）强制存疑转边界（防无时间锚的同口径
+    跨期撞稿：公司每季度同口径回购两期无时间稿不得撞并）；shadow
+    triggered/vetoed 与 .no_time 孪生各=1、signed 缺席。"""
+    reason = ("双方都无时间且仅单一数值一致，条件（a）硬门槛不满足，"
+              "强制判存疑转边界。")
+    responses = {
+        (SINGLEVAL_H, SINGLEVAL_C): _jjson(
+            "存疑", reason,
+            ("以2.3亿元竞得",), ("以2.3亿元竞得",),
+            na=("2.3亿",), nb=("2.3亿",), tcon="均无时间"),
+        (SINGLEVAL_C, SINGLEVAL_H): _jjson(
+            "存疑", reason,
+            ("以2.3亿元竞得",), ("以2.3亿元竞得",),
+            na=("2.3亿",), nb=("2.3亿",), tcon="均无时间"),
+    }
+    spy, mock = _v6_real_callable(monkeypatch, responses)
+    out = _decide(SINGLEVAL_H, "万科", SINGLEVAL_C, None, spy)
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    for ctx in spy.ctxs:
+        gate = ctx["machine_evidence"]["subject_backfill"]
+        assert gate["unilateral_missing"] is True
+        tdim = ctx["machine_evidence"]["time_dimension"]
+        assert tdim["time_state"] == "both_missing"
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.vetoed"] == 1
+    assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
+    assert out.judge_diagnostics["judge.backfill.vetoed.no_time"] == 1
+    assert "judge.backfill.signed" not in out.judge_diagnostics
+    assert "judge.backfill.signed.no_time" not in out.judge_diagnostics
+    # 公共五字段封闭（计数不泄漏）
+    assert set(out.to_public_dict()) == {
+        "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
 # ============================================================ 5. shadow 三计数可观测
 
 def test_backfill_shadow_counters_semantic_only_not_public(monkeypatch):
     """shadow 三计数（现状机制=DecideOutcome.judge_diagnostics 结构化
     计数器）：semantic 模式下台积电型对——triggered/signed 在案、
-    vetoed 缺席；公共五字段封闭（计数绝不进公共面）；legacy 模式同一
-    对零计数（机器证据零装配=零触发）。"""
+    vetoed 缺席；**有时间态**（双侧 9月24日=both_present）不带 .no_time
+    孪生（补充令：c) 情形单列可区分——见 test_r7_notime_* 两钉）；公共
+    五字段封闭（计数绝不进公共面）；legacy 模式同一对零计数（机器证据
+    零装配=零触发）。"""
     spy, _ = _v6_real_callable(monkeypatch, _tsmc_responses())
     out = _decide(TSMC_H, "台积电", TSMC_C, None, spy)
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.signed"] == 1
     assert "judge.backfill.vetoed" not in out.judge_diagnostics
+    # 有时间态（both_present）：c) 孪生计数不出现（时间态标签可区分）
+    for ctx in spy.ctxs:
+        assert ctx["machine_evidence"]["time_dimension"]["time_state"] == (
+            "both_present")
+    assert not {k: v for k, v in out.judge_diagnostics.items()
+                if k.endswith(".no_time")}
     # 公共五字段封闭（计数不泄漏）
     public = out.to_public_dict()
     assert set(public) == {"item_id", "text", "decision",

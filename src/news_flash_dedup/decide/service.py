@@ -297,9 +297,13 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     v6.py——v5 全量继承+R8 修订改值/R7 受约束回填两条条款修订）；判官
     循环内注入机器候选证据（judge_machine_evidence.build_machine_
     evidence——R8 修订候选证据复用 core_conflict 退役区 _REVISION_RE +
-    R7 条件①前置硬闸证券代码/主体抽取现有件），机器**绝不直接判**、
-    判官终审；R7 shadow 三计数 judge.backfill.triggered/signed/vetoed
-    入 judge_diagnostics（仅 semantic 模式）。默认模式仍
+    R7 条件①前置硬闸证券代码/主体抽取现有件 + 条件③时间维度三分支
+    证据【主窗补充令 2026-10-11：a 双方都有且一致/b 一方有一方无/
+    c 双方都无→判官按硬门槛裁决——仅单一数值一致强制存疑转边界，防
+    无时间锚的同口径跨期撞稿；双方时间取值不同→不重复不经回填规则】），
+    机器**绝不直接判**、判官终审；R7 shadow 三计数 judge.backfill.
+    triggered/signed/vetoed 入 judge_diagnostics（仅 semantic 模式），
+    c) 情形单列可区分（.no_time 孪生计数，标签带时间态）。默认模式仍
     legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
     2d0d418 全等。
     """
@@ -607,6 +611,11 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #     条款完成签发）的对数；
     #   judge.backfill.vetoed——triggered 但未签发（条件②-⑥任一不满足
     #     强制存疑转边界，或判官另判）的对数。
+    # 主窗补充令（2026-10-11）增量：c) 情形（双方都无时间/阶段表述，
+    #   time_dimension.time_state=="both_missing"）单列可区分——上三计数
+    #   各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
+    #   signed.no_time/vetoed.no_time，标签带时间态；基础三计数仍聚合，
+    #   供跨期撞稿防线灰度观测）。
     judge_diagnostics: dict[str, int] = {}
 
     def _jcount(key: str, n: int = 1) -> None:
@@ -711,8 +720,9 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                             pair.pair_id, hard.conflict_type)
                         continue
                 # 一期 v6-lite：机器候选证据注入（semantic 模式专属）——
-                # R8 修订候选证据 + R7 条件①前置硬闸证据（纯 JSON 增量
-                # 字段入 pair_context；缓存键/证明/审计消费面不读它）。
+                # R8 修订候选证据 + R7 条件①前置硬闸证据 + 条件③时间维度
+                # 三分支证据（补充令；纯 JSON 增量字段入 pair_context；
+                # 缓存键/证明/审计消费面不读它）。
                 machine_evidence = None
                 if machine_evidence_enabled:
                     machine_evidence = (
@@ -730,11 +740,19 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # R7 shadow 计数①：条件①机器前置硬闸通过=回填条款被触发
                 # （双方都缺主体→硬闸不置位，回填不得触发，落判官存疑边界）；
                 # signed/vetoed 在判官双序结论出来后分账（见下方）。
+                # 补充令：c) 情形（双方都无时间/阶段表述）加 .no_time 孪生
+                # 计数单列（标签带时间态，供跨期撞稿防线灰度观测）。
                 backfill_gate_open = bool(
                     machine_evidence is not None
                     and machine_evidence["subject_backfill"]["unilateral_missing"])
+                backfill_no_time = bool(
+                    machine_evidence is not None
+                    and machine_evidence.get("time_dimension", {}).get(
+                        "time_state") == "both_missing")
                 if backfill_gate_open:
                     _jcount("judge.backfill.triggered")
+                    if backfill_no_time:
+                        _jcount("judge.backfill.triggered.no_time")
                 judged = judge_pair_module.adjudicate_pair(
                     judge_callable, pair_context, timeout_s=judge_timeout_s,
                     decision_mode=active_decision_mode)
@@ -771,12 +789,19 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # 双序结论分账——equivalent=回填条款完成签发（signed，原因
                 # 码"主体单方缺失高置信对齐"随判官 reason 入证明审计件）；
                 # 其余=条件②-⑥任一不满足强制存疑转边界或判官另判
-                # （vetoed）。未触发不计数；legacy 恒不计数。
+                # （vetoed）。未触发不计数；legacy 恒不计数。补充令：c)
+                # 情形（双方都无时间）同步分账 .no_time 孪生计数（硬门槛
+                # 面跨期撞稿防线观测——signed.no_time=多数值过闸签发，
+                # vetoed.no_time=仅单一数值被硬门槛拦下或其余条件不满足）。
                 if backfill_gate_open:
                     if sem_outcome == "equivalent":
                         _jcount("judge.backfill.signed")
+                        if backfill_no_time:
+                            _jcount("judge.backfill.signed.no_time")
                     else:
                         _jcount("judge.backfill.vetoed")
+                        if backfill_no_time:
+                            _jcount("judge.backfill.vetoed.no_time")
                 if sem_failure == judge_pair_module.ORDER_DISAGREE:
                     _jcount("judge.order_disagree")
                 if judged.evidence_warnings or judged.machine_findings:

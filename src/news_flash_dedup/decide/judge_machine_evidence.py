@@ -20,13 +20,30 @@ build_pair_context 注入判官上下文（context["machine_evidence"]）。
 - 双方都写主体 → 硬闸不置位（不同主体→不重复为现状路径；同名→按
   一般规则裁决）。
 
+主窗补充令（2026-10-11，R7 条件③时间维度三分支）机器层：time_
+dimension_gate——机检可判域=日期型（machine_verify.extract_time_
+mentions 闭形正则）∪阶段词（extract_stage_set 闭词表）∪相对时间词
+（relative_time_tokens_in 闭词表）∪facts 时间槽现有件（time.
+expression present），输出双侧表面形+在场布尔+三分支态：
+- both_present（条款③a：双方都有时间/阶段——是否一致由判官裁决，
+  取值不同→不重复不经回填规则）；
+- unilateral_missing（条款③b：一方有一方无=单方信息补充）；
+- both_missing（条款③c：双方都无时间/阶段——判官按硬门槛裁决：
+  仅单一数值一致强制存疑转边界，防无时间锚的同口径跨期撞稿）。
+机器只观测不判：time_state 喂 shadow 计数 no_time 单列标签与判官
+上下文证据（闭形域外的表述由判官按正文语义自行评估——机检无判据
+绝不冒充判据）。
+
 shadow 指标（decide/service.py 现状机制 _jcount+DecideOutcome.
 judge_diagnostics，仅 semantic 模式计数）：
 - judge.backfill.triggered：条件①硬闸通过的对数（判官循环内）；
 - judge.backfill.signed：triggered 且判官双序一致判"重复"（回填完成
   签发）的对数；
 - judge.backfill.vetoed：triggered 但未签发（条件②-⑥任一不满足转
-  边界，或判官另判）的对数。
+  边界，或判官另判）的对数；
+- 补充令增量：c) 情形（双方都无时间/阶段）单列可区分——上三计数
+  各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
+  signed.no_time/vetoed.no_time，标签带时间态；基础三计数仍聚合）。
 
 纪律：
 - 本模块只产**纯 JSON 证据**（可入 pair_context / 审计面），不判、
@@ -45,7 +62,7 @@ from collections.abc import Iterable, Mapping
 from news_flash_dedup.compare import core_conflict as _cc
 from news_flash_dedup.decide import machine_verify as _mv
 
-MACHINE_EVIDENCE_VERSION = "v6_lite_phase1"
+MACHINE_EVIDENCE_VERSION = "v6_lite_phase1b"
 
 # 判官上下文注入键（build_pair_context 消费；缓存键/证明/审计面不读它
 # ——内容寻址键不受影响，legacy 面 None=缺席零字段）
@@ -133,6 +150,80 @@ def subject_backfill_gate(history_text: str, current_text: str, *,
     }
 
 
+# ---------------------------------------------------------------- R7 条件③时间维度（主窗补充令）
+
+def fact_time_values(facts: Iterable | None) -> tuple[str, ...]:
+    """时间抽取现有件取值：facts 时间槽 time.expression status=present
+    且 raw_value 非空（去重保序）。缺省/非可读槽 → 空元组（机检无判据
+    留判官域——绝不把"抽不出"当"写了时间"）。"""
+    if not facts:
+        return ()
+    values: list[str] = []
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        time_slot = fact.get("time")
+        if not isinstance(time_slot, Mapping):
+            continue
+        expr = time_slot.get("expression")
+        if not isinstance(expr, Mapping):
+            continue
+        raw = expr.get("raw_value")
+        if (expr.get("status") == "present" and isinstance(raw, str)
+                and raw.strip()):
+            values.append(raw.strip())
+    return tuple(dict.fromkeys(values))
+
+
+def _time_mention_surfaces(text: str) -> tuple[str, ...]:
+    """文本侧时间/阶段表述表面形（machine_verify 现有件三合一）：日期型
+    extract_time_mentions（文中出现顺序）+ 阶段词 extract_stage_set
+    （闭词表，排序）+ 相对时间词 relative_time_tokens_in（闭词表，排序）
+    ；去重保序。只报在场，不比对、不判一致性（判官域）。"""
+    surfaces: list[str] = [
+        m["surface"] for m in _mv.extract_time_mentions(text)]
+    surfaces.extend(sorted(_mv.extract_stage_set(text)))
+    surfaces.extend(_mv.relative_time_tokens_in(text))
+    return tuple(dict.fromkeys(surfaces))
+
+
+def time_dimension_gate(history_text: str, current_text: str, *,
+                        history_times: Iterable[str] | None = (),
+                        current_times: Iterable[str] | None = ()) -> dict:
+    """R7 条件③时间维度三分支证据（主窗补充令 2026-10-11；只产证据，
+    绝不判）。
+
+    每侧"有时间/阶段表述"机检可判域 = 日期型（闭形正则）∪阶段词（闭
+    词表）∪相对时间词（闭词表）∪时间抽取现有件（facts 时间槽）。输出：
+    - both_present（三分支 a）：双侧都有时间/阶段表述——取值是否一致
+      由判官按条款①裁决（取值不同→不重复，不经回填规则）；
+    - unilateral_missing（三分支 b）：一方有一方无（按单方信息补充）；
+    - both_missing（三分支 c）：双侧都无——判官按硬门槛裁决（仅单一
+      数值一致强制存疑转边界，防无时间锚的同口径跨期撞稿）。
+    time_state 供 shadow 计数 .no_time 单列标签消费；机器绝不直接判。
+    """
+    h_text_times = _time_mention_surfaces(history_text)
+    c_text_times = _time_mention_surfaces(current_text)
+    h_times = tuple(dict.fromkeys(
+        tuple(history_times or ()) + h_text_times))
+    c_times = tuple(dict.fromkeys(
+        tuple(current_times or ()) + c_text_times))
+    h_has, c_has = bool(h_times), bool(c_times)
+    if h_has and c_has:
+        state = "both_present"
+    elif h_has or c_has:
+        state = "unilateral_missing"
+    else:
+        state = "both_missing"
+    return {
+        "history_time_mentions": list(h_times),
+        "current_time_mentions": list(c_times),
+        "history_has_time": h_has,
+        "current_has_time": c_has,
+        "time_state": state,
+    }
+
+
 # ---------------------------------------------------------------- 总装（注入判官上下文）
 
 def build_machine_evidence(history_text: str, current_text: str, *,
@@ -143,7 +234,10 @@ def build_machine_evidence(history_text: str, current_text: str, *,
     - revision_candidates：R8 机器候选证据（双侧独立抽取，结构化位置/
       前后值；hit_any_side=任一侧有修订措辞命中——可观测性旗标，非判据）；
     - subject_backfill：R7 条件①机器前置硬闸证据（证券代码+主体抽取
-      现有件）。
+      现有件）；
+    - time_dimension：R7 条件③时间维度三分支证据（主窗补充令：日期/
+      阶段/相对词闭形域+时间抽取现有件；time_state 供 shadow no_time
+      单列标签）。
 
     机器绝不直接判：判官按 judge_v6 产品规则条款终审。
     """
@@ -153,6 +247,10 @@ def build_machine_evidence(history_text: str, current_text: str, *,
         history_text, current_text,
         history_subjects=fact_subject_values(history_facts),
         current_subjects=fact_subject_values(current_facts))
+    time_dim = time_dimension_gate(
+        history_text, current_text,
+        history_times=fact_time_values(history_facts),
+        current_times=fact_time_values(current_facts))
     return {
         "version": MACHINE_EVIDENCE_VERSION,
         "revision_candidates": {
@@ -161,6 +259,7 @@ def build_machine_evidence(history_text: str, current_text: str, *,
             "hit_any_side": bool(h_rev or c_rev),
         },
         "subject_backfill": gate,
+        "time_dimension": time_dim,
     }
 
 
@@ -169,6 +268,8 @@ __all__ = [
     "CONTEXT_KEY",
     "revision_candidates",
     "fact_subject_values",
+    "fact_time_values",
     "subject_backfill_gate",
+    "time_dimension_gate",
     "build_machine_evidence",
 ]
