@@ -32,6 +32,17 @@
   计数，标签带时间态；机器时间域=日期闭形正则∪阶段词表∪相对词表∪
   facts 时间槽现有件）。
 
+主窗补充令二（2026-10-11，第二 AI 战略复审提出，老板批准收入一期
+  范围）：R7 回填规则**可独立关闭**——DEDUP_JUDGE_BACKFILL（policy_v4
+  层，不依赖整个 v6/semantic 开关；随 JudgeVersionConfig.backfill_
+  enabled 单源携带+run_manifest.KNOWN_SWITCHES 快照入册可审计）。
+  关闭时回填永不签发（判官判"重复"被撤签→对级终态强制存疑转边界
+  JUDGE_UNCERTAIN，公共 reason 可溯关闭成因），R8 修订规则不受影响
+  照常工作；shadow 增 disabled_vetoed 计数（+.no_time 孪生）。用途：
+  shadow/灰度期发现回填误判时不动代码、不重部署，单点关闭该规则。
+  语义：triggered=机检观测（开关无关）；signed/vetoed=开态分账；
+  disabled_vetoed=关态撤签。
+
 版本与映射钉：judge_prompt_v6.py 新建（v5 全量继承+两条条款修订）；
   llm_residual 注册 judge_v6+真实 SHA；_PROMPT_TO_POLICY 增 judge_v6→
   policy_v4；_MODE_TO_VERSION 的 semantic_authority→judge_v6+policy_v4
@@ -1132,3 +1143,190 @@ def test_legacy_default_mode_r7_pair_no_backfill(monkeypatch):
                 if "backfill" in k}
     assert set(out.to_public_dict()) == {
         "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
+# ============================================================ 8. R7 回填独立开关（主窗补充令二）
+# 第二 AI 战略复审提出、老板批准收入一期范围：R7 回填规则必须可独立关闭
+# （不依赖整个 v6/semantic 开关）——DEDUP_JUDGE_BACKFILL（policy_v4 层，
+# 随 JudgeVersionConfig 单源携带+KNOWN_SWITCHES 快照入册可溯）。关闭时
+# 回填永不签发（判官判"重复"被撤签→强制存疑转边界），R8 修订规则不受
+# 影响；shadow/灰度期发现回填误判时不动代码、不重部署单点关闭。
+
+def test_backfill_switch_env_parser_and_config_field():
+    """补充令二钉①（开关件）：DEDUP_JUDGE_BACKFILL 解析——缺席/空串/
+    纯空白=开（一期原令行为，开关为"发现误判后关闭"而设）；0/false/
+    off/no（大小写不敏感）=关；1/true/on/yes=开；非法值 ValueError
+    fail-closed（同 DEDUP_JUDGE_DECISION_MODE 整改令二口径）。config
+    字段：JudgeVersionConfig.backfill_enabled 默认 True；非 bool 构造
+    即 ValueError（int 1/0 不得冒充）；default_judge_version 随 env 单源
+    装配；显式 judge_version_for_mode(backfill_enabled=False) 可构造
+    （开关不参与模式固定映射四维校验）。"""
+    assert jvc.JUDGE_BACKFILL_ENV == "DEDUP_JUDGE_BACKFILL"
+    assert jvc.backfill_enabled_from_env({}) is True
+    assert jvc.backfill_enabled_from_env({"DEDUP_JUDGE_BACKFILL": ""}) is True
+    assert jvc.backfill_enabled_from_env({"DEDUP_JUDGE_BACKFILL": " "}) is True
+    for off in ("0", "false", "OFF", "off", "No", "no"):
+        assert jvc.backfill_enabled_from_env(
+            {"DEDUP_JUDGE_BACKFILL": off}) is False, off
+    for on in ("1", "true", "ON", "on", "Yes", "yes"):
+        assert jvc.backfill_enabled_from_env(
+            {"DEDUP_JUDGE_BACKFILL": on}) is True, on
+    with pytest.raises(ValueError, match="非法"):
+        jvc.backfill_enabled_from_env({"DEDUP_JUDGE_BACKFILL": "banana"})
+    # config 单源装配：env 关→config 携带 False（缺省维度不变）
+    vc_off = jvc.default_judge_version({
+        "DEDUP_JUDGE_DECISION_MODE": "semantic_authority",
+        "DEDUP_JUDGE_BACKFILL": "0"})
+    assert (vc_off.prompt_version, vc_off.policy_version,
+            vc_off.backfill_enabled) == ("judge_v6", "policy_v4", False)
+    vc_on = jvc.default_judge_version({
+        "DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
+    assert vc_on.backfill_enabled is True          # 缺席=默认开
+    explicit = jvc.judge_version_for_mode(
+        "semantic_authority", backfill_enabled=False)
+    assert explicit.backfill_enabled is False
+    # 非 bool 构造即拒（fail-closed）
+    sha_v6 = lr.judge_prompt_for_version("judge_v6")[1]
+    with pytest.raises(ValueError, match="backfill_enabled"):
+        jvc.JudgeVersionConfig(
+            prompt_version="judge_v6", prompt_sha256=sha_v6,
+            policy_version="policy_v4", decision_mode="semantic_authority",
+            backfill_enabled=1)                    # int 冒充 bool 即拒
+    # 开关态不参与模式固定映射四维一致性（显式关态 config 四维照常合法）
+    assert (explicit.prompt_version, explicit.prompt_sha256,
+            explicit.policy_version, explicit.decision_mode) == (
+        "judge_v6", sha_v6, "policy_v4", "semantic_authority")
+
+
+def test_backfill_switch_off_tsmc_boundary_r8_unaffected(monkeypatch):
+    """补充令二钉②（老板点名①）：开关关→台积电型正例对回填**不触发**
+    ——判官双序判"重复"被撤签，落存疑/边界（JUDGE_UNCERTAIN），公共
+    reason 可溯关闭成因（"独立开关关闭"字样）；且 R8 修订对照常判
+    **不重复**（JUDGE_NON_DUPLICATE——开关只撤 R7 签发权，R8 修订
+    规则照常工作）；shadow：triggered=1（机检观测，开关无关）+
+    disabled_vetoed=1，signed/vetoed 缺席（关闭态不分账）；判官照常
+    双序实调（一般条款/R8 面不经回填通道）；开关态经
+    DecideOutcome.judge_version_config 可溯；公共五字段封闭。"""
+    _semantic_env(monkeypatch)
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
+    spy, mock = _v6_real_callable(monkeypatch, _tsmc_responses())
+    out = _decide(TSMC_H, "台积电", TSMC_C, None, spy)
+    # 回填不触发：撤签→存疑/边界
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert out.duplicate_ids == ()
+    assert "独立开关关闭" in out.reason
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    # 机器证据照常注入（硬闸观测与开关无关——灰度期可观测应触发面）
+    for ctx in spy.ctxs:
+        assert ctx["machine_evidence"]["subject_backfill"][
+            "unilateral_missing"] is True
+    # shadow：观测计数在案+撤签计数；signed/vetoed 关闭态不分账
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.disabled_vetoed"] == 1
+    assert "judge.backfill.signed" not in out.judge_diagnostics
+    assert "judge.backfill.vetoed" not in out.judge_diagnostics
+    # 开关态经 config 可溯
+    assert out.judge_version_config.backfill_enabled is False
+    # R8 修订对不受影响：照常判不重复
+    spy_r8, mock_r8 = _v6_real_callable(monkeypatch, _r8_nd_responses())
+    out_r8 = _decide(R8_H, "甲公司", R8_C, "甲公司", spy_r8)
+    assert out_r8.decision == "不重复"
+    assert out_r8.internal_code == "JUDGE_NON_DUPLICATE"
+    assert len(mock_r8.calls) == 2
+    assert all("修正" in p["reason"] for p in spy_r8.proofs)
+    assert not {k: v for k, v in out_r8.judge_diagnostics.items()
+                if "backfill" in k}                 # R8 对零回填计数
+    # 公共五字段封闭（计数不泄漏）
+    assert set(out.to_public_dict()) == {
+        "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
+def test_backfill_switch_on_behavior_same_as_original(monkeypatch):
+    """补充令二钉③（老板点名②）：开关开（DEDUP_JUDGE_BACKFILL=1 显式
+    ）→行为同原令——台积电型正例对→重复（JUDGE_EQUIVALENT）+原因码随
+    证明件留痕+shadow triggered/signed=1，disabled_vetoed 缺席（开态不
+    计撤签）；开关态经 config 可溯（True）。"""
+    _semantic_env(monkeypatch)
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "1")
+    spy, mock = _v6_real_callable(monkeypatch, _tsmc_responses())
+    out = _decide(TSMC_H, "台积电", TSMC_C, None, spy)
+    assert out.decision == "重复"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
+    assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
+    assert all("主体单方缺失高置信对齐" in p["reason"] for p in spy.proofs)
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.signed"] == 1
+    assert "judge.backfill.disabled_vetoed" not in out.judge_diagnostics
+    assert out.judge_version_config.backfill_enabled is True
+
+
+def test_backfill_switch_off_notime_twin_counted(monkeypatch):
+    """补充令二钉④：开关关+c) 双方都无时间情形——disabled_vetoed 与
+    .no_time 孪生同步计数（标签带时间态：跨期撞稿防线灰度观测不因关
+    闭失效——关态仍可观测"本应签发多少"）；signed.no_time 缺席。"""
+    _semantic_env(monkeypatch)
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
+    spy, mock = _v6_real_callable(monkeypatch, _notime_dup_responses())
+    out = _decide(NOTIME_H, "台积电", NOTIME_C, None, spy)
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert len(mock.calls) == 2
+    for ctx in spy.ctxs:
+        assert ctx["machine_evidence"]["time_dimension"][
+            "time_state"] == "both_missing"
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
+    assert out.judge_diagnostics["judge.backfill.disabled_vetoed"] == 1
+    assert out.judge_diagnostics[
+        "judge.backfill.disabled_vetoed.no_time"] == 1
+    assert "judge.backfill.signed.no_time" not in out.judge_diagnostics
+    assert "judge.backfill.signed" not in out.judge_diagnostics
+
+
+def test_backfill_switch_manifest_traceable():
+    """补充令二钉⑤：开关状态进 manifest 可溯——DEDUP_JUDGE_BACKFILL
+    登记 run_manifest.KNOWN_SWITCHES（固定序快照入册）；build_run_
+    manifest(env) 如实记录（off→"0"、on→"1"、缺席→空串=默认开）。"""
+    assert "DEDUP_JUDGE_BACKFILL" in rm.KNOWN_SWITCHES
+    env = {"DEDUP_JUDGE_DECISION_MODE": "semantic_authority",
+           "DEDUP_JUDGE_BACKFILL": "0"}
+    manifest = rm.build_run_manifest(
+        inputs=("rec-a",), embedding_space="fake_space",
+        code_git_sha="0" * 40, env=env)
+    state = dict(manifest.switch_state)
+    assert state["DEDUP_JUDGE_BACKFILL"] == "0"
+    assert state["DEDUP_JUDGE_DECISION_MODE"] == "semantic_authority"
+    manifest_on = rm.build_run_manifest(
+        inputs=("rec-a",), embedding_space="fake_space",
+        code_git_sha="0" * 40, env={"DEDUP_JUDGE_BACKFILL": "1"})
+    assert dict(manifest_on.switch_state)["DEDUP_JUDGE_BACKFILL"] == "1"
+    manifest_absent = rm.build_run_manifest(
+        inputs=("rec-a",), embedding_space="fake_space",
+        code_git_sha="0" * 40, env={})
+    assert dict(manifest_absent.switch_state)["DEDUP_JUDGE_BACKFILL"] == ""
+    # 固定有序=确定性（快照序==KNOWN_SWITCHES 序）
+    assert [name for name, _ in manifest.switch_state] == list(
+        rm.KNOWN_SWITCHES)
+
+
+def test_backfill_switch_legacy_mode_untouched(monkeypatch):
+    """补充令二钉⑥：legacy 模式（默认）不受开关影响——R7 回填概念只
+    存在于 semantic/judge_v6 面；legacy 下机器证据零装配（开关无评估
+    面）、判官双序重复→基线字面全等（FACT_EQUIVALENT/基线文案，与
+    基线 2d0d418 同口径）；零 backfill 计数。"""
+    _legacy_env(monkeypatch)
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
+    judge = _judge(lambda ctx: _make_proof(ctx, verdict="duplicate"))
+    out = _decide(TSMC_H, "台积电", TSMC_C, None, judge)
+    assert [c["order"] for c in judge.calls] == ["ab", "ba"]
+    for ctx in judge.calls:
+        assert "machine_evidence" not in ctx
+    assert out.decision == "重复"
+    assert out.internal_code == "FACT_EQUIVALENT"
+    assert out.reason == (
+        "判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。")
+    assert not {k: v for k, v in out.judge_diagnostics.items()
+                if "backfill" in k}

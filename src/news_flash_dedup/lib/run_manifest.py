@@ -71,6 +71,10 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_EMBEDDING_DAILY_TOKEN_BUDGET",  # vector/embedding_client.py（预算闸）
     "DEDUP_EXACT_MIN_LEN",              # text/__init__.py（最小正文长度闸）
     # 提交二（§5.2 文件 H-2）补登记：判官证明路开关 + 判官进主链开关
+    # 主窗补充令二（2026-10-11）补登记：R7 回填独立开关（policy_v4 层，
+    # decide/judge_version_config.py——开关态随 JudgeVersionConfig 单源
+    # 携带可审计；缺席记空串=默认开）
+    "DEDUP_JUDGE_BACKFILL",             # decide/judge_version_config.py（R7 回填，默认开）
     # 提交三（§5.3）补登记：判官裁决口径灰度开关（默认 legacy_proof_gate）
     "DEDUP_JUDGE_DECISION_MODE",        # decide/judge_pair.py（灰度，默认 legacy）
     "DEDUP_JUDGE_IN_CHAIN",             # decide/judge_pair.py（判官进主链，默认关）

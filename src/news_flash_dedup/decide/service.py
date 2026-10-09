@@ -303,7 +303,14 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     无时间锚的同口径跨期撞稿；双方时间取值不同→不重复不经回填规则】），
     机器**绝不直接判**、判官终审；R7 shadow 三计数 judge.backfill.
     triggered/signed/vetoed 入 judge_diagnostics（仅 semantic 模式），
-    c) 情形单列可区分（.no_time 孪生计数，标签带时间态）。默认模式仍
+    c) 情形单列可区分（.no_time 孪生计数，标签带时间态）。主窗补充令二
+    （2026-10-11）：R7 回填独立开关（DEDUP_JUDGE_BACKFILL，policy_v4 层，
+    不依赖整个 v6/semantic 开关；随 JudgeVersionConfig 单源携带+
+    KNOWN_SWITCHES 快照入册可溯）——关闭时回填永不签发：硬闸触发对
+    判官判"重复"→judge.backfill.disabled_vetoed 计数+对级终态强制存疑
+    转边界（JUDGE_UNCERTAIN）；R8 修订规则不受影响照常工作（shadow/
+    灰度期发现回填误判时不动代码、不重部署，单点关闭该规则）。
+    默认模式仍
     legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
     2d0d418 全等。
     """
@@ -359,9 +366,13 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 f"{judge_pair_module.MODE_SEMANTIC_AUTHORITY}")
     if judge_decision_mode is not None and judge_version_config is not None:
         # 唯一权威对拍：mode 的固定映射 vs 传入 config 四维——不一致即错
+        # （补充令二：对拍 config 携带传入 config 的 backfill_enabled——
+        # R7 回填独立开关是 policy 层独立维度，不参与四维固定映射校验，
+        # 显式传关闭态 config 不得被开关默认值架空）
         mode_config = (
             judge_version_config_module.judge_version_for_mode(
-                judge_decision_mode))
+                judge_decision_mode,
+                backfill_enabled=judge_version_config.backfill_enabled))
         if judge_version_config != mode_config:
             raise ValueError(
                 f"judge_decision_mode={judge_decision_mode!r} 与 "
@@ -400,9 +411,18 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
         active_decision_mode = (judge_decision_mode
                                 if judge_decision_mode is not None
                                 else judge_pair_module.judge_decision_mode())
+        # 补充令二：R7 回填独立开关（DEDUP_JUDGE_BACKFILL，policy_v4 层）
+        # 随 env 单源解析入 config（缺席=默认开；非法值 fail-closed）
         judge_version_cfg = (
             judge_version_config_module.judge_version_for_mode(
-                active_decision_mode))
+                active_decision_mode,
+                backfill_enabled=(
+                    judge_version_config_module.backfill_enabled_from_env())))
+
+    # 补充令二：R7 回填独立开关单源读取（JudgeVersionConfig 携带——
+    # 显式 config 传态>env 解析态；关闭时判官循环执行撤签：硬闸触发对
+    # 判官判"重复"→强制存疑转边界，R8 修订规则不受影响）。
+    backfill_enabled = judge_version_cfg.backfill_enabled
 
     history_report = _wrap_facts_as_report(
         history_record_id, history_text, history.get("facts", []),
@@ -610,7 +630,10 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #   judge.backfill.signed——triggered 且判官双序一致判"重复"（回填
     #     条款完成签发）的对数；
     #   judge.backfill.vetoed——triggered 但未签发（条件②-⑥任一不满足
-    #     强制存疑转边界，或判官另判）的对数。
+    #     强制存疑转边界，或判官另判）的对数；
+    #   judge.backfill.disabled_vetoed——补充令二：开关关闭时 triggered
+    #     且判官判"重复"被撤签（对级终态强制存疑转边界）的对数（
+    #     .no_time 孪生同步；signed/vetoed 开关关闭时不计数）。
     # 主窗补充令（2026-10-11）增量：c) 情形（双方都无时间/阶段表述，
     #   time_dimension.time_state=="both_missing"）单列可区分——上三计数
     #   各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
@@ -793,8 +816,23 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # 情形（双方都无时间）同步分账 .no_time 孪生计数（硬门槛
                 # 面跨期撞稿防线观测——signed.no_time=多数值过闸签发，
                 # vetoed.no_time=仅单一数值被硬门槛拦下或其余条件不满足）。
+                # 补充令二（R7 回填独立开关）：开关关闭时回填永不签发——
+                # 判官若判"重复"（本应经 R7 条款签发）→ disabled_vetoed
+                # 计数+对级终态强制存疑转边界（backfill_kill，见下方映射
+                # 段）；判官存疑/不重复本就不经回填签发，照常放行（R8
+                # 修订规则不受影响——其签发面在判官一般条款，非回填通道）。
+                # 开关开=原令行为（signed/vetoed 分账不变）。
+                backfill_kill = bool(
+                    backfill_gate_open and not backfill_enabled
+                    and sem_outcome == "equivalent")
                 if backfill_gate_open:
-                    if sem_outcome == "equivalent":
+                    if not backfill_enabled:
+                        if backfill_kill:
+                            _jcount("judge.backfill.disabled_vetoed")
+                            if backfill_no_time:
+                                _jcount(
+                                    "judge.backfill.disabled_vetoed.no_time")
+                    elif sem_outcome == "equivalent":
                         _jcount("judge.backfill.signed")
                         if backfill_no_time:
                             _jcount("judge.backfill.signed.no_time")
@@ -820,7 +858,18 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     machine_findings=tuple(judged.machine_findings),
                     full_text_fallback_used=judged.full_text_fallback_used,
                     judge_decision_mode=judged.decision_mode)
-                if judged.outcome == "unresolved":
+                if backfill_kill:
+                    # 补充令二终局（撤签改写）：R7 回填开关关闭——对级终态
+                    # 强制存疑转边界（JUDGE_UNCERTAIN 白名单码）；判官实际
+                    # 双序结论与证明已入 proofs 审计件留痕（机器不判语义，
+                    # 仅执行 policy 层关闭令：R7 签发权收回，R8 及一般条款
+                    # 不受影响）。detail 即公共 reason 源（可溯关闭成因）。
+                    pair_results[index] = replace(
+                        pair, outcome="unresolved", code="JUDGE_UNCERTAIN",
+                        detail=("主体单方缺失回填规则已被独立开关关闭"
+                                "（DEDUP_JUDGE_BACKFILL），强制存疑转边界。"),
+                        **judged_diagnostics)
+                elif judged.outcome == "unresolved":
                     # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
                     # 原对级证据字段不动。
                     pair_results[index] = replace(
@@ -838,7 +887,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         used_evidence=tuple(judged.used_evidence),
                         verified_conflicts=tuple(judged.verified_conflicts),
                         **judged_diagnostics)
-                pair_codes[pair.history_record_id] = judged.code
+                pair_codes[pair.history_record_id] = (
+                    "JUDGE_UNCERTAIN" if backfill_kill else judged.code)
         # ③ 件级最终聚合（合同 §五 strict 口径）：本结果才是 decide_for_task
         # 的返回、才进 commit_one 写入计划；上方初聚合仅用于定位未决对，
         # 不写主记录。issue 集重建=extra_event 平行账（对级未决 issue 由
