@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
-"""2026-10-11 主窗令·判定优先级修复（单独小提交）配套测试。
+"""2026-10-11 主窗令·判定优先级修复（拆分提交）配套测试。
 
-范围=证书直签路三小件：
+commit1（bde65e9）范围=证书直签路小件 ①②+补充令 ③（T03 空文陷阱）：
 ① 来源壳闭表扩项（界面新闻快讯；用户验收五条件）；
 ② 独立证书码 SHELL_STRIPPED_TEXT_MATCH（与 EXACT/普通 LOSSLESS 三分立，
    审计可单独统计误判面）；
-③ C14 同日同文放行（同 business_date+原文完全一致不受 C14 撤证；跨日/
-   非同文维持原闸）。
+③ T03 空文陷阱（剥壳后空串/纯尾注/堆叠尾注——裸长地板必须拦住不签）。
+
+commit2（本提交）范围=小件 ③+补充令 ②（C14 存活性对抗钉，最高优先）：
+③ C14 同日同文放行：同 business_date+原文完全一致（raw 逐字相等）不受
+   C14 相对时间撤证；跨日/非同文（含 LOSSLESS 变体/异尾注）维持原闸；
+② 对抗钉：跨日同文+相对词（今日/昨日/刚刚）必须不签；缺工件时相对
+   时间检测仍在原文词面运行、撤证留痕码 fail-closed（注：仓内注册未决
+   码=TIME_RELATION_UNCERTAIN，无 TIME_ANCHOR_UNRESOLVED 码——按实际
+   码钉，裁量呈主窗）；DECOUPLE 作用域=仅豁免文本相等证书工件门，
+   其他读工件路径缺字段 fail-closed（禁止 None==None 进相等比较）。
 
 目标案例=T 冻结 31 对核查表（log\\待人工核查-判官腿召回损失31对-2026-10-11.md）
 中"正文逐字相同（含同尾注）13 对 + 同正文异尾注 1 对（#7 产联社 vs 界面
 新闻快讯）"=14 对：前置直签+LLM 调用 0。
-
-判官窗甲忠告并入：C14 在直签路径的留存必须由专项用例证明（§三——跨日
-腿/非同文腿/LOSSLESS 变体腿照撤）。
 
 夹具纪律（同 test_p0_shell_strip.py / test_p0_c14_relgate.py）：全真实现类
 ——facts/rule.py 真规则抽取（零真 LLM）+ _wrap_facts_as_report 真校验包装
@@ -83,16 +88,29 @@ P07_A = ("日经225指数收涨0.20%，报65270.95点。韩国综指收跌0.24%�
 P07_B = ("日经225指数收涨0.20%，报65270.95点。韩国综指收跌0.24%，"
          "报7034.87点。（界面新闻快讯）")
 
-# —— C14 专项（判官窗甲忠告：直签路径的 C14 留存专项证明）——
+BODY_MULTI = "甲公司完成股份回购计划，涉及资金约一千二百万元。"
+# —— C14 专项（commit2；判官窗甲忠告+补充令 ② 对抗钉）——
+# G20=T 冻结实测原文（"过去24小时"×2、零绝对日期——曾依法撤证面）。
 G20 = ("比特币价格跌至77928.5美元，过去24小时内下跌1.88%；"
        "以太坊跌至2451.48美元，过去24小时内下跌1.94%。（产联社）")
 BODY_REL = "甲公司今日公告完成股份回购计划，涉及资金约一千二百万元。"
-BODY_MULTI = "甲公司完成股份回购计划，涉及资金约一千二百万元。"
+# 缺工件+相对词对抗件（补充令 ②-2）：真规则抽取 vc=False（1200万无动词
+# 子句承载）+今日无绝对锚——检测在原文词面运行的实证载体。
+LONG_REL = ("甲公司今日宣布完成股份回购计划，本次回购旨在提升股东价值并"
+            "优化资本结构。公司另有备用金1200万元未列入本次计划。")
 # 不完备工件面（test_p0_cert_decouple.LONG 同源）：真规则抽取 vc=False
 # （"1200万"数值无动词子句承载→FACT_INCOMPLETE）——"同文 Fact 缺失仍直签"
 # 的真缺口形态（零 facts 侧在 build_aligned 入口即被对齐纪律拦，非本面）。
 LONG_INCOMPLETE = ("甲公司宣布完成股份回购计划，本次回购旨在提升股东价值并"
                    "优化资本结构。公司另有备用金1200万元未列入本次计划。")
+# T03 堆叠尾注反例（补充令 ③）：非闭表壳（财联社/财联社快讯）堆叠+闭表尾。
+STACKED = "（财联社）（财联社快讯）。（产联社）"
+STACKED_B = "（财联社）（财联社快讯）。（界面新闻快讯）"
+# 长文释义对（文本相异、双侧不完备）：FACT_EQUIVALENT 通道对照。
+PARA_H = ("甲公司宣布回购股份，旨在提升股东价值并优化资本结构。"
+          "公司另有备用金1200万元未列入本次计划。")
+PARA_C = ("甲公司发布公告称回购股份，旨在提升股东价值并优化资本结构。"
+          "公司另有备用金1200万元未列入本次计划。")
 
 
 class _BoomExtractor:
@@ -159,7 +177,8 @@ def _decide_ruleonly(history, current, monkeypatch):
 
 def _p15(history_text, current_text, *, dates=(None, None),
          facts_h=None, facts_c=None):
-    """p15 层直调（证书路/C14 闸面），dates=(history_date, current_date)。"""
+    """p15 层直调（证书路/撤证闸面），dates=(history_date, current_date)
+    ——缺省 (None, None)=既有直接调用方形态（不豁免）。"""
     history = _wrap_facts_as_report(
         RECORD_ID_H, history_text,
         facts_rule.extract_facts(RECORD_ID_H, history_text)
@@ -276,7 +295,7 @@ def test_diff_tail_incomplete_facts_shell_direct_sign(monkeypatch):
     assert ext_calls == [] and judge_calls == []
 
 
-# ============ §三 C14 同日同文放行 + 直签路径 C14 留存（判官窗甲忠告） ============
+# ============ §三 C14 同日同文放行 + 留存专项 + 对抗钉（补充令 ②） ============
 
 def test_relative_time_same_text_same_day_direct_sign(monkeypatch):
     """③ 同 business_date+原文完全一致（含相对词族"过去24小时"无绝对锚）
@@ -338,7 +357,103 @@ def test_c14_dates_absent_defaults_to_blocked(monkeypatch):
     assert any(i.code == "TIME_RELATION_UNCERTAIN" for i in p15.p15_results.issues)
 
 
-# ============ §四 空文纯空白禁签 ============
+# ---------- 补充令 ②：C14 存活性对抗钉（最高优先） ----------
+
+def test_adversarial_cross_day_today_not_signed(monkeypatch):
+    """②-1a 跨日同文+"今日"：p15 撤证（TIME_RELATION_UNCERTAIN fail-closed
+    留痕）+ 全链跨日 PairBindingError——必须不签（双层实证）。"""
+    _env_on(monkeypatch)
+    p15 = _p15(BODY_REL, BODY_REL, dates=(D, "2026-09-27"))
+    assert p15.p15_results.text_proof is None
+    assert any(i.code == "TIME_RELATION_UNCERTAIN" for i in p15.p15_results.issues)
+    with pytest.raises(pair_compare.PairBindingError):
+        _decide_ruleonly(
+            _record(RECORD_ID_H, "item-A", BODY_REL, 1),
+            _record(RECORD_ID_C, "item-C", BODY_REL, 3,
+                    business_date="2026-09-27"), monkeypatch)
+
+
+def test_adversarial_cross_day_yesterday_not_signed(monkeypatch):
+    """②-1b 跨日同文+"昨日"：同 ②-1a 双层不签（相对词表命中腿）。"""
+    text_y = "甲公司昨日公告完成股份回购计划，涉及资金约一千二百万元。"
+    _env_on(monkeypatch)
+    p15 = _p15(text_y, text_y, dates=(D, "2026-09-27"))
+    assert p15.p15_results.text_proof is None
+    assert any(i.code == "TIME_RELATION_UNCERTAIN" for i in p15.p15_results.issues)
+    with pytest.raises(pair_compare.PairBindingError):
+        _decide_ruleonly(
+            _record(RECORD_ID_H, "item-A", text_y, 1),
+            _record(RECORD_ID_C, "item-C", text_y, 3,
+                    business_date="2026-09-27"), monkeypatch)
+
+
+def test_adversarial_cross_day_ganggang_not_signed(monkeypatch):
+    """②-1c 跨日同文+"刚刚"：必须不签——跨日禁签由 pair_compare._check_
+    binding 结构性保证（与词面无关）。（如实呈报：'刚刚'不在闭合相对词
+    表 RELATIVE_TIME_TOKENS——该表为判官腿共用单源冻结面，扩员归主窗
+    裁量，本令不擅动。）"""
+    text_g = "甲公司刚刚公告完成股份回购计划，涉及资金约一千二百万元。"
+    _env_on(monkeypatch)
+    with pytest.raises(pair_compare.PairBindingError):
+        _decide_ruleonly(
+            _record(RECORD_ID_H, "item-A", text_g, 1),
+            _record(RECORD_ID_C, "item-C", text_g, 3,
+                    business_date="2026-09-27"), monkeypatch)
+
+
+def test_adversarial_missing_artifacts_detection_runs_on_text(monkeypatch):
+    """②-2 缺工件（双侧真抽取 vc=False）+相对词"今日"无锚：相对时间检测
+    仍在**原文词面**运行（不读工件字段）→ 撤证留痕 fail-closed。"""
+    _env_on(monkeypatch)
+    h = LONG_REL.replace("。", "。\r\n")
+    c = LONG_REL.replace("。", "。\n")     # LOSSLESS 变体：非同文（raw 不等）
+    h_report = _wrap_facts_as_report(
+        RECORD_ID_H, h, facts_rule.extract_facts(RECORD_ID_H, h))
+    c_report = _wrap_facts_as_report(
+        RECORD_ID_C, c, facts_rule.extract_facts(RECORD_ID_C, c))
+    assert h_report.validated_complete is False      # 缺工件实证（双侧）
+    assert c_report.validated_complete is False
+    p15 = _p15(h, c, dates=(D, D))
+    assert p15.p15_results.text_proof is None
+    assert any(i.code == "TIME_RELATION_UNCERTAIN" for i in p15.p15_results.issues)
+
+
+def test_adversarial_detection_text_only_by_construction():
+    """②-2b 结构性钉：相对时间检测消费面=纯文本对（原文词面），工件零
+    参与——缺工件不改变检测结果（今日无锚→block）。"""
+    from news_flash_dedup.compare.p15_integration import (
+        _relative_time_anchor_blocked,
+    )
+    assert _relative_time_anchor_blocked(BODY_REL, BODY_REL) is True
+    assert _relative_time_anchor_blocked(BODY_MULTI, BODY_MULTI) is False
+
+
+def test_adversarial_same_day_gate_none_guards(monkeypatch):
+    """②-3 禁止 None==None 进相等比较：同日豁免门 is-not-None 先行守卫——
+    单侧缺 (None,D)/(D,None) 皆不豁免（G20 同文对 C14 照撤）；缺省
+    (None,None) 态由 test_c14_dates_absent 钉。"""
+    _env_on(monkeypatch)
+    p15 = _p15(G20, G20, dates=(None, D))
+    assert p15.p15_results.text_proof is None
+    assert any(i.code == "TIME_RELATION_UNCERTAIN" for i in p15.p15_results.issues)
+    p15_b = _p15(G20, G20, dates=(D, None))
+    assert p15_b.p15_results.text_proof is None
+    assert any(i.code == "TIME_RELATION_UNCERTAIN"
+               for i in p15_b.p15_results.issues)
+
+
+def test_adversarial_zero_facts_fail_closed_not_none_equality(monkeypatch):
+    """②-3b 缺工件 fail-closed：零 facts 侧 → build_aligned 入口
+    PairAlignmentError（"必须至少一个 Fact"纪律），绝不"缺==缺"当相等
+    放行签发（无 None==None 洗白通道）。"""
+    _env_on(monkeypatch)
+    with pytest.raises(pair_alignment.PairAlignmentError):
+        _decide_ruleonly(
+            _record(RECORD_ID_H, "item-A", LONG_REL, 1, facts=[]),
+            _record(RECORD_ID_C, "item-C", LONG_REL, 3), monkeypatch)
+
+
+# ============ §四 空文纯空白禁签 + T03 空文陷阱（补充令 ③） ============
 
 @pytest.mark.parametrize("ta,tb", [
     ("", ""),
@@ -367,13 +482,41 @@ def test_shell_only_pair_stays_boundary(monkeypatch):
     assert out.decision != "重复"
 
 
-# ============ §五 跨日跨域禁签 ============
+def test_t03_pure_shell_text_real_data_form_not_signed(monkeypatch):
+    """T03（补充令 ③）：纯尾注空文（真实数据 7 条"（产联社）"形态）——
+    裸长地板必须拦住不签：判据不过（残 0<15 且裸 5<20）→50 闸→老路合格
+    门拒（vc=False 无事实载体）→全链边界。"""
+    _env_on(monkeypatch)
+    out = _decide_ruleonly(
+        _record(RECORD_ID_H, "item-A", "（产联社）", 1),
+        _record(RECORD_ID_C, "item-C", "（产联社）", 3), monkeypatch)
+    assert out.decision != "重复"
+    assert out.duplicate_ids == ()
+
+
+def test_t03_stacked_tails_floor_blocks_signing(monkeypatch):
+    """T03（补充令 ③）：堆叠尾注"（财联社）（财联社快讯）。（产联社）"——
+    闭表只剥末尾（产联社）（非闭表壳零模糊不剥），残文 13<15 地板拦截；
+    EXACT 腿同被地板拦（裸 18<50 老路拒）→全链边界。异尾注变体（界面
+    尾）同拦——残文相等也不得越过地板签发。"""
+    _env_on(monkeypatch)
+    out = _decide_ruleonly(
+        _record(RECORD_ID_H, "item-A", STACKED, 1),
+        _record(RECORD_ID_C, "item-C", STACKED, 3), monkeypatch)
+    assert out.decision != "重复"
+    out_b = _decide_ruleonly(
+        _record(RECORD_ID_H, "item-A", STACKED, 1),
+        _record(RECORD_ID_C, "item-C", STACKED_B, 3), monkeypatch)
+    assert out_b.decision != "重复"
+
+
+# ============ §五 跨日跨域禁签（同文签发与正常签发同等窗口） ============
 
 def test_cross_scope_pair_binding_rejected(monkeypatch):
     """跨域（scope_id 不同）→ PairBindingError（禁签=入口闸 fail-closed）。"""
     _env_on(monkeypatch)
     with pytest.raises(pair_compare.PairBindingError):
-        _decide(
+        _decide_ruleonly(
             _record(RECORD_ID_H, "item-A", GOLD_SAME13["P10"], 1,
                     scope_id="scope-a"),
             _record(RECORD_ID_C, "item-C", GOLD_SAME13["P10"], 3,
@@ -382,10 +525,10 @@ def test_cross_scope_pair_binding_rejected(monkeypatch):
 
 def test_cross_date_pair_binding_rejected(monkeypatch):
     """跨日（business_date 不同）→ PairBindingError（同文签发与正常签发
-    同等窗口；C14 同日豁免不放跨日——跨日结构性禁签）。"""
+    同等窗口——跨日结构性禁签，证书路不可绕）。"""
     _env_on(monkeypatch)
     with pytest.raises(pair_compare.PairBindingError):
-        _decide(
+        _decide_ruleonly(
             _record(RECORD_ID_H, "item-A", GOLD_SAME13["P10"], 1,
                     business_date="2026-09-26"),
             _record(RECORD_ID_C, "item-C", GOLD_SAME13["P10"], 3,
@@ -455,7 +598,7 @@ def test_fake_hash_collision_intercepted():
     assert certify_shell_stripped_equality(left, "not-a-result") is None
 
 
-# ============ §九 闭表纪律（中部不剥/纯尾注/异正文/多尾注/裸长边界） ============
+# ============ §九 闭表纪律（中部不剥/异正文/多尾注/裸长边界/T03 原语） ============
 
 def test_closed_table_mid_text_not_stripped():
     """闭表词在正文中部（文尾非尾注）不剥——确定性尾匹配零模糊。"""
@@ -490,6 +633,18 @@ def test_multi_tail_notes_iterative_strip():
     assert certify_shell_stripped_equality(both, partial) is not None
 
 
+def test_t03_stacked_tails_primitive_floor():
+    """T03（补充令 ③）原语面：堆叠尾注剥闭表尾后残文"（财联社）（财联社
+    快讯）。"=13<15 → 剥壳证书地板禁签（残文相等也不签）；非闭表壳
+    （财联社/财联社快讯）零模糊不剥。"""
+    assert p15_integration.strip_source_shell(STACKED) == "（财联社）（财联社快讯）。"
+    left = text_mod.normalize_text(STACKED)
+    right = text_mod.normalize_text(STACKED_B)
+    assert certify_shell_stripped_equality(left, right) is None
+    assert certify_shell_stripped_equality(
+        left, text_mod.normalize_text(STACKED)) is None
+
+
 @pytest.mark.parametrize("body_len,expected", [(14, None), (15, "sign"),
                                                (16, "sign")],
                          ids=["bare19-residual14", "bare20-residual15",
@@ -509,7 +664,7 @@ def test_bare_length_boundaries_19_20_21(body_len, expected):
         assert cert.kind is text_mod.TextMatchKind.SHELL_STRIPPED_TEXT_MATCH
 
 
-# ============ §十 开关与 manifest 审计留痕 + 三分立码集 ============
+# ============ §十 开关与 manifest 审计留痕 + 三分立码集 + DECOUPLE 作用域 ============
 
 def test_shell_rule_version_pinned_v2():
     """规则版本钉（闭表纪律可执行钉）：v2=扩员（界面新闻快讯）+迭代剥。"""
@@ -542,3 +697,19 @@ def test_three_certificate_codes_distinct():
     assert "SHELL_STRIPPED_TEXT_MATCH" in pair_compare.EQUIVALENT_CODES
     assert "SHELL_STRIPPED_TEXT_MATCH" in pair_compare._TEXT_CERT_PROOF_CODES
     assert "SHELL_STRIPPED_TEXT_MATCH" in decide_types._EQUIVALENT_CODES
+
+
+def test_decouple_scope_exempts_only_text_cert_gate(monkeypatch):
+    """DECOUPLE 作用域对照：文本相等证书工件门被豁免（同文不完备→直签）；
+    释义对（文本相异）不完备→FACT_EQUIVALENT 完备性要求一字不动→边界
+    （其他读工件路径不因解耦洗白）。"""
+    _env_on(monkeypatch)
+    out1 = _decide_ruleonly(
+        _record(RECORD_ID_H, "item-A", LONG_INCOMPLETE, 1),
+        _record(RECORD_ID_C, "item-C", LONG_INCOMPLETE, 3), monkeypatch)
+    assert out1.decision == "重复"                     # 豁免面=文本证书
+    out2 = _decide_ruleonly(
+        _record(RECORD_ID_H, "item-A", PARA_H, 1),
+        _record(RECORD_ID_C, "item-C", PARA_C, 3), monkeypatch)
+    assert out2.decision != "重复"                     # 释义面不豁免
+    assert out2.internal_code != "FACT_EQUIVALENT"
