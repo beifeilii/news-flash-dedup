@@ -46,10 +46,14 @@ from news_flash_dedup.decide.policy_version import (
     POLICY_VERSION_V3,
 )
 from news_flash_dedup.facts.rule import RULE_DICT_VERSION
+from news_flash_dedup.recall.fact_supply import fact_supply_mode_from_env
 
 # 终审 P1-manifest（2026-10-11 修复包）：R7 回填开关实际生效态入正式
 # 结构化字段 backfill_enabled（字段集变更）→schema 升 v2。
-MANIFEST_SCHEMA_VERSION = "run_manifest_v2"
+# 用户令 2026-10-11（LLM 事实供给接进服务主链）：供给选择实际生效态入
+# 正式结构化字段 fact_supply（env 单源 DEDUP_FACT_SUPPLY，缺席=rule；
+# 字段集变更）→schema 升 v3。
+MANIFEST_SCHEMA_VERSION = "run_manifest_v3"
 
 # 提交二（2026-10-10，p3-semantic-authority，方案 §5.2 文件 E/H）：policy
 # 版本字面量单源迁至 decide/policy_version.py（无循环依赖；本模块与
@@ -72,6 +76,9 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_COVERAGE_FRONTIER",          # recall/service.py（覆盖闸 frontier）
     "DEDUP_EMBEDDING_DAILY_TOKEN_BUDGET",  # vector/embedding_client.py（预算闸）
     "DEDUP_EXACT_MIN_LEN",              # text/__init__.py（最小正文长度闸）
+    # 用户令 2026-10-11（LLM 事实供给）：供给选择开关（recall/fact_supply.py
+    # ——rule|llm，缺席=rule；实际生效态同时记结构化字段 fact_supply）
+    "DEDUP_FACT_SUPPLY",                # recall/fact_supply.py（F3 供给选择）
     # 提交二（§5.2 文件 H-2）补登记：判官证明路开关 + 判官进主链开关
     # 主窗补充令二（2026-10-11）补登记：R7 回填独立开关（policy_v4 层，
     # decide/judge_version_config.py——开关态随 JudgeVersionConfig 单源
@@ -155,6 +162,11 @@ class RunManifest:
     enabled（R7 回填开关**实际生效态**，规范化 "1"/"0"——switch_state
     只快照 env 原值，实际生效单源=JudgeVersionConfig.backfill_enabled
     或 env 解析态；缺席=默认关，见 judge_version_config 修复包令 4）。
+
+    用户令 2026-10-11（LLM 事实供给）：增结构化字段 fact_supply（供给
+    选择实际生效态 "rule"/"llm"——env 单源 DEDUP_FACT_SUPPLY，缺席=
+    rule；无 config 对象故无同传冲突面，与 switch_state 快照双口径可
+    对拍）。
     """
     schema_version: str
     pipeline_version: str
@@ -163,6 +175,7 @@ class RunManifest:
     prompt_sha256: str
     policy_version: str
     backfill_enabled: str
+    fact_supply: str
     model: str
     embedding_space: str
     switch_state: tuple[tuple[str, str], ...]
@@ -179,6 +192,7 @@ class RunManifest:
             "prompt_sha256": self.prompt_sha256,
             "policy_version": self.policy_version,
             "backfill_enabled": self.backfill_enabled,
+            "fact_supply": self.fact_supply,
             "model": self.model,
             "embedding_space": self.embedding_space,
             "switch_state": {name: value for name, value in self.switch_state},
@@ -320,6 +334,10 @@ def build_run_manifest(
     else:
         effective_backfill = _jvc.backfill_enabled_from_env(switch_source)
     backfill_enabled_state = "1" if effective_backfill else "0"
+    # 用户令 2026-10-11（LLM 事实供给）：供给选择实际生效态（env 单源，
+    # H 项——无 config 对象无同传冲突面；switch_state 已同时快照 env
+    # 原值，双口径可对拍）。
+    fact_supply_state = fact_supply_mode_from_env(env)
     return RunManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
         pipeline_version=pipeline_version,
@@ -328,6 +346,7 @@ def build_run_manifest(
         prompt_sha256=prompt_sha256,
         policy_version=policy_version,
         backfill_enabled=backfill_enabled_state,
+        fact_supply=fact_supply_state,
         model=model,
         embedding_space=_embedding_space_id(embedding_space),
         switch_state=snapshot_switch_state(env),

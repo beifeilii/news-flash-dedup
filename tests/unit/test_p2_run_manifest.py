@@ -52,7 +52,7 @@ def test_manifest_fields_complete():
     assert set(d) == {
         "schema_version", "pipeline_version", "dict_version",
         "prompt_version", "prompt_sha256", "policy_version",
-        "backfill_enabled", "model",
+        "backfill_enabled", "fact_supply", "model",
         "embedding_space", "switch_state", "code_git_sha",
         "inputs_sha256", "input_count",
     }
@@ -67,6 +67,9 @@ def test_manifest_fields_complete():
     # 终审 P1-manifest（2026-10-11 修复包）：实际生效 backfill 态入正式
     # 结构化字段（规范化 "1"/"0"；env={} 缺席=默认关，修复包令 4）
     assert d["backfill_enabled"] == "0"
+    # 用户令 2026-10-11（LLM 事实供给）：供给选择实际生效态入结构化字段
+    # （env 单源；env={} 缺席=rule——测试密封默认；schema v2→v3）
+    assert d["fact_supply"] == "rule"
     assert d["model"] == DEFAULT_MODEL
     assert d["embedding_space"] == FAKE_SPACE_ID
     assert d["code_git_sha"] == GIT_SHA
@@ -174,6 +177,27 @@ def test_switch_state_snapshot_honors_injected_env():
     assert state["DEDUP_COVERAGE_FRONTIER"] == ""             # 缺席记空串
     assert "UNRELATED_ENV" not in state                       # 非登记开关不入册
     assert [name for name, _ in manifest.switch_state] == list(rm.KNOWN_SWITCHES)
+
+
+def test_manifest_fact_supply_field_and_switch_snapshot():
+    """用户令 2026-10-11（LLM 事实供给）：fact_supply 结构化字段=env 单
+    源实态（rule|llm；缺席=rule fail-open 面只此一处——非法值 ValueError
+    fail-closed），DEDUP_FACT_SUPPLY 同时登记 KNOWN_SWITCHES 快照（双
+    口径可对拍）；schema 升 v3（字段集变更）。"""
+    m_llm = _build(env={"DEDUP_FACT_SUPPLY": "llm"})
+    assert m_llm.fact_supply == "llm"
+    assert dict(m_llm.switch_state)["DEDUP_FACT_SUPPLY"] == "llm"
+    m_rule = _build(env={"DEDUP_FACT_SUPPLY": "rule"})
+    assert m_rule.fact_supply == "rule"
+    m_absent = _build(env={})
+    assert m_absent.fact_supply == "rule"          # 缺席默认=rule
+    assert dict(m_absent.switch_state)["DEDUP_FACT_SUPPLY"] == ""
+    assert "DEDUP_FACT_SUPPLY" in rm.KNOWN_SWITCHES
+    assert rm.MANIFEST_SCHEMA_VERSION == "run_manifest_v3"
+    with pytest.raises(ValueError):
+        _build(env={"DEDUP_FACT_SUPPLY": "nope"})   # fail-closed 拒产
+    # 语义可分：同输入不同供给态 → 内容指纹不同（审计锚敏感）
+    assert m_llm.manifest_sha256() != m_absent.manifest_sha256()
 
 
 def test_manifest_backfill_effective_state_structured_field():
