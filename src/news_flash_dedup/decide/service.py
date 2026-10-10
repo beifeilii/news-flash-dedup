@@ -324,6 +324,12 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     ③**DEDUP_JUDGE_BACKFILL 缺席=默认关**（直到硬门槛完工+金标重证
     ）。④manifest 记实际生效 backfill_enabled（run_manifest 结构化
     字段；config 与 env 显式冲突拒）。
+    用户令 2026-10-10（R7 双方缺主体条款放开，主窗 2026-10-11 转发
+    施工）："两条都缺主体，但事件、时间、对象和多个核心数值完全
+    一致，也允许判重复。"——both_missing 不再恒拦：四要素机检
+    （jme.both_missing_alignment：事件/谓词∧时间归一∧关键对象∧≥2
+    一致核心数值）全证一致→放行判官签发面；任一未证成→拦（
+    fail-closed 方向不变，detail 列明未证条目）。第二闸分支不动。
     默认模式仍
     legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
     2d0d418 全等。
@@ -902,13 +908,28 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     # detail 写明闸因+判官原判（可溯），判官引文证据入
                     # used_evidence 审计留痕（机器不判语义，只撤签发权；
                     # 判官实际双序结论经 proofs 审计件另在案）。
+                    # 用户令 2026-10-10（双方缺主体条款放开）：both_
+                    # missing 拦截 detail 升级为四要素未证条目清单（
+                    # 四项全证一致才放行——见 jme.both_missing_
+                    # alignment；未证条目=机器无法证明/核验失败的
+                    # 确定性条目，fail-closed 方向不变）。
                     if machine_gate["rule"] == (
                             judge_machine_evidence_module.
                             GATE_RULE_BOTH_MISSING):
+                        failed = machine_gate.get("failed_items") or ()
+                        phrases = {
+                            "event": "事件/谓词一致未证成",
+                            "time": "时间归一一致未证成",
+                            "object": "关键对象一致未证成",
+                            "values": "一致核心数值不足2个",
+                        }
+                        items = "、".join(
+                            phrases[f] for f in failed
+                            if f in phrases) or "四要素"
                         gate_detail = (
-                            "R7 确定性签发闸拦截：双方均缺主体锚（机检硬"
-                            "事实——双侧证券代码与主体抽取均不在场），判官"
-                            "原判'重复'不得签发，强制存疑转边界。")
+                            "R7 确定性签发闸拦截：双方均缺主体锚且四要"
+                            f"素机检未证全齐（{items}），判官原判'重复'"
+                            "不得签发，强制存疑转边界。")
                     else:
                         matched = machine_evidence["core_values"][
                             "matched_count"]

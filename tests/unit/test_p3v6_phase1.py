@@ -65,6 +65,21 @@
   （v5 保留注册供回放对比，prompt 直解通道可达）；默认模式仍
   legacy_proof_gate（生产零变化）。
 
+用户令 2026-10-10（R7 双方缺主体条款放开，主窗 2026-10-11 转发
+  施工）："两条都缺主体，但事件、时间、对象和多个核心数值完全
+  一致，也允许判重复。"——覆盖原冻结条款"双方都缺主体→边界不得
+  判重复"。实现：①r7_signing_gate 第一分支改写——both_missing 不
+  再恒可拦，四要素确定性核验（jme.both_missing_alignment：事件/
+  谓词归一集合相等∧时间归一集相等∧key_object 归一集合相等∧≥2
+  一致核心数值）全证一致→不可拦（放行判官签发面）；任一未证成→
+  可拦→强制边界（fail-closed 方向不变；证据块缺席同拦）。第二分
+  支（单方缺主体+无时间+数值<2）不动。②v6 提示词仅改写该条款句
+  （其余正文零触碰）——PROMPT_SHA256_V6 随之更新（458b2213…→
+  3f4e096e…，缓存键嵌 SHA 金标作废属预期）。③答错必拦矩阵翻修：
+  双方缺主体+四项全齐+判官故意判重复→断言**放行**（可签）；双方
+  缺主体+缺任一项+判官故意判重复→断言边界；旧"双方缺主体必拦"
+  钉全部翻修。④闸拦截 detail 升级为四要素未证条目清单（可溯）。
+
 legacy 全等回归：默认模式行为与 2d0d418 基线逐字全等（§7 钉测模式
   ——机器证据零装配、零计数、上下文零增量字段、基线码/文案逐字）。
 
@@ -124,6 +139,33 @@ def _fact(record_id, subject=None, anchor="甲"):
                  "stage": {"status": "missing", "raw_value": None, "evidence": []},
                  "anchor": {"status": "missing", "raw_value": None, "evidence": []}},
         "key_object": {"status": "missing", "raw_value": None, "evidence": []},
+        "numerics": [],
+    }
+
+
+def _fact_full(record_id, text, *, predicate="公告", key_object="X地块"):
+    """用户令 2026-10-10（双方缺主体条款放开）四要素全齐夹具：谓词槽+
+    key_object 槽 present（事件/对象证成源），主体槽保持 missing
+    （both_missing 形态不变）。evidence 引文=正文真跨度 text[0:4]
+    （pair_alignment 切片校验合规；field="x" 占位不触发 F-K1 槽锚）。"""
+    ev = [{"record_id": record_id, "field": "x",
+           "quote": text[0:4], "start": 0, "end": 4}]
+    return {
+        "fact_id": "f1", "evidence": ev,
+        "fact_type": {"status": "present", "raw_value": "公告", "evidence": ev},
+        "subject": {"status": "missing", "raw_value": None, "evidence": []},
+        "event_state": {
+            "predicate": {"status": "present", "raw_value": predicate,
+                          "evidence": ev},
+            "polarity": {"status": "present", "raw_value": predicate,
+                         "evidence": ev},
+            "modality": {"status": "missing", "raw_value": None, "evidence": []},
+            "attribution": {"status": "missing", "raw_value": None, "evidence": []}},
+        "time": {"expression": {"status": "missing", "raw_value": None, "evidence": []},
+                 "stage": {"status": "missing", "raw_value": None, "evidence": []},
+                 "anchor": {"status": "missing", "raw_value": None, "evidence": []}},
+        "key_object": {"status": "present", "raw_value": key_object,
+                       "evidence": ev},
         "numerics": [],
     }
 
@@ -292,13 +334,14 @@ def test_v6_registered_v5_kept_for_replay():
 
 
 def test_v6_sha256_real_and_distinct():
-    """一期钉②（补充令后 v6 条款③修订→SHA 随之更新）：v6 真实 SHA（重算
+    """一期钉②（补充令后 v6 条款③修订→SHA 随之更新；用户令
+    2026-10-10 双方缺主体条款放开→SHA 再次更新）：v6 真实 SHA（重算
     自证）+字面量钉；不与 v1/v2/v3/v5 雷同；v5 SHA 零漂移（本窗口不得
     触碰 v5 提示词）。"""
     assert v6.PROMPT_SHA256_V6 == hashlib.sha256(
         v6.JUDGE_PROMPT_V6.encode("utf-8")).hexdigest()
     assert v6.PROMPT_SHA256_V6 == (
-        "458b2213260c54ff36d43324433765a5032b0975db8481ead6d677c4c6e500c2")
+        "3f4e096e01d6d5a84201a4adb243d7211465e64aee6adaba098e654c3a9d4187")
     assert v6.PROMPT_SHA256_V6 not in (
         lr.PROMPT_SHA256, lr.PROMPT_SHA256_V2, lr.PROMPT_SHA256_V3,
         v5.PROMPT_SHA256_V5)
@@ -312,7 +355,8 @@ def test_v6_prompt_clauses_and_v5_inheritance():
     （a）v6 含 R8 修订改值条款锚点（改值→不重复/同值省略过程→重复/
     只补背景→重复/角色指标时间对不上→存疑）；
     （b）v6 含 R7 受约束回填条款锚点（六条件+原因码"主体单方缺失高
-    置信对齐"+强制存疑+双方都缺主体不适用+主窗补充令条件③时间维度
+    置信对齐"+强制存疑+**双方缺主体条款放开**（用户令 2026-10-10：
+    四要素全齐也允许判重复）+主窗补充令条件③时间维度
     三分支 a/b/c 与 c 硬门槛、双方时间不同→不重复不经回填）；
     （c）优先级条款保留（v6 语义：先按本条款裁决）；
     （d）v5 暂定边界表述（"产品规则未冻结""一律存疑，不得判重复"）在
@@ -341,9 +385,15 @@ def test_v6_prompt_clauses_and_v5_inheritance():
                    "无新增独立事实", "新指标、新事件、新对象均不属于信息补充",
                    "任一条件不满足，强制判存疑",
                    "双方都有时间但取值不一致的，判不重复，不经本条回填规则",
-                   "双方都缺主体时本条不适用，判存疑",
+                   # 用户令 2026-10-10（双方缺主体条款放开）新句
+                   "两条都缺主体，但事件、时间、对象和多个核心数值完全"
+                   "一致的，也允许判重复",
+                   "至少两个不同角色的核心数值一致；任一要素缺失或无法"
+                   "确认一致的，判存疑",
                    "主体单方缺失高置信对齐"):
         assert anchor in t6, anchor
+    # 用户令后旧句不复现（原冻结条款"双方都缺主体→边界"废止）
+    assert "双方都缺主体时本条不适用" not in t6
     # 补充令前旧措辞不复现（条件③已升格为三分支枚举）
     assert "有事实时间或阶段" not in t6
     # （c）优先级条款保留（冻结后语义）
@@ -615,7 +665,7 @@ def test_machine_evidence_not_in_judge_input():
             current_text="甲公司公告：净利由177.9万修正为177.5万。",
             machine_evidence=ev)
     # 机器证据本体照常可产（闸+审计面；版本随修复包升 phase1c）
-    assert ev["version"] == "v6_lite_phase1c"
+    assert ev["version"] == "v6_lite_phase1d"
 
 
 # ============================================================ 3. R8 端到端（semantic 真件链）
@@ -658,7 +708,7 @@ def test_r8_revision_changes_value_not_duplicate(monkeypatch):
     for ctx in spy.ctxs:
         assert "machine_evidence" not in ctx
     ev = jme.build_machine_evidence(R8_H, R8_C)
-    assert ev["version"] == "v6_lite_phase1c"
+    assert ev["version"] == "v6_lite_phase1d"
     assert ev["revision_candidates"]["hit_any_side"] is True
     assert ev["revision_candidates"]["history"] == []
     cur = ev["revision_candidates"]["current"]
@@ -1402,20 +1452,23 @@ def test_backfill_switch_legacy_mode_untouched(monkeypatch):
 # （缺席=OFF，直到硬门槛完工+金标重证）。
 
 def test_gate_model_wrong_both_missing_subject_blocked(monkeypatch):
-    """修复包钉①（老板点名①"模型答错也必须拦住"）：假判官故意对
-    双方都缺主体的对返回**重复**（双序一致）→确定性签发闸拦截——
-    对级终态强制存疑转边界（JUDGE_UNCERTAIN），公共 reason 写明闸因
-    （双方均缺主体锚=机检硬事实）+判官原判'重复'（可溯）；判官照常
-    双序实调（原结论入审计留痕：判定件在 proofs、引文证据入对级
+    """修复包钉①（老板点名①"模型答错也必须拦住"；用户令 2026-10-10
+    后翻修）：假判官故意对双方都缺主体+四要素未证全齐（本例 facts
+    谓词两侧一致=事件证成，但时间 9/24 vs 9/25 归一不等+key_object
+    双侧缺失）的对返回**重复**（双序一致）→确定性签发闸拦截——对级
+    终态强制存疑转边界（JUDGE_UNCERTAIN），公共 reason 写明闸因（
+    双方均缺主体锚+四要素未证条目清单——用户令后放行判据=四项全证
+    ，任一未证即拦）+判官原判'重复'（可溯）；判官照常双序实调（
+    原结论入审计留痕：判定件在 proofs、引文证据入对级
     used_evidence）；shadow：gate.both_missing_subject=1、triggered/
     signed/vetoed/disabled_vetoed 全缺席（both_missing 非 R7 触发域，
     开关态无关）；判官输入零机器证据。"""
     responses = {
         (BOTHMISS_H, BOTHMISS_C): _jjson(
-            "重复", "模型答错：双方都缺主体仍判重复。",
+            "重复", "模型答错：双方都缺主体且时间不一致仍判重复。",
             ("营收250亿美元",), ("营收250亿美元",)),
         (BOTHMISS_C, BOTHMISS_H): _jjson(
-            "重复", "模型答错：双方都缺主体仍判重复。",
+            "重复", "模型答错：双方都缺主体且时间不一致仍判重复。",
             ("营收250亿美元",), ("营收250亿美元",)),
     }
     spy, mock = _v6_real_callable(monkeypatch, responses)
@@ -1425,6 +1478,11 @@ def test_gate_model_wrong_both_missing_subject_blocked(monkeypatch):
     assert out.duplicate_ids == ()
     assert "确定性签发闸拦截" in out.reason
     assert "双方均缺主体锚" in out.reason
+    # 用户令后闸因=四要素未证条目清单（本例：时间+对象未证；事件已证）
+    assert "四要素机检未证全齐" in out.reason
+    assert "时间归一一致未证成" in out.reason
+    assert "关键对象一致未证成" in out.reason
+    assert "事件/谓词一致未证成" not in out.reason
     assert "判官原判'重复'" in out.reason
     assert len(mock.calls) == 2                      # 判官双序照常实调
     for ctx in spy.ctxs:
@@ -1432,6 +1490,18 @@ def test_gate_model_wrong_both_missing_subject_blocked(monkeypatch):
     # 判官原结论审计留痕：双序"重复"判定在 proofs、引文入对级证据
     assert all("模型答错" in p["reason"] for p in spy.proofs)
     assert out.pair_results[0].used_evidence
+    # 四要素证据面（unit 级对拍：事件证成/时间对象未证/数值证成）
+    ev = jme.build_machine_evidence(
+        BOTHMISS_H, BOTHMISS_C,
+        history_facts=_history(BOTHMISS_H, None)["facts"],
+        current_facts=_current(BOTHMISS_C, None)["facts"])
+    assert ev["both_missing_alignment"]["event"]["aligned"] is True
+    assert ev["both_missing_alignment"]["time"]["aligned"] is False
+    assert ev["both_missing_alignment"]["object"]["aligned"] is False
+    assert ev["both_missing_alignment"]["values"]["aligned"] is True
+    assert jme.r7_signing_gate(ev) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("time", "object")}
     # shadow：闸计数在案；R7 触发域/开关分账计数全缺席
     assert out.judge_diagnostics[
         "judge.backfill.gate.both_missing_subject"] == 1
@@ -1484,34 +1554,90 @@ def test_gate_model_wrong_notime_single_value_blocked(monkeypatch):
 
 
 def test_r7_signing_gate_scope_unit():
-    """修复包钉③（闸域 scoping）：r7_signing_gate 只在 R7 签发前提域
-    执法——双方都写主体（R8/一般条款签发面）一律不拦（含无时间+单
-    数值形态：一般重复裁决不经回填通道，机械闸不越界）；恰一方缺
-    主体+无时间+≥2 个一致核心数值（硬门槛下限满足）不拦；裸单位字
-    （"亿"被中文数字正则单独捕获归一 0）与中文计数词（"一宗"）不
-    冒充核心数值锚（下限 fail-safe：计不足→拦，绝不虚增放行）。"""
+    """修复包钉③（闸域 scoping；用户令 2026-10-10 后翻修）：
+    r7_signing_gate 只在 R7 签发前提域执法——
+    - 双方都写主体（R8/一般条款签发面）一律不拦（含无时间+单数值
+      形态：一般重复裁决不经回填通道，机械闸不越界）；
+    - 恰一方缺主体+无时间+≥2 个一致核心数值（硬门槛下限满足）不拦；
+    - 裸单位字（"亿"被中文数字正则单独捕获归一 0）与中文计数词
+      （"一宗"）不冒充核心数值锚（下限 fail-safe：计不足→拦，绝不
+      虚增放行）；
+    - **双方缺主体条款放开矩阵（用户令 2026-10-10）**：四要素全证
+      →不拦（放行判官签发面）；缺任一项→拦（failed_items 恰含该
+      条目——矩阵四翻）；证据块整体缺席（旧形态证据）→拦
+      （fail-closed）。"""
     # 双方都写主体+无时间+单数值 → 不拦（R8/一般面豁免）
     both_present = jme.build_machine_evidence(
         SINGLEVAL_H, SINGLEVAL_C,
         history_facts=_history(SINGLEVAL_H, "万科")["facts"],
         current_facts=_current(SINGLEVAL_C, "万科")["facts"])
     assert jme.r7_signing_gate(both_present) == {
-        "blockable": False, "rule": ""}
+        "blockable": False, "rule": "", "failed_items": ()}
     # 恰一方缺主体+无时间+单数值 → 拦（no_time_insufficient_values）
     unilateral_single = jme.build_machine_evidence(
         SINGLEVAL_H, SINGLEVAL_C,
         history_facts=_history(SINGLEVAL_H, "万科")["facts"])
     assert jme.r7_signing_gate(unilateral_single) == {
-        "blockable": True, "rule": "no_time_insufficient_values"}
+        "blockable": True, "rule": "no_time_insufficient_values",
+        "failed_items": ()}
     # 恰一方缺主体+无时间+≥2 数值 → 不拦（硬门槛下限满足）
     unilateral_multi = jme.build_machine_evidence(
         NOTIME_H, NOTIME_C,
         history_facts=_history(NOTIME_H, "台积电")["facts"])
     assert jme.r7_signing_gate(unilateral_multi)["blockable"] is False
-    # 双方均缺主体 → 拦（both_missing_subject——时间/数值如何都不签）
+    # ---------- 双方缺主体条款放开矩阵（四要素四翻） ----------
+    # 基线形态：四要素全证（谓词/日期/关键对象一致+≥2 数值）→不拦
+    released = jme.build_machine_evidence(
+        REL_H, REL_C,
+        history_facts=(_fact_full(H_ID, REL_H),),
+        current_facts=(_fact_full(C_ID, REL_C),))
+    assert released["both_missing_alignment"]["all_aligned"] is True
+    assert jme.r7_signing_gate(released) == {
+        "blockable": False, "rule": "", "failed_items": ()}
+    # 翻①事件：谓词一侧不同（公告 vs 披露）→拦，failed_items=("event",)
+    ev_event = jme.build_machine_evidence(
+        REL_H, REL_C,
+        history_facts=(_fact_full(H_ID, REL_H),),
+        current_facts=(_fact_full(C_ID, REL_C, predicate="披露"),))
+    assert jme.r7_signing_gate(ev_event) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("event",)}
+    # 翻②时间：日期一侧不同（9/24 vs 9/25）→拦，failed_items=("time",)
+    ev_time = jme.build_machine_evidence(
+        REL_H, BOTHMISS_C,
+        history_facts=(_fact_full(H_ID, REL_H),),
+        current_facts=(_fact_full(C_ID, BOTHMISS_C),))
+    assert jme.r7_signing_gate(ev_time) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("time",)}
+    # 翻③对象：key_object 一侧缺失→拦，failed_items=("object",)
+    ev_obj = jme.build_machine_evidence(
+        REL_H, REL_C,
+        history_facts=(_fact_full(H_ID, REL_H),),
+        current_facts=(_fact(C_ID, None, REL_C[0]),))
+    assert jme.r7_signing_gate(ev_obj) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("object",)}
+    # 翻④数值：仅单一一致核心数值（时间/对象/事件全证）→拦
+    ev_val = jme.build_machine_evidence(
+        REL_SINGLEVAL_H, REL_SINGLEVAL_C,
+        history_facts=(_fact_full(H_ID, REL_SINGLEVAL_H),),
+        current_facts=(_fact_full(C_ID, REL_SINGLEVAL_C),))
+    assert ev_val["both_missing_alignment"]["values"]["aligned"] is False
+    assert jme.r7_signing_gate(ev_val) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("values",)}
+    # 证据块缺席（旧形态/手工证据）→拦（fail-closed——机器无法证明即拦）
+    ev_legacy = {"subject_backfill": {"both_missing": True},
+                 "time_dimension": {"time_state": "both_present"},
+                 "core_values": {"matched_count": 2}}
+    assert jme.r7_signing_gate(ev_legacy) == {
+        "blockable": True, "rule": "both_missing_subject",
+        "failed_items": ("event", "time", "object", "values")}
+    # 双方均缺主体+无 facts（事件/对象天然未证）→拦（原 both_missing
+    # 文本形态：谓词/对象槽缺供+时间 9/24 vs 9/25 不等）
     both_missing = jme.build_machine_evidence(BOTHMISS_H, BOTHMISS_C)
-    assert jme.r7_signing_gate(both_missing) == {
-        "blockable": True, "rule": "both_missing_subject"}
+    assert jme.r7_signing_gate(both_missing)["blockable"] is True
     # 核心数值下限计数：裸单位字/中文计数词不冒充（fail-safe 方向）
     core = jme.core_value_anchors(SINGLEVAL_H, SINGLEVAL_C)
     assert core["matched_norms"] == ["2.3E+8"]       # "亿"单位字、"一宗"不计
@@ -1519,6 +1645,99 @@ def test_r7_signing_gate_scope_unit():
     core2 = jme.core_value_anchors(NOTIME_H, NOTIME_C)
     assert core2["matched_norms"] == ["2.5E+10", "69|p"]
     assert core2["matched_count"] == 2
+
+
+# ---------------- 用户令 2026-10-10（R7 双方缺主体条款放开）端到端矩阵 ----------------
+
+REL_H = "9月24日公告竞得X地块，总价250亿美元，全球市占率69%。"
+REL_C = "9月24日公告竞得X地块，耗资250亿美元，全球市占率69%。"
+REL_SINGLEVAL_H = "9月24日公告竞得X地块，总价250亿美元。"
+REL_SINGLEVAL_C = "9月24日公告竞得X地块，耗资250亿美元。"
+
+
+def test_gate_both_missing_four_aligned_released(monkeypatch):
+    """用户令 2026-10-10 钉①（答错必拦矩阵的放行支）：双方都缺主体+
+    四要素机检全证一致（事件/谓词=公告、时间=9月24日归一相等、对象
+    =X地块、≥2 一致核心数值=250亿美元+69%）+判官判"重复"（双序
+    一致）→**放行判官签发面**（闸不可拦）——对级正常签发
+    （JUDGE_EQUIVALENT+固定文案），零闸拦截计数、零 R7 回填分账
+    计数（both_missing 非回填触发域）；判官双序照常实调、判官输入
+    零机器证据。"""
+    responses = {
+        (REL_H, REL_C): _jjson(
+            "重复", "双方缺主体但事件时间对象数值全一致。",
+            ("公告竞得X地块",), ("公告竞得X地块",),
+            na=("250亿", "69%"), nb=("250亿", "69%"),
+            ta=("9月24日",), tb=("9月24日",)),
+        (REL_C, REL_H): _jjson(
+            "重复", "双方缺主体但事件时间对象数值全一致。",
+            ("公告竞得X地块",), ("公告竞得X地块",),
+            na=("250亿", "69%"), nb=("250亿", "69%"),
+            ta=("9月24日",), tb=("9月24日",)),
+    }
+    spy, mock = _v6_real_callable(monkeypatch, responses)
+    h = _history(REL_H, None)
+    h["facts"] = [_fact_full(H_ID, REL_H)]
+    c = _current(REL_C, None)
+    c["facts"] = [_fact_full(C_ID, REL_C)]
+    out = decide_service.decide_for_task(
+        h, [], current=c, judge_callable=spy,
+        judge_in_chain=True, coverage_complete=True)
+    assert out.decision == "重复"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+    assert out.duplicate_ids == ("item-A",)
+    assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
+    assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    for ctx in spy.ctxs:
+        assert "machine_evidence" not in ctx         # 判官输入零机器证据
+    # 四要素证据面（放行判据在案，unit 级对拍）
+    ev = jme.build_machine_evidence(
+        REL_H, REL_C, history_facts=h["facts"], current_facts=c["facts"])
+    assert ev["both_missing_alignment"]["all_aligned"] is True
+    assert ev["both_missing_alignment"]["event"]["aligned"] is True
+    assert ev["both_missing_alignment"]["time"]["aligned"] is True
+    assert ev["both_missing_alignment"]["object"]["aligned"] is True
+    assert ev["both_missing_alignment"]["values"]["aligned"] is True
+    assert jme.r7_signing_gate(ev) == {
+        "blockable": False, "rule": "", "failed_items": ()}
+    # shadow：闸拦截零计数、R7 回填分账零计数（非回填触发域）
+    assert not {k: v for k, v in out.judge_diagnostics.items()
+                if "backfill" in k}
+    assert set(out.to_public_dict()) == {
+        "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
+def test_gate_both_missing_release_not_backfill_domain(monkeypatch):
+    """用户令 2026-10-10 钉②（放行支与回填独立开关的边界——裁量点
+    钉）：四要素全证的双方缺主体对**不受 DEDUP_JUDGE_BACKFILL 影响**
+    ——回填开关管的是 R7 单方缺主体回填通道（unilateral 触发域的
+    backfill_kill），both_missing 放行支判据=四要素机检（用户令直接
+    授权的签发面），开关关态照常签发（对照 §8 关态钉：单方缺主体
+    撤签转边界）。主窗如需改判"放行支也随开关关"，另行下令。"""
+    responses = {
+        (REL_H, REL_C): _jjson(
+            "重复", "双方缺主体但事件时间对象数值全一致。",
+            ("公告竞得X地块",), ("公告竞得X地块",)),
+        (REL_C, REL_H): _jjson(
+            "重复", "双方缺主体但事件时间对象数值全一致。",
+            ("公告竞得X地块",), ("公告竞得X地块",)),
+    }
+    spy, mock = _v6_real_callable(monkeypatch, responses)
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")   # 建链后置关（防 clobber）
+    h = _history(REL_H, None)
+    h["facts"] = [_fact_full(H_ID, REL_H)]
+    c = _current(REL_C, None)
+    c["facts"] = [_fact_full(C_ID, REL_C)]
+    out = decide_service.decide_for_task(
+        h, [], current=c, judge_callable=spy,
+        judge_in_chain=True, coverage_complete=True)
+    assert out.decision == "重复"
+    assert out.internal_code == "JUDGE_EQUIVALENT"
+    assert out.duplicate_ids == ("item-A",)
+    # 关态零回填计数（无 triggered/disabled_vetoed——非回填触发域）
+    assert not {k: v for k, v in out.judge_diagnostics.items()
+                if "backfill" in k}
 
 
 def test_backfill_default_off_until_gold_reproven(monkeypatch):

@@ -53,6 +53,18 @@ expression present），输出双侧表面形+在场布尔+三分支态：
 - **开关默认关**：DEDUP_JUDGE_BACKFILL 缺席=OFF（judge_version_
   config 层，直到硬门槛完工+金标重证——修复包令 4）。
 
+用户令 2026-10-10（R7 双方缺主体条款放开，主窗 2026-10-11 转发
+    施工）："两条都缺主体，但事件、时间、对象和多个核心数值完全
+    一致，也允许判重复。"——覆盖原冻结条款"双方都缺主体→边界不得
+    判重复"。机器层四要素确定性核验（both_missing_alignment）：
+    事件/谓词（facts 谓词槽双侧非空且归一集合相等）∧时间（双侧
+    时间表述归一集非空且相等——time_dimension 同域）∧对象（facts
+    key_object 槽双侧非空且归一集合相等）∧≥2 个一致核心数值
+    （core_value_anchors 下限口径）→四项全证=不可拦（放行判官
+    签发面）；任一项核验失败或机器无法证明→可拦→强制边界
+    （fail-closed 方向不变——规则弱供给槽位缺失一律落拦截侧）。
+    第二分支（恰一方缺主体+无时间+数值<2）不动。
+
 shadow 指标（decide/service.py 现状机制 _jcount+DecideOutcome.
 judge_diagnostics，仅 semantic 模式计数）：
 - judge.backfill.triggered：条件①硬闸通过的对数（判官循环内）；
@@ -87,7 +99,7 @@ from collections.abc import Iterable, Mapping
 from news_flash_dedup.compare import core_conflict as _cc
 from news_flash_dedup.decide import machine_verify as _mv
 
-MACHINE_EVIDENCE_VERSION = "v6_lite_phase1c"   # 修复包：+core_values/签发闸（终审 P0/P1）
+MACHINE_EVIDENCE_VERSION = "v6_lite_phase1d"   # 用户令 2026-10-10：+both_missing_alignment 四要素核验
 
 
 # ---------------------------------------------------------------- R8 修订候选证据
@@ -250,6 +262,14 @@ def time_dimension_gate(history_text: str, current_text: str, *,
 GATE_RULE_BOTH_MISSING = "both_missing_subject"
 GATE_RULE_NO_TIME_VALUES = "no_time_insufficient_values"
 
+# 用户令 2026-10-10（R7 双方缺主体条款放开，主窗 2026-10-11 转发施工）：
+# 四要素确定性核验条目（事件/时间/对象/核心数值——机器证明全齐才放行
+# 判官签发面；任一未证成即拦，fail-closed 方向不变）。
+GATE_ITEM_EVENT = "event"
+GATE_ITEM_TIME = "time"
+GATE_ITEM_OBJECT = "object"
+GATE_ITEM_VALUES = "values"
+
 
 def _core_value_norms(text: str) -> tuple[str, ...]:
     """单侧核心数值归一集（machine_verify number_mentions R3 语境过滤
@@ -281,6 +301,124 @@ def core_value_anchors(history_text: str, current_text: str) -> dict:
     }
 
 
+# -------------------------------- R7 双方缺主体条款放开（用户令 2026-10-10）四要素核验
+
+def fact_event_predicates(facts: Iterable | None) -> tuple[str, ...]:
+    """事件/谓词现有件取值（用户令 2026-10-10 四要素之一）：facts
+    event_state.predicate status=present 且 raw_value 非空（去重保序）。
+    缺省/非可读槽 → 空元组（机检无判据——绝不把"抽不出谓词"当
+    "事件一致"证成，fail-closed 落拦截侧）。"""
+    if not facts:
+        return ()
+    values: list[str] = []
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        state = fact.get("event_state")
+        if not isinstance(state, Mapping):
+            continue
+        pred = state.get("predicate")
+        if not isinstance(pred, Mapping):
+            continue
+        raw = pred.get("raw_value")
+        if (pred.get("status") == "present" and isinstance(raw, str)
+                and raw.strip()):
+            values.append(raw.strip())
+    return tuple(dict.fromkeys(values))
+
+
+def fact_key_objects(facts: Iterable | None) -> tuple[str, ...]:
+    """关键对象现有件取值（四要素之一）：facts key_object status=
+    present 且 raw_value 非空（去重保序）。缺省/非可读槽 → 空元组
+    （对象缺失=机器无法证明"对象一致"，fail-closed 落拦截侧）。"""
+    if not facts:
+        return ()
+    values: list[str] = []
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        obj = fact.get("key_object")
+        if not isinstance(obj, Mapping):
+            continue
+        raw = obj.get("raw_value")
+        if (obj.get("status") == "present" and isinstance(raw, str)
+                and raw.strip()):
+            values.append(raw.strip())
+    return tuple(dict.fromkeys(values))
+
+
+def _norm_time_surfaces(surfaces: Iterable[str]) -> tuple[str, ...]:
+    """时间表面形归一集（machine_verify._norm_time 同款确定性口径：
+    去空白与"年/月/日/号"分隔——闭形日期"9月24日"与"2026年9月24日"
+    归一到同串）。排序输出（纯 JSON 确定性）。"""
+    return tuple(sorted({
+        _mv._norm_time(s) for s in surfaces if str(s).strip()}))
+
+
+def both_missing_alignment(*, history_predicates: Iterable[str] | None = (),
+                           current_predicates: Iterable[str] | None = (),
+                           history_key_objects: Iterable[str] | None = (),
+                           current_key_objects: Iterable[str] | None = (),
+                           history_time_surfaces: Iterable[str] | None = (),
+                           current_time_surfaces: Iterable[str] | None = (),
+                           matched_core_value_count: int = 0) -> dict:
+    """R7 双方缺主体条款放开（用户令 2026-10-10）四要素机检证据
+    （只产证据不判；消费方=r7_signing_gate 第一分支与审计观测）：
+
+    - event：双侧 facts 谓词槽非空且**归一集合相等**（事件完全一致
+      ——一侧多事件/谓词不同=未证成；谓词缺失侧=机检无判据=未证成，
+      fail-closed 落拦截侧）；
+    - time：双侧时间表述归一集（闭形日期∪阶段词∪相对词∪facts 时间
+      槽——time_dimension 同域）**非空且相等**（"时间一致∴归一相等"
+      的确定性读法；一侧无时间=未证成）；
+    - object：双侧 facts key_object 槽非空且**归一集合相等**（一侧
+      缺失即未证成）；
+    - values：一致核心数值 ≥2 个（core_value_anchors.matched_count
+      下限口径——"多个核心数值完全一致"的确定性下限，与条件（a）/
+      ③c 同一机械口径）。
+
+    all_aligned=四项全 True（放行判据）；任一 False→闸拦截。证据块
+    纯 JSON、不含判官输入面任何字段。
+    """
+    h_pred = {p.strip() for p in (history_predicates or ())
+              if str(p).strip()}
+    c_pred = {p.strip() for p in (current_predicates or ())
+              if str(p).strip()}
+    h_obj = {o.strip() for o in (history_key_objects or ())
+             if str(o).strip()}
+    c_obj = {o.strip() for o in (current_key_objects or ())
+             if str(o).strip()}
+    h_time = set(_norm_time_surfaces(history_time_surfaces or ()))
+    c_time = set(_norm_time_surfaces(current_time_surfaces or ()))
+    event_aligned = bool(h_pred) and bool(c_pred) and h_pred == c_pred
+    time_aligned = bool(h_time) and bool(c_time) and h_time == c_time
+    object_aligned = bool(h_obj) and bool(c_obj) and h_obj == c_obj
+    values_aligned = int(matched_core_value_count) >= 2
+    return {
+        "event": {
+            "history_predicates": sorted(h_pred),
+            "current_predicates": sorted(c_pred),
+            "aligned": bool(event_aligned),
+        },
+        "time": {
+            "history_norms": sorted(h_time),
+            "current_norms": sorted(c_time),
+            "aligned": bool(time_aligned),
+        },
+        "object": {
+            "history_key_objects": sorted(h_obj),
+            "current_key_objects": sorted(c_obj),
+            "aligned": bool(object_aligned),
+        },
+        "values": {
+            "matched_count": int(matched_core_value_count),
+            "aligned": bool(values_aligned),
+        },
+        "all_aligned": bool(event_aligned and time_aligned
+                            and object_aligned and values_aligned),
+    }
+
+
 def r7_signing_gate(machine_evidence) -> dict:
     """R7 确定性后置签发闸（终审 P0 修复包，2026-10-11）——只评机检
     硬事实给出"重复"签发可拦态；执法点在 decide/service 判官结论出来
@@ -288,25 +426,49 @@ def r7_signing_gate(machine_evidence) -> dict:
     重复/存疑照常放行——机械闸不判语义）：
 
     - both_missing_subject：双方均缺主体锚（证券代码∪主体抽取双不
-      在场）→可拦（v6 条款"双方都缺主体时本条不适用，判存疑"的
-      机械执法——模型答错也拦得住）；
+      在场）。用户令 2026-10-10（R7 双方缺主体条款放开）后**不再恒
+      可拦**——四要素确定性核验（both_missing_alignment）全证一致
+      （事件/谓词∧时间归一∧关键对象∧≥2 个一致核心数值）→不可拦
+      （放行判官签发面）；任一项核验失败或机器无法证明→可拦（
+      failed_items 列明未证条目，fail-closed 方向不变）；
     - no_time_insufficient_values：恰一方缺主体+双方均无时间/阶段
       表述+一致核心数值不足 2 个（机器无法证明条件③c 硬门槛）→
       可拦（防无时间锚的同口径跨期撞稿）；
     - 双方都写主体→不拦（R8/一般条款签发面不经回填通道，机械闸
       不越界评一般重复）；恰一方缺主体+数值≥2 个一致→机器证得
       硬条件下限，放行给判官结论。
+
+    返回 {"blockable", "rule", "failed_items"}（failed_items=元组，
+    仅 both_missing 拦截时非空——条目序固定 event/time/object/values）。
     """
     subj = (machine_evidence or {}).get("subject_backfill") or {}
     time_dim = (machine_evidence or {}).get("time_dimension") or {}
     core = (machine_evidence or {}).get("core_values") or {}
+    alignment = (machine_evidence or {}).get("both_missing_alignment") or {}
     if subj.get("both_missing"):
-        return {"blockable": True, "rule": GATE_RULE_BOTH_MISSING}
+        # 用户令 2026-10-10：四要素机检全齐才放行；证据块缺席/未证成
+        # 任一项 → 拦（fail-closed——机器无法证明即拦，绝不虚放开）。
+        failed = tuple(
+            item for item, flag in (
+                (GATE_ITEM_EVENT,
+                 (alignment.get("event") or {}).get("aligned")),
+                (GATE_ITEM_TIME,
+                 (alignment.get("time") or {}).get("aligned")),
+                (GATE_ITEM_OBJECT,
+                 (alignment.get("object") or {}).get("aligned")),
+                (GATE_ITEM_VALUES,
+                 (alignment.get("values") or {}).get("aligned")),
+            ) if not flag)
+        if failed:
+            return {"blockable": True, "rule": GATE_RULE_BOTH_MISSING,
+                    "failed_items": failed}
+        return {"blockable": False, "rule": "", "failed_items": ()}
     if (subj.get("unilateral_missing")
             and time_dim.get("time_state") == "both_missing"
             and int(core.get("matched_count") or 0) < 2):
-        return {"blockable": True, "rule": GATE_RULE_NO_TIME_VALUES}
-    return {"blockable": False, "rule": ""}
+        return {"blockable": True, "rule": GATE_RULE_NO_TIME_VALUES,
+                "failed_items": ()}
+    return {"blockable": False, "rule": "", "failed_items": ()}
 
 
 # ---------------------------------------------------------------- 总装（闸+审计面消费；不进判官输入）
@@ -342,6 +504,14 @@ def build_machine_evidence(history_text: str, current_text: str, *,
         history_times=fact_time_values(history_facts),
         current_times=fact_time_values(current_facts))
     core = core_value_anchors(history_text, current_text)
+    alignment = both_missing_alignment(
+        history_predicates=fact_event_predicates(history_facts),
+        current_predicates=fact_event_predicates(current_facts),
+        history_key_objects=fact_key_objects(history_facts),
+        current_key_objects=fact_key_objects(current_facts),
+        history_time_surfaces=time_dim["history_time_mentions"],
+        current_time_surfaces=time_dim["current_time_mentions"],
+        matched_core_value_count=core["matched_count"])
     return {
         "version": MACHINE_EVIDENCE_VERSION,
         "revision_candidates": {
@@ -352,14 +522,22 @@ def build_machine_evidence(history_text: str, current_text: str, *,
         "subject_backfill": gate,
         "time_dimension": time_dim,
         "core_values": core,
+        "both_missing_alignment": alignment,
     }
 
 
 __all__ = [
+    "GATE_ITEM_EVENT",
+    "GATE_ITEM_OBJECT",
+    "GATE_ITEM_TIME",
+    "GATE_ITEM_VALUES",
     "GATE_RULE_BOTH_MISSING",
     "GATE_RULE_NO_TIME_VALUES",
     "MACHINE_EVIDENCE_VERSION",
+    "both_missing_alignment",
     "core_value_anchors",
+    "fact_event_predicates",
+    "fact_key_objects",
     "revision_candidates",
     "fact_subject_values",
     "fact_time_values",
