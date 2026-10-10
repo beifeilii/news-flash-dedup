@@ -278,11 +278,15 @@ def test_cached_empty_facts_also_fallback(tmp_path):
 
     text = "公司公告重大事项。"
     # 直种遗产缓存条目（R3-M2 前落盘形态：raw={"facts": []} + model/版本/摘要）
+    # 开工令①b（2026-10-11 令2）：缓存键四元（+extractor_schema_version
+    # 维）——直种条目须带 schema 维才命中（遗产三原条目=miss 重抽，
+    # "schema 升版不错误复用旧 Fact"）；命中路径兜底语义一字未动。
     import hashlib as _hl
     text_hash = _hl.sha256(text.encode("utf-8")).hexdigest()
     (tmp_path / f"{text_hash}.json").write_text(json.dumps({
         "model": facts_llm.DEFAULT_MODEL,
         "prompt_version": facts_llm.LLM_PROMPT_VERSION,
+        "extractor_schema_version": facts_llm.EXTRACTOR_SCHEMA_VERSION,
         "text_sha256": text_hash,
         "raw_llm_content": json.dumps({"facts": []}, ensure_ascii=False),
         "issues": [],
