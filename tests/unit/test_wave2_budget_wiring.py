@@ -481,7 +481,9 @@ def test_w2_f1_facts_budget_none_constants_byte_identical():
 
     extract_facts_llm("a" * 64, "正文二。", call_fn=ok_fn)
     assert seen["timeout_s"] == 30.0                  # 现役 :479 常量（零 diff 钉）
-    assert seen["model"] == "qwen-turbo"
+    # 7b965b6（2026-10-10 用户令：qwen-turbo 下架直换 qwen-plus，测试移交
+    # 第二 AI）：值无关主轴钉的模型字面量随现役 DEFAULT_MODEL 对齐
+    assert seen["model"] == "qwen-plus"
 
 
 def test_w2_f2_facts_permit_drives_retry_and_charge():
@@ -513,7 +515,8 @@ def test_w2_f3_facts_cache_hit_not_charged():
     cache = tmp_path_factory_fixture(key)
     _json.dumps({})                                   # noqa：保持 json 引用显式
     (cache / f"{key}.json").write_text(_json.dumps({
-        "model": "qwen-turbo", "prompt_version": LLM_PROMPT_VERSION,
+        # 7b965b6 模型切换对齐：缓存命中键含 model——与现役默认一致才命中
+        "model": "qwen-plus", "prompt_version": LLM_PROMPT_VERSION,
         "raw_llm_content": '{"facts": []}', "issues": []}), encoding="utf-8")
 
     def boom(**kw):                                   # 命中面若误创建调用即炸
