@@ -76,6 +76,11 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_COVERAGE_FRONTIER",          # recall/service.py（覆盖闸 frontier）
     "DEDUP_EMBEDDING_DAILY_TOKEN_BUDGET",  # vector/embedding_client.py（预算闸）
     "DEDUP_EXACT_MIN_LEN",              # text/__init__.py（最小正文长度闸）
+    # 2026-10-11（主窗令·判定优先级修复）：剥信源壳开关补登记（既有开关
+    # p15_integration.py DEDUP_EXACT_SHELL_STRIP 默认关——此前漏册，审计
+    # 留痕面补齐；规则版本 SHELL_STRIP_RULE_VERSION=v2 由 test_jpf_
+    # priority_fix 钉死）。
+    "DEDUP_EXACT_SHELL_STRIP",          # compare/p15_integration.py（剥壳，默认关）
     # 用户令 2026-10-11（LLM 事实供给）：供给选择开关（recall/fact_supply.py
     # ——rule|llm，缺席=rule；实际生效态同时记结构化字段 fact_supply）
     "DEDUP_FACT_SUPPLY",                # recall/fact_supply.py（F3 供给选择）

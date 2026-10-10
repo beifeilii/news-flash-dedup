@@ -88,6 +88,11 @@ class NormalizationResult:
 class TextMatchKind(str, Enum):
     EXACT_TEXT_MATCH = "EXACT_TEXT_MATCH"
     LOSSLESS_TEXT_MATCH = "LOSSLESS_TEXT_MATCH"
+    # 2026-10-11（主窗令·判定优先级修复 ②）：剥来源壳后一致的独立证书码
+    # ——与 EXACT_TEXT_MATCH/普通 LOSSLESS_TEXT_MATCH 三分立（审计可单独
+    # 统计误判面）。签发规则在 compare/p15_integration.certify_shell_
+    # stripped_equality（信源壳闭表单源）；本模块只持枚举面。
+    SHELL_STRIPPED_TEXT_MATCH = "SHELL_STRIPPED_TEXT_MATCH"
 
 
 @dataclass(frozen=True)

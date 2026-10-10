@@ -1157,6 +1157,11 @@ def _run_single_pair(history_record_id, history_text, history_report,
     )
     p15_report = p15_integration.extract_p15_results(
         history_report, current_report, history_text, current_text, alignment,
+        # 2026-10-11（主窗令·判定优先级修复 ③）：真实双侧 business_date
+        # 转发入 p15——C14 同日同文放行门（同日+原文完全一致不撤证）消费；
+        # 跨日本身仍由 pair_compare._check_binding fail-closed（禁签）。
+        history_business_date=history_business_date,
+        current_business_date=current_business_date,
     )
     history_ctx = {
         "record_id": history_record_id, "item_id": history_item_id,

@@ -347,10 +347,19 @@ SHELL_STRIP_ENV = "DEDUP_EXACT_SHELL_STRIP"
 # 规则版本化（v2 §4.1）：v1 尾注闭表=T 冻结 30 对实测唯一样式"（产联社）"
 # （定稿决议 §二"裸信源尾注，无事实载体"；P0 验收一 26 组全带同一 5 字
 # 尾注实测）。闭表只按实测扩充，任何扩员/变形必升 SHELL_STRIP_RULE_VERSION。
-SHELL_STRIP_RULE_VERSION = "source-shell-v1-2026-10-09"
+# 2026-10-11（主窗令·判定优先级修复 ①）：v2=扩员（界面新闻快讯）+变形
+# （迭代剥）双触发升版——
+# - 扩员：T 冻结 31 对核查表 #7 实测"同正文异尾注"（文 A 尾注（产联社）
+#   vs 文 B 尾注（界面新闻快讯），正文逐字相同，判官腿召回损失面）；
+# - 变形：v1"至多剥一层"升级为迭代剥多尾注（"正文。（产联社）（界面
+#   新闻快讯）"逐层剥尽；字符串严格递缩保证终止）。
+# 用户验收条件（令原文五条，certify_shell_stripped_equality 逐条落实）：
+# 只匹配正文末尾完整尾注/封闭词表零模糊/不删正文中部出现/去壳后正文
+# 非空/去壳后规范化正文必须逐字相等（不许只比 Hash）。
+SHELL_STRIP_RULE_VERSION = "source-shell-v2-2026-10-11"
 SHELL_STRIP_RESIDUAL_MIN = 15
 SHELL_STRIP_BARE_MIN = 20
-_SOURCE_SHELL_TAILS_V1 = ("（产联社）",)
+_SOURCE_SHELL_TAILS_V2 = ("（产联社）", "（界面新闻快讯）")
 
 
 def shell_strip_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -365,14 +374,79 @@ def strip_source_shell(normalized_text: str) -> str:
 
     能回指原文（v2 §4.1）：确定性尾匹配剥除，剥除串恒为原文真后缀、
     残文恒为原文真前缀，任何人可按版本规则复算；归一文尾无闭表壳 →
-    原文一字不动（不猜、不模糊匹配）。v1 至多剥一层尾注。
+    原文一字不动（不猜、不模糊匹配、正文中部出现永不剥）。v2（2026-10-11
+    判定优先级修复）起迭代剥多层尾注：每轮只剥文末一枚完整闭表壳，剥后
+    文末再遇闭表壳才续剥；每轮剥除非空后缀，字符串严格递缩保证终止。
     """
     if not isinstance(normalized_text, str):
         raise TypeError("normalized_text must be str")
-    for tail in _SOURCE_SHELL_TAILS_V1:
-        if normalized_text.endswith(tail):
-            return normalized_text[: len(normalized_text) - len(tail)]
-    return normalized_text
+    stripped = normalized_text
+    while True:
+        for tail in _SOURCE_SHELL_TAILS_V2:
+            if stripped.endswith(tail):
+                stripped = stripped[: len(stripped) - len(tail)]
+                break
+        else:
+            return stripped
+
+
+def certify_shell_stripped_equality(
+    left: text_mod.NormalizationResult,
+    right: text_mod.NormalizationResult,
+) -> text_mod.TextEqualityCertificate | None:
+    """剥来源壳后一致 → SHELL_STRIPPED_TEXT_MATCH 独立证书（2026-10-11
+    主窗令·判定优先级修复 ①②；消费点 extract_p15_results 证书路回退腿，
+    仅在 EXACT/LOSSLESS 均不可签时接管——原文相异面，典型=同正文异信源
+    尾注）。
+
+    签发条件（主窗令验收原文逐条落实）：
+    - 只匹配正文末尾完整尾注：strip_source_shell 闭表尾匹配，零模糊；
+    - 去壳后正文非空（空壳/纯尾注禁签）且双侧残文 ≥SHELL_STRIP_RESIDUAL_MIN
+      （判据残文门槛同源，短正文防误签）；
+    - 去壳后规范化正文必须逐字相等：body 逐字比对（不许只比 Hash）；
+    - 伪 Hash 碰撞拦截：与 certify_text_equality 同源防持久化伪证——
+      两侧 NormalizationResult 按原文重建对拍（indexable 非空 + 逐字段
+      等值，含 outer_trim_approved 同参复算），任何持久化/篡改的 Hash/
+      映射不能冒充正文相等，corrupt 持久化值 fail-closed。
+
+    审计留痕（令 ②）：kind=SHELL_STRIPPED_TEXT_MATCH 与 EXACT_TEXT_MATCH/
+    LOSSLESS_TEXT_MATCH 三分立（误判面可单独统计）；证书 normalized_hash
+    字段记**去壳后正文**的 sha256（本证书实际证明的相等面），与双侧
+    raw_hash 一并提供复算复核。
+    """
+    if not isinstance(left, text_mod.NormalizationResult) or not isinstance(
+            right, text_mod.NormalizationResult):
+        return None
+    if left.normalizer_version != right.normalizer_version:
+        return None
+    try:
+        if not left.indexable_hashes() or not right.indexable_hashes():
+            return None
+        if left != text_mod.normalize_text(
+                left.text, outer_trim_approved=left.outer_trim_approved):
+            return None
+        if right != text_mod.normalize_text(
+                right.text, outer_trim_approved=right.outer_trim_approved):
+            return None
+    except (TypeError, ValueError, AttributeError):
+        return None
+    left_body = strip_source_shell(left.normalized_text)
+    right_body = strip_source_shell(right.normalized_text)
+    if not left_body or not right_body:
+        return None
+    if len(left_body) < SHELL_STRIP_RESIDUAL_MIN or len(
+            right_body) < SHELL_STRIP_RESIDUAL_MIN:
+        return None
+    if left_body != right_body:
+        return None
+    return text_mod.TextEqualityCertificate(
+        kind=text_mod.TextMatchKind.SHELL_STRIPPED_TEXT_MATCH,
+        normalizer_version=left.normalizer_version,
+        left_raw_hash=left.raw_hash,
+        right_raw_hash=right.raw_hash,
+        normalized_hash=hashlib.sha256(
+            left_body.encode("utf-8")).hexdigest(),
+    )
 
 
 def _shell_criterion_pass(normalized_text: str) -> bool:
@@ -528,6 +602,8 @@ def extract_p15_results(
     pipeline_version: str = "dedup_v1",
     numeric_role_basis: str = "NUMERIC_SAME_DECIMAL",
     time_basis: str = "TIME_SAME_RELATIVE",
+    history_business_date: str | None = None,
+    current_business_date: str | None = None,
 ) -> P15IntegrationReport:
     """对每条 AlignedPair 抽取数值/时间槽并真实调 P15。
 
@@ -543,7 +619,15 @@ def extract_p15_results(
     等价证书（B1 实装）：尾部经 P09 `certify_text_equality` 颁发
     EXACT_TEXT_MATCH / LOSSLESS_TEXT_MATCH（代码可验证的原文/无损相等证书，
     09 §11.3 text_proof 唯二来源之一）；FACT_EQUIVALENT 释义级证书需真 P14
-    覆盖证明，本层不颁发。
+    覆盖证明，本层不颁发。2026-10-11（主窗令·判定优先级修复 ①②）：证书路
+    增回退腿——EXACT/LOSSLESS 均不可签（原文相异）且双开关同开时，尝试
+    certify_shell_stripped_equality（剥来源壳后一致 → 独立码
+    SHELL_STRIPPED_TEXT_MATCH，同正文异信源尾注面）。
+
+    history_business_date / current_business_date（2026-10-11 判定优先级
+    修复 ③，C14 同日同文放行）：双侧业务日期显式传入（service._run_
+    single_pair 转发真实值）；同日且原文完全一致（raw 逐字相等）时 C14
+    相对时间撤证豁免。缺省 None=不豁免——既有直接调用方行为逐字节不变。
     """
     if numeric_role_basis not in {"NUMERIC_SAME_DECIMAL", "EXACT_TEXT_MATCH"}:
         raise PairBindingError(
@@ -710,6 +794,14 @@ def extract_p15_results(
             decouple_qualification=True,
             min_body_length=min_body,
         )
+        # 2026-10-11（主窗令·判定优先级修复 ①②）：EXACT/LOSSLESS 均不可签
+        # （原文相异——典型=同正文异信源尾注，T 冻结 31 对核查表 #7）时，
+        # 回退腿尝试剥来源壳一致证书 SHELL_STRIPPED_TEXT_MATCH（独立码三分
+        # 立）。与长度闸判据同一开关面（DEDUP_EXACT_SHELL_STRIP 同开才生效）
+        # ——旧路（DEDUP_CERT_DECOUPLE 关）零洇渗，shell_certificate 恒 None。
+        shell_certificate = (
+            certify_shell_stripped_equality(left_norm, right_norm)
+            if certificate is None and shell_strip_enabled() else None)
     else:
         certificate = text_mod.certify_text_equality(
             text_mod.normalize_text(history_text),
@@ -717,21 +809,37 @@ def extract_p15_results(
             left_qualified=_artifact_qualified(history_artifact),
             right_qualified=_artifact_qualified(current_artifact),
         )
-    if certificate is not None and _relative_time_anchor_blocked(
-            history_text, current_text):
+        shell_certificate = None
+    # 2026-10-11（主窗令·判定优先级修复 ③）：C14 同日同文放行——同
+    # business_date + 原文完全一致（raw 逐字相等）不受 C14 撤证；跨日/
+    # 非同文（含 LOSSLESS 变体/异尾注）维持原闸。日期经新可选参数显式
+    # 传入（缺省 None=不豁免，既有直接调用方行为逐字节不变）。判官窗甲
+    # 忠告并入：C14 在直签路径的留存由专项用例证明（test_jpf_priority_fix
+    # §三——跨日腿/非同文腿照撤）。
+    same_day_same_text = (
+        history_business_date is not None
+        and current_business_date is not None
+        and history_business_date == current_business_date
+        and history_text == current_text)
+    if ((certificate is not None or shell_certificate is not None)
+            and not same_day_same_text
+            and _relative_time_anchor_blocked(history_text, current_text)):
         # 2026-10-10（P0 收口包二③，主窗口裁定=选B）：宪章 C14/T-3 文本自证
         # 闸——相对时间词族在场且双侧无共同绝对锚 → 即使原文/无损相等，证书
-        # 亦撤回、对落未决转边界（"即使两条正文完全相同也先出边界"生效宪法在
-        # 证书路的落实；与判官路 machine_relative_time_anchor_check 同语义同
-        # 词表，含 policy_v2-C14 追认的"过去N小时/N天/N周"短语族）。不分发布
-        # 日：异 business_date 对被 pair_compare._check_binding:221 拦在证书
-        # 路外，"同日可签"腿已由主窗口明文作废。具名 issue 留痕
-        # （TIME_RELATION_UNCERTAIN=注册未决码，fail-closed 不静默吞因）。
+        # 亦撤回、对落未决转边界（与判官路 machine_relative_time_anchor_check
+        # 同语义同词表，含 policy_v2-C14 追认的"过去N小时/N天/N周"短语族）。
+        # 2026-10-11（判定优先级修复 ③）窄放行：同 business_date+原文完全
+        # 一致不撤（上same_day_same_text 门）；异 business_date 对仍被
+        # pair_compare._check_binding 拦在证书路外（跨日禁签）。
+        # 具名 issue 留痕（TIME_RELATION_UNCERTAIN=注册未决码，fail-closed
+        # 不静默吞因）。
         certificate = None
+        shell_certificate = None
         issues.append(PairIssue(
             "TIME_RELATION_UNCERTAIN",
             "相对时间词族在场且双侧无共同绝对锚（宪章 C14/T-3：即使同文亦不直签，"
-            "判官路 machine_relative_time_anchor_check 同语义）"))
+            "判官路 machine_relative_time_anchor_check 同语义；2026-10-11 起"
+            "同日同文豁免，跨日/非同文照撤）"))
     if certificate is not None:
         # 文本证书路径（23:4x 校准，fp 3139b94f 复盘）：不再要求 used_pairs——
         # EXACT/LOSSLESS 是字节级（或无损变换级）相等，确定性抽取下双侧 facts
@@ -741,6 +849,13 @@ def extract_p15_results(
         # 开时按上方分流解耦，长度闸不足仍回落本合格门，见 :620-625。）
         equivalence_ready = True
         text_proof = certificate.kind.value
+    elif shell_certificate is not None:
+        # 2026-10-11（判定优先级修复 ②）：剥来源壳证书独立码直签——判定
+        # 序与 EXACT/LOSSLESS 同位（pair_compare._TEXT_CERT_PROOF_CODES
+        # 同步收列，先于 issues），pair/aggregate/internal_code 全链
+        # 实传 SHELL_STRIPPED_TEXT_MATCH（审计可单独统计误判面）。
+        equivalence_ready = True
+        text_proof = shell_certificate.kind.value
     elif _fact_equivalence_provable(used_pairs, history_facts, current_facts,
                                     issues, time_pairs, verified,
                                     history_artifact, current_artifact):
@@ -782,6 +897,7 @@ __all__ = [
     "SHELL_STRIP_ENV",
     "SHELL_STRIP_RESIDUAL_MIN",
     "SHELL_STRIP_RULE_VERSION",
+    "certify_shell_stripped_equality",
     "extract_p15_results",
     "shell_strip_enabled",
     "strip_source_shell",

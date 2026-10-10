@@ -16,8 +16,12 @@ _DECISION = "重复", "不重复", "边界case/疑难case"
 # 提交一（2026-10-10，p3-semantic-authority，§5.1）：判官语义权威三码
 # 入白名单（JUDGE_EQUIVALENT/JUDGE_NON_DUPLICATE/JUDGE_UNCERTAIN）——
 # 与 compare/pair_compare.py 三码集合同源同步；reason 泄漏扫描闸同步覆盖。
-_EQUIVALENT_CODES = {"EXACT_TEXT_MATCH", "LOSSLESS_TEXT_MATCH", "FACT_EQUIVALENT",
-                     "JUDGE_EQUIVALENT"}
+_EQUIVALENT_CODES = {"EXACT_TEXT_MATCH", "LOSSLESS_TEXT_MATCH",
+                     "FACT_EQUIVALENT", "JUDGE_EQUIVALENT",
+                     # 2026-10-11（主窗令·判定优先级修复 ②）：剥来源壳
+                     # 独立证书码入白名单（与 compare/pair_compare.py 同源
+                     # 同步；reason 泄漏扫描闸同步覆盖）。
+                     "SHELL_STRIPPED_TEXT_MATCH"}
 _CONFLICT_CODES = {"VERIFIED_CONFLICT", "JUDGE_NON_DUPLICATE"}
 _UNRESOLVED_CODES = {
     "SUBJECT_UNRESOLVED", "DEPENDENCY_TIMEOUT", "RECALL_INCOMPLETE",
