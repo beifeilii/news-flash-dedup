@@ -86,7 +86,7 @@ _log = logging.getLogger(__name__)
 
 JUDGE_PROMPT_VERSION = "judge_v1"
 JUDGE_ARM = "A"
-DEFAULT_MODEL = "qwen-turbo"
+DEFAULT_MODEL = "qwen-plus"  # 2026-10-10 用户令：qwen-turbo 下架，直换 qwen-plus（豁免前置验证，测试移交第二 AI）
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 TIMEOUT_S = 60.0
 MAX_RETRIES = 3                 # 首次 + 最多 3 次重试 = 至多 4 次调用

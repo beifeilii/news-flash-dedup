@@ -42,7 +42,7 @@ from .rule import (_RECORD_ID_RE, _decimal_text, _ev, _missing, _present)
 _log = logging.getLogger(__name__)
 
 LLM_PROMPT_VERSION = "p14_llm_prompt_v2"
-DEFAULT_MODEL = "qwen-turbo"
+DEFAULT_MODEL = "qwen-plus"  # 2026-10-10 用户令：qwen-turbo 下架，直换 qwen-plus（同上豁免）
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # R3-M2（W-R3b）：零可定位事实抽取结果的缓存拒写告警计数（进程内单调只增，
