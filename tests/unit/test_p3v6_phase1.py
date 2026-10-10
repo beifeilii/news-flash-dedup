@@ -3,14 +3,16 @@
 两条规则（就这两条，不扩 scope）：
 
 规则一（R8 升级，零 fp 风险方向）：修订改值→不重复——
-  - 显性"由177.9万修正为177.5万"→不重复（机器候选证据注入可观测+
+  - 显性"由177.9万修正为177.5万"→不重复（机器证据可产/闸面可观测+
     判官 v6 条款）；
   - 同指向同一修订值省略修订过程→重复；
   - 只补充背景有效值相同→重复（条款面钉）；
   - 无修订措辞的普通微差→不受本规则影响（不容差总闸不动：数值硬冲突
     照拦、机器候选证据空）。
   机器层=复用 compare/core_conflict.py 退役区 _REVISION_RE 产结构化
-  候选证据（位置/前后值）注入判官上下文；机器绝不直接判，判官终审。
+  候选证据（位置/前后值）——终审 P1 证据路线裁定（2026-10-11 修复包）
+  ：机器证据**不进判官输入**（只用于确定性签发闸+审计）；机器绝不
+  判语义，判官就正文独立裁决。
 
 规则二（R7 升级，fp 风险全集中于此，三防线必配）：主体单方缺失受
   约束回填六条件——条件①机器前置硬闸（证券代码/主体抽取现有件）+
@@ -42,6 +44,20 @@
   shadow/灰度期发现回填误判时不动代码、不重部署，单点关闭该规则。
   语义：triggered=机检观测（开关无关）；signed/vetoed=开态分账；
   disabled_vetoed=关态撤签。
+
+终审 P0/P1 修复包（2026-10-11，第二 AI 终审三发现，老板逐条亲验
+  属实，最小范围不扩一期）：①R7 确定性后置签发闸——机检硬事实在
+  判官结论出来之后、对级映射之前机械执法（**模型答错也必须拦住**）：
+  双方均缺主体锚（both_missing），或恰一方缺主体+双方均无时间+机检
+  一致核心数值不足 2 个（机器无法证明条件③c 硬门槛），判官判"重复"
+  →撤签强制存疑转边界（detail 写明闸因+判官原判，引文证据入对级
+  used_evidence 审计）；不改判不重复/存疑；双方都写主体不拦（R8/
+  一般条款签发面不经回填通道）。②机器证据**不进判官输入**（终审
+  P1 证据路线裁定）——只用于确定性闸+审计（撤回一期"机器候选证据
+  供判官终审"路线）。③DEDUP_JUDGE_BACKFILL 缺席=**默认关**（直到
+  硬门槛完工+金标重证）。④manifest 记实际生效 backfill_enabled
+  （run_manifest 结构化字段，规范化 "1"/"0"；config 与 env 显式
+  同传冲突→ValueError）。
 
 版本与映射钉：judge_prompt_v6.py 新建（v5 全量继承+两条条款修订）；
   llm_residual 注册 judge_v6+真实 SHA；_PROMPT_TO_POLICY 增 judge_v6→
@@ -131,6 +147,9 @@ def _semantic_env(monkeypatch):
     monkeypatch.setenv(judge_pair.JUDGE_DECISION_MODE_ENV,
                        judge_pair.MODE_SEMANTIC_AUTHORITY)
     monkeypatch.setenv("DEDUP_JUDGE_PROOF", "1")
+    # 终审修复包令 4：开关默认关——保留一期原令行为的语义面测试显式
+    # 置开（默认关的钉测见 §8/§9：delenv 断言撤签）
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "1")
 
 
 def _legacy_env(monkeypatch):
@@ -416,7 +435,7 @@ def test_default_mode_and_policy_default_unchanged():
     assert rm.DEFAULT_POLICY_VERSION == "policy_v3"
 
 
-# ============================================================ 2. 机器候选证据层（unit）
+# ============================================================ 2. 机器证据层（unit；闸+审计面——不进判官输入）
 
 def test_revision_candidates_structured():
     """R8 机器候选证据结构化：_REVISION_RE（core_conflict 退役区正则复用）
@@ -568,36 +587,35 @@ def test_time_dimension_gate_three_branches():
     assert jme.fact_time_values(None) == ()
 
 
-def test_build_pair_context_machine_evidence_injection():
-    """机器候选证据注入判官上下文：build_pair_context(machine_evidence=
-    None)→键缺席（legacy 面零增量字段、键集与基线一致）；传证据→
-    context["machine_evidence"] 同对象注入（缓存键/证明面不读它——
-    compute_cache_key 输入不含该键）。"""
+def test_machine_evidence_not_in_judge_input():
+    """终审 P1 证据路线裁定钉：机器证据**不进判官输入**——
+    build_pair_context 无 machine_evidence 参数（传即 TypeError
+    fail-closed，防旧调用面复活注入路线）；上下文键集与基线全等；
+    双序展开零增量键。机器证据本体照常可产（确定性签发闸+审计面
+    消费，见 §9 闸钉与 §3/§4 行为钉）。"""
     pair = SimpleNamespace(
         pair_id="p-v6", history_record_id=H_ID, current_record_id=C_ID,
         history_item_id="item-A", current_item_id="item-C")
-    base = judge_pair.build_pair_context(
+    ctx = judge_pair.build_pair_context(
         pair, history_text="甲公司公告净利为177.9万。",
         current_text="甲公司公告：净利由177.9万修正为177.5万。")
-    assert "machine_evidence" not in base
-    assert set(base) == {
+    assert set(ctx) == {
         "pair_id", "history_record_id", "current_record_id",
         "history_item_id", "current_item_id", "history_text", "current_text",
         "history_text_sha256", "current_text_sha256"}
+    for order in judge_pair.ORDERS:
+        assert "machine_evidence" not in judge_pair._order_context(ctx, order)
+    # 注入通道已撤——传 machine_evidence 即 TypeError（fail-closed）
     ev = jme.build_machine_evidence(
         "甲公司公告净利为177.9万。",
         "甲公司公告：净利由177.9万修正为177.5万。")
-    ctx = judge_pair.build_pair_context(
-        pair, history_text="甲公司公告净利为177.9万。",
-        current_text="甲公司公告：净利由177.9万修正为177.5万。",
-        machine_evidence=ev)
-    assert ctx["machine_evidence"] is ev
-    # 注入不改内容寻址缓存键素材（同文同键）
-    assert ctx["history_text_sha256"] == base["history_text_sha256"]
-    assert ctx["current_text_sha256"] == base["current_text_sha256"]
-    # 双序展开机器证据随上下文传播（判官可见）
-    for order in judge_pair.ORDERS:
-        assert "machine_evidence" in judge_pair._order_context(ctx, order)
+    with pytest.raises(TypeError):
+        judge_pair.build_pair_context(
+            pair, history_text="甲公司公告净利为177.9万。",
+            current_text="甲公司公告：净利由177.9万修正为177.5万。",
+            machine_evidence=ev)
+    # 机器证据本体照常可产（闸+审计面；版本随修复包升 phase1c）
+    assert ev["version"] == "v6_lite_phase1c"
 
 
 # ============================================================ 3. R8 端到端（semantic 真件链）
@@ -626,8 +644,8 @@ def _r8_dup_responses():
 
 def test_r8_revision_changes_value_not_duplicate(monkeypatch):
     """R8 正钉①：显性"由177.9万修正为177.5万"→**不重复**
-    （JUDGE_NON_DUPLICATE，判官 v6 条款+双序一致）——机器候选证据注入
-    可观测（判官上下文 current 侧结构化命中：位置/前后值/归一值）+
+    （JUDGE_NON_DUPLICATE，判官 v6 条款+双序一致）——机器证据可产
+    （unit 级可观测：判官输入零机器证据——终审 P1 证据路线裁定）+
     v6 提示词作为 system 实际生效；R7 硬闸不触发（双侧主体明确）。"""
     spy, mock = _v6_real_callable(monkeypatch, _r8_nd_responses())
     out = _decide(R8_H, "甲公司", R8_C, "甲公司", spy)
@@ -635,21 +653,22 @@ def test_r8_revision_changes_value_not_duplicate(monkeypatch):
     assert out.internal_code == "JUDGE_NON_DUPLICATE"
     assert out.duplicate_ids == ()
     assert mock.calls and all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
-    # 机器候选证据注入可观测（判官上下文，双侧独立）
+    # 判官输入零机器证据（终审 P1 裁定）+证据本体 unit 级可产
     assert len(spy.ctxs) == 2
     for ctx in spy.ctxs:
-        ev = ctx["machine_evidence"]
-        assert ev["version"] == "v6_lite_phase1b"
-        assert ev["revision_candidates"]["hit_any_side"] is True
-        assert ev["revision_candidates"]["history"] == []
-        cur = ev["revision_candidates"]["current"]
-        assert len(cur) == 1
-        assert cur[0]["before"] == "177.9万"
-        assert cur[0]["after"] == "177.5万"
-        assert cur[0]["before_norm"] == "1.779E+6"
-        assert cur[0]["after_norm"] == "1.775E+6"
-        assert R8_C[cur[0]["start"]:cur[0]["end"]] == cur[0]["surface"]
-        assert ev["subject_backfill"]["unilateral_missing"] is False
+        assert "machine_evidence" not in ctx
+    ev = jme.build_machine_evidence(R8_H, R8_C)
+    assert ev["version"] == "v6_lite_phase1c"
+    assert ev["revision_candidates"]["hit_any_side"] is True
+    assert ev["revision_candidates"]["history"] == []
+    cur = ev["revision_candidates"]["current"]
+    assert len(cur) == 1
+    assert cur[0]["before"] == "177.9万"
+    assert cur[0]["after"] == "177.5万"
+    assert cur[0]["before_norm"] == "1.779E+6"
+    assert cur[0]["after_norm"] == "1.775E+6"
+    assert R8_C[cur[0]["start"]:cur[0]["end"]] == cur[0]["surface"]
+    assert ev["subject_backfill"]["unilateral_missing"] is False
     # 判官理由（修订改值）随证明件留痕
     assert all("修正" in p["reason"] for p in spy.proofs)
     # R7 shadow：本对不涉及回填（零计数）
@@ -669,10 +688,11 @@ def test_r8_same_revised_value_omits_process_duplicate(monkeypatch):
     assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
     assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
     for ctx in spy.ctxs:
-        ev = ctx["machine_evidence"]
-        assert len(ev["revision_candidates"]["history"]) == 1
-        assert ev["revision_candidates"]["current"] == []
-        assert ev["revision_candidates"]["history"][0]["after"] == "177.5万"
+        assert "machine_evidence" not in ctx
+    ev = jme.build_machine_evidence(R8_C, R8_H)
+    assert len(ev["revision_candidates"]["history"]) == 1
+    assert ev["revision_candidates"]["current"] == []
+    assert ev["revision_candidates"]["history"][0]["after"] == "177.5万"
 
 
 def test_r8_plain_micro_difference_unaffected(monkeypatch):
@@ -734,11 +754,13 @@ def test_r7_tsmc_type_backfill_duplicate(monkeypatch):
     assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
     assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
-        assert gate["history_has_subject"] is True     # 主体抽取现有件：台积电
-        assert gate["current_has_subject"] is False
-        assert gate["history_subjects"] == ["台积电"]
+        assert "machine_evidence" not in ctx          # 判官输入零机器证据
+    gate = jme.subject_backfill_gate(
+        TSMC_H, TSMC_C, history_subjects=("台积电",))
+    assert gate["unilateral_missing"] is True
+    assert gate["history_has_subject"] is True     # 主体抽取现有件：台积电
+    assert gate["current_has_subject"] is False
+    assert gate["history_subjects"] == ["台积电"]
     # 原因码随证明件留痕（判官理由通道）
     assert all("主体单方缺失高置信对齐" in p["reason"] for p in spy.proofs)
     # shadow 三计数：triggered/signed=1、vetoed 缺席
@@ -777,11 +799,12 @@ def test_r7_stqingyue_type_backfill_duplicate(monkeypatch):
     assert out.internal_code == "JUDGE_EQUIVALENT"
     assert out.duplicate_ids == ("item-A",)
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
-        assert gate["history_codes"] == ["600146"]     # 证券代码现有件
-        assert gate["current_codes"] == []
-        assert gate["current_has_subject"] is False
+        assert "machine_evidence" not in ctx
+    gate = jme.subject_backfill_gate(STQ_H, STQ_C)
+    assert gate["unilateral_missing"] is True
+    assert gate["history_codes"] == ["600146"]         # 证券代码现有件
+    assert gate["current_codes"] == []
+    assert gate["current_has_subject"] is False
     assert all("主体单方缺失高置信对齐" in p["reason"] for p in spy.proofs)
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.signed"] == 1
@@ -810,9 +833,10 @@ def test_r7_counter_both_missing_subject_boundary(monkeypatch):
     assert out.internal_code == "JUDGE_UNCERTAIN"
     assert len(mock.calls) == 2                      # 判官照常被调用
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["both_missing"] is True
-        assert gate["unilateral_missing"] is False
+        assert "machine_evidence" not in ctx
+    gate = jme.subject_backfill_gate(BOTHMISS_H, BOTHMISS_C)
+    assert gate["both_missing"] is True
+    assert gate["unilateral_missing"] is False
     assert not {k: v for k, v in out.judge_diagnostics.items()
                 if "backfill" in k}
 
@@ -836,10 +860,13 @@ def test_r7_counter_different_subjects_not_duplicate(monkeypatch):
     assert out.decision == "不重复"
     assert out.internal_code == "JUDGE_NON_DUPLICATE"
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is False
-        assert gate["history_has_subject"] is True
-        assert gate["current_has_subject"] is True
+        assert "machine_evidence" not in ctx
+    gate = jme.subject_backfill_gate(
+        DIFFSUBJ_H, DIFFSUBJ_C,
+        history_subjects=("甲公司",), current_subjects=("乙公司",))
+    assert gate["unilateral_missing"] is False
+    assert gate["history_has_subject"] is True
+    assert gate["current_has_subject"] is True
     assert not {k: v for k, v in out.judge_diagnostics.items()
                 if "backfill" in k}
 
@@ -864,8 +891,10 @@ def test_r7_counter_another_explicit_subject_vetoed(monkeypatch):
     assert out.decision == "边界case/疑难case"
     assert out.internal_code == "JUDGE_UNCERTAIN"
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
+        assert "machine_evidence" not in ctx
+    assert jme.subject_backfill_gate(
+        VANKE_H, VANKE_C, history_subjects=("万科",))[
+        "unilateral_missing"] is True
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.vetoed"] == 1
     assert "judge.backfill.signed" not in out.judge_diagnostics
@@ -890,8 +919,10 @@ def test_r7_counter_new_independent_fact_vetoed(monkeypatch):
     assert out.decision == "边界case/疑难case"
     assert out.internal_code == "JUDGE_UNCERTAIN"
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
+        assert "machine_evidence" not in ctx
+    assert jme.subject_backfill_gate(
+        NEWFACT_H, NEWFACT_C, history_subjects=("万科",))[
+        "unilateral_missing"] is True
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.vetoed"] == 1
     assert "judge.backfill.signed" not in out.judge_diagnostics
@@ -938,15 +969,25 @@ def test_r7_notime_multi_values_backfill_duplicate(monkeypatch):
     assert out.reason == judge_pair.JUDGE_DUPLICATE_REASON
     assert all(s == v6.JUDGE_PROMPT_V6 for s in mock.systems)
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
-        assert gate["history_subjects"] == ["台积电"]
-        tdim = ctx["machine_evidence"]["time_dimension"]
-        assert tdim["time_state"] == "both_missing"
-        assert tdim["history_time_mentions"] == []
-        assert tdim["current_time_mentions"] == []
-        assert tdim["history_has_time"] is False
-        assert tdim["current_has_time"] is False
+        assert "machine_evidence" not in ctx          # 判官输入零机器证据
+    gate = jme.subject_backfill_gate(
+        NOTIME_H, NOTIME_C, history_subjects=("台积电",))
+    assert gate["unilateral_missing"] is True
+    assert gate["history_subjects"] == ["台积电"]
+    tdim = jme.time_dimension_gate(NOTIME_H, NOTIME_C)
+    assert tdim["time_state"] == "both_missing"
+    assert tdim["history_time_mentions"] == []
+    assert tdim["current_time_mentions"] == []
+    assert tdim["history_has_time"] is False
+    assert tdim["current_has_time"] is False
+    # 条件③c 硬门槛机检下限：两个一致核心数值（250亿/69%）→闸不拦
+    # （终审 P0 闸域：多数值=机器证得硬条件下限，放行给判官结论）
+    assert jme.core_value_anchors(NOTIME_H, NOTIME_C)[
+        "matched_norms"] == ["2.5E+10", "69|p"]
+    assert jme.r7_signing_gate(jme.build_machine_evidence(
+        NOTIME_H, NOTIME_C,
+        history_facts=_history(NOTIME_H, "台积电")["facts"]))[
+        "blockable"] is False
     # 原因码随证明件留痕（判官理由通道）
     assert all("主体单方缺失高置信对齐" in p["reason"] for p in spy.proofs)
     # shadow：基础三计数聚合+c) 情形单列孪生（标签带时间态）
@@ -986,10 +1027,12 @@ def test_r7_notime_single_value_hard_gate_boundary(monkeypatch):
     assert out.internal_code == "JUDGE_UNCERTAIN"
     assert len(mock.calls) == 2                      # 判官双序照常实调
     for ctx in spy.ctxs:
-        gate = ctx["machine_evidence"]["subject_backfill"]
-        assert gate["unilateral_missing"] is True
-        tdim = ctx["machine_evidence"]["time_dimension"]
-        assert tdim["time_state"] == "both_missing"
+        assert "machine_evidence" not in ctx
+    assert jme.subject_backfill_gate(
+        SINGLEVAL_H, SINGLEVAL_C, history_subjects=("万科",))[
+        "unilateral_missing"] is True
+    assert jme.time_dimension_gate(SINGLEVAL_H, SINGLEVAL_C)[
+        "time_state"] == "both_missing"
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.vetoed"] == 1
     assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
@@ -1017,8 +1060,9 @@ def test_backfill_shadow_counters_semantic_only_not_public(monkeypatch):
     assert "judge.backfill.vetoed" not in out.judge_diagnostics
     # 有时间态（both_present）：c) 孪生计数不出现（时间态标签可区分）
     for ctx in spy.ctxs:
-        assert ctx["machine_evidence"]["time_dimension"]["time_state"] == (
-            "both_present")
+        assert "machine_evidence" not in ctx
+    assert jme.time_dimension_gate(TSMC_H, TSMC_C)[
+        "time_state"] == "both_present"
     assert not {k: v for k, v in out.judge_diagnostics.items()
                 if k.endswith(".no_time")}
     # 公共五字段封闭（计数不泄漏）
@@ -1153,18 +1197,22 @@ def test_legacy_default_mode_r7_pair_no_backfill(monkeypatch):
 # 影响；shadow/灰度期发现回填误判时不动代码、不重部署单点关闭。
 
 def test_backfill_switch_env_parser_and_config_field():
-    """补充令二钉①（开关件）：DEDUP_JUDGE_BACKFILL 解析——缺席/空串/
-    纯空白=开（一期原令行为，开关为"发现误判后关闭"而设）；0/false/
-    off/no（大小写不敏感）=关；1/true/on/yes=开；非法值 ValueError
-    fail-closed（同 DEDUP_JUDGE_DECISION_MODE 整改令二口径）。config
-    字段：JudgeVersionConfig.backfill_enabled 默认 True；非 bool 构造
+    """补充令二钉①（开关件）+终审修复包令 4（默认关）：DEDUP_JUDGE_
+    BACKFILL 解析——缺席/空串/纯空白=**关**（修复包令 4：确定性签发闸
+    完工+金标重证前不默认签发；一期原令"缺席=默认开"废止）；0/false/
+    off/no（大小写不敏感）=关；1/true/on/yes=开（显式开）；非法值
+    ValueError fail-closed（同 DEDUP_JUDGE_DECISION_MODE 整改令二口径）。
+    config 字段：JudgeVersionConfig.backfill_enabled 默认 False（缺省
+    维度全局一致——缺席任何一层都不得默认签发）；非 bool 构造
     即 ValueError（int 1/0 不得冒充）；default_judge_version 随 env 单源
-    装配；显式 judge_version_for_mode(backfill_enabled=False) 可构造
+    装配；显式 judge_version_for_mode(backfill_enabled=True) 可构造
     （开关不参与模式固定映射四维校验）。"""
     assert jvc.JUDGE_BACKFILL_ENV == "DEDUP_JUDGE_BACKFILL"
-    assert jvc.backfill_enabled_from_env({}) is True
-    assert jvc.backfill_enabled_from_env({"DEDUP_JUDGE_BACKFILL": ""}) is True
-    assert jvc.backfill_enabled_from_env({"DEDUP_JUDGE_BACKFILL": " "}) is True
+    assert jvc.backfill_enabled_from_env({}) is False      # 缺席=默认关
+    assert jvc.backfill_enabled_from_env(
+        {"DEDUP_JUDGE_BACKFILL": ""}) is False
+    assert jvc.backfill_enabled_from_env(
+        {"DEDUP_JUDGE_BACKFILL": " "}) is False
     for off in ("0", "false", "OFF", "off", "No", "no"):
         assert jvc.backfill_enabled_from_env(
             {"DEDUP_JUDGE_BACKFILL": off}) is False, off
@@ -1179,12 +1227,12 @@ def test_backfill_switch_env_parser_and_config_field():
         "DEDUP_JUDGE_BACKFILL": "0"})
     assert (vc_off.prompt_version, vc_off.policy_version,
             vc_off.backfill_enabled) == ("judge_v6", "policy_v4", False)
-    vc_on = jvc.default_judge_version({
+    vc_absent = jvc.default_judge_version({
         "DEDUP_JUDGE_DECISION_MODE": "semantic_authority"})
-    assert vc_on.backfill_enabled is True          # 缺席=默认开
+    assert vc_absent.backfill_enabled is False     # 缺席=默认关（修复包令 4）
     explicit = jvc.judge_version_for_mode(
-        "semantic_authority", backfill_enabled=False)
-    assert explicit.backfill_enabled is False
+        "semantic_authority", backfill_enabled=True)
+    assert explicit.backfill_enabled is True
     # 非 bool 构造即拒（fail-closed）
     sha_v6 = lr.judge_prompt_for_version("judge_v6")[1]
     with pytest.raises(ValueError, match="backfill_enabled"):
@@ -1192,7 +1240,7 @@ def test_backfill_switch_env_parser_and_config_field():
             prompt_version="judge_v6", prompt_sha256=sha_v6,
             policy_version="policy_v4", decision_mode="semantic_authority",
             backfill_enabled=1)                    # int 冒充 bool 即拒
-    # 开关态不参与模式固定映射四维一致性（显式关态 config 四维照常合法）
+    # 开关态不参与模式固定映射四维一致性（显式开态 config 四维照常合法）
     assert (explicit.prompt_version, explicit.prompt_sha256,
             explicit.policy_version, explicit.decision_mode) == (
         "judge_v6", sha_v6, "policy_v4", "semantic_authority")
@@ -1208,8 +1256,8 @@ def test_backfill_switch_off_tsmc_boundary_r8_unaffected(monkeypatch):
     双序实调（一般条款/R8 面不经回填通道）；开关态经
     DecideOutcome.judge_version_config 可溯；公共五字段封闭。"""
     _semantic_env(monkeypatch)
-    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
     spy, mock = _v6_real_callable(monkeypatch, _tsmc_responses())
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")   # 建链后置关（防 clobber）
     out = _decide(TSMC_H, "台积电", TSMC_C, None, spy)
     # 回填不触发：撤签→存疑/边界
     assert out.decision == "边界case/疑难case"
@@ -1217,10 +1265,13 @@ def test_backfill_switch_off_tsmc_boundary_r8_unaffected(monkeypatch):
     assert out.duplicate_ids == ()
     assert "独立开关关闭" in out.reason
     assert len(mock.calls) == 2                      # 判官双序照常实调
-    # 机器证据照常注入（硬闸观测与开关无关——灰度期可观测应触发面）
+    # 机器证据照常装配（闸/审计面与开关无关——灰度期可观测应触发面；
+    # 判官输入零机器证据——终审 P1 证据路线裁定）
     for ctx in spy.ctxs:
-        assert ctx["machine_evidence"]["subject_backfill"][
-            "unilateral_missing"] is True
+        assert "machine_evidence" not in ctx
+    assert jme.subject_backfill_gate(
+        TSMC_H, TSMC_C, history_subjects=("台积电",))[
+        "unilateral_missing"] is True
     # shadow：观测计数在案+撤签计数；signed/vetoed 关闭态不分账
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.disabled_vetoed"] == 1
@@ -1228,8 +1279,9 @@ def test_backfill_switch_off_tsmc_boundary_r8_unaffected(monkeypatch):
     assert "judge.backfill.vetoed" not in out.judge_diagnostics
     # 开关态经 config 可溯
     assert out.judge_version_config.backfill_enabled is False
-    # R8 修订对不受影响：照常判不重复
+    # R8 修订对不受影响：照常判不重复（同关态下复核）
     spy_r8, mock_r8 = _v6_real_callable(monkeypatch, _r8_nd_responses())
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
     out_r8 = _decide(R8_H, "甲公司", R8_C, "甲公司", spy_r8)
     assert out_r8.decision == "不重复"
     assert out_r8.internal_code == "JUDGE_NON_DUPLICATE"
@@ -1268,15 +1320,16 @@ def test_backfill_switch_off_notime_twin_counted(monkeypatch):
     .no_time 孪生同步计数（标签带时间态：跨期撞稿防线灰度观测不因关
     闭失效——关态仍可观测"本应签发多少"）；signed.no_time 缺席。"""
     _semantic_env(monkeypatch)
-    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")
     spy, mock = _v6_real_callable(monkeypatch, _notime_dup_responses())
+    monkeypatch.setenv(jvc.JUDGE_BACKFILL_ENV, "0")   # 建链后置关（防 clobber）
     out = _decide(NOTIME_H, "台积电", NOTIME_C, None, spy)
     assert out.decision == "边界case/疑难case"
     assert out.internal_code == "JUDGE_UNCERTAIN"
     assert len(mock.calls) == 2
     for ctx in spy.ctxs:
-        assert ctx["machine_evidence"]["time_dimension"][
-            "time_state"] == "both_missing"
+        assert "machine_evidence" not in ctx
+    assert jme.time_dimension_gate(NOTIME_H, NOTIME_C)[
+        "time_state"] == "both_missing"
     assert out.judge_diagnostics["judge.backfill.triggered"] == 1
     assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
     assert out.judge_diagnostics["judge.backfill.disabled_vetoed"] == 1
@@ -1287,9 +1340,11 @@ def test_backfill_switch_off_notime_twin_counted(monkeypatch):
 
 
 def test_backfill_switch_manifest_traceable():
-    """补充令二钉⑤：开关状态进 manifest 可溯——DEDUP_JUDGE_BACKFILL
-    登记 run_manifest.KNOWN_SWITCHES（固定序快照入册）；build_run_
-    manifest(env) 如实记录（off→"0"、on→"1"、缺席→空串=默认开）。"""
+    """补充令二钉⑤+终审 P1-manifest：开关状态进 manifest 可溯——
+    DEDUP_JUDGE_BACKFILL 登记 run_manifest.KNOWN_SWITCHES（固定序快照
+    入册，env 原值）；**实际生效态**入正式结构化字段 backfill_enabled
+    （规范化 "1"/"0"——终审 P1-manifest：快照只记 env，实态单源 config/
+    env 解析；缺席=默认关，修复包令 4）。"""
     assert "DEDUP_JUDGE_BACKFILL" in rm.KNOWN_SWITCHES
     env = {"DEDUP_JUDGE_DECISION_MODE": "semantic_authority",
            "DEDUP_JUDGE_BACKFILL": "0"}
@@ -1307,6 +1362,11 @@ def test_backfill_switch_manifest_traceable():
         inputs=("rec-a",), embedding_space="fake_space",
         code_git_sha="0" * 40, env={})
     assert dict(manifest_absent.switch_state)["DEDUP_JUDGE_BACKFILL"] == ""
+    # 终审 P1-manifest：实际生效态结构化字段（缺席=默认关→"0"）
+    assert manifest.backfill_enabled == "0"
+    assert manifest_on.backfill_enabled == "1"
+    assert manifest_absent.backfill_enabled == "0"
+    assert manifest_absent.to_dict()["backfill_enabled"] == "0"
     # 固定有序=确定性（快照序==KNOWN_SWITCHES 序）
     assert [name for name, _ in manifest.switch_state] == list(
         rm.KNOWN_SWITCHES)
@@ -1330,3 +1390,151 @@ def test_backfill_switch_legacy_mode_untouched(monkeypatch):
         "判官双序一致判定同一事实，引文已绑定双侧原文且机器验 gate 通过。")
     assert not {k: v for k, v in out.judge_diagnostics.items()
                 if "backfill" in k}
+
+
+# ============================================================ 9. 终审 P0/P1 修复包（确定性签发闸+证据路线+默认关）
+# 第二 AI 终审三发现（老板逐条亲验属实）：①service 映射段只有 backfill_
+# kill 撤签、无门槛执法——机检硬事实（both_missing/无时间不足数值）在
+# 判官结论出来后必须机械执法（模型答错也拦得住）；②机器证据只快照
+# env——manifest 须记实际 JudgeVersionConfig.backfill_enabled（正式
+# 结构化字段；config 与 env 显式冲突拒）；③证据路线改口——机器证据
+# 不进判官输入（见 §2/§3/§4 判官输入零机器证据钉）；④开关默认改关
+# （缺席=OFF，直到硬门槛完工+金标重证）。
+
+def test_gate_model_wrong_both_missing_subject_blocked(monkeypatch):
+    """修复包钉①（老板点名①"模型答错也必须拦住"）：假判官故意对
+    双方都缺主体的对返回**重复**（双序一致）→确定性签发闸拦截——
+    对级终态强制存疑转边界（JUDGE_UNCERTAIN），公共 reason 写明闸因
+    （双方均缺主体锚=机检硬事实）+判官原判'重复'（可溯）；判官照常
+    双序实调（原结论入审计留痕：判定件在 proofs、引文证据入对级
+    used_evidence）；shadow：gate.both_missing_subject=1、triggered/
+    signed/vetoed/disabled_vetoed 全缺席（both_missing 非 R7 触发域，
+    开关态无关）；判官输入零机器证据。"""
+    responses = {
+        (BOTHMISS_H, BOTHMISS_C): _jjson(
+            "重复", "模型答错：双方都缺主体仍判重复。",
+            ("营收250亿美元",), ("营收250亿美元",)),
+        (BOTHMISS_C, BOTHMISS_H): _jjson(
+            "重复", "模型答错：双方都缺主体仍判重复。",
+            ("营收250亿美元",), ("营收250亿美元",)),
+    }
+    spy, mock = _v6_real_callable(monkeypatch, responses)
+    out = _decide(BOTHMISS_H, None, BOTHMISS_C, None, spy)
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert out.duplicate_ids == ()
+    assert "确定性签发闸拦截" in out.reason
+    assert "双方均缺主体锚" in out.reason
+    assert "判官原判'重复'" in out.reason
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    for ctx in spy.ctxs:
+        assert "machine_evidence" not in ctx         # 判官输入零机器证据
+    # 判官原结论审计留痕：双序"重复"判定在 proofs、引文入对级证据
+    assert all("模型答错" in p["reason"] for p in spy.proofs)
+    assert out.pair_results[0].used_evidence
+    # shadow：闸计数在案；R7 触发域/开关分账计数全缺席
+    assert out.judge_diagnostics[
+        "judge.backfill.gate.both_missing_subject"] == 1
+    assert not {k: v for k, v in out.judge_diagnostics.items()
+                if k.startswith("judge.backfill.")
+                and ".gate." not in k}
+    assert set(out.to_public_dict()) == {
+        "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
+def test_gate_model_wrong_notime_single_value_blocked(monkeypatch):
+    """修复包钉②（老板点名②）：假判官故意对"双方无时间+仅单一数值
+    一致"的对返回**重复**→确定性签发闸拦截（条件③c 硬门槛机械执法：
+    机检仅证得 1 个一致核心数值<2，机器无法证明硬条件）→强制存疑转
+    边界；公共 reason 写明闸因+数值计数+判官原判'重复'；判官照常
+    双序实调、原结论入 proofs/引文入对级证据；shadow：
+    gate.no_time_insufficient_values=1+triggered/vetoed（+.no_time
+    孪生，判官判"重复"但未签发）、signed 缺席；判官输入零机器证据。"""
+    responses = {
+        (SINGLEVAL_H, SINGLEVAL_C): _jjson(
+            "重复", "模型答错：无时间单数值仍判重复。",
+            ("以2.3亿元竞得",), ("以2.3亿元竞得",)),
+        (SINGLEVAL_C, SINGLEVAL_H): _jjson(
+            "重复", "模型答错：无时间单数值仍判重复。",
+            ("以2.3亿元竞得",), ("以2.3亿元竞得",)),
+    }
+    spy, mock = _v6_real_callable(monkeypatch, responses)
+    out = _decide(SINGLEVAL_H, "万科", SINGLEVAL_C, None, spy)
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert "确定性签发闸拦截" in out.reason
+    assert "双方均无时间锚" in out.reason
+    assert "1个一致核心数值" in out.reason
+    assert "判官原判'重复'" in out.reason
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    for ctx in spy.ctxs:
+        assert "machine_evidence" not in ctx
+    assert all("模型答错" in p["reason"] for p in spy.proofs)
+    assert out.pair_results[0].used_evidence
+    assert out.judge_diagnostics[
+        "judge.backfill.gate.no_time_insufficient_values"] == 1
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.vetoed"] == 1
+    assert out.judge_diagnostics["judge.backfill.vetoed.no_time"] == 1
+    assert out.judge_diagnostics["judge.backfill.triggered.no_time"] == 1
+    assert "judge.backfill.signed" not in out.judge_diagnostics
+    assert "judge.backfill.disabled_vetoed" not in out.judge_diagnostics
+    assert set(out.to_public_dict()) == {
+        "item_id", "text", "decision", "duplicate_ids", "reason"}
+
+
+def test_r7_signing_gate_scope_unit():
+    """修复包钉③（闸域 scoping）：r7_signing_gate 只在 R7 签发前提域
+    执法——双方都写主体（R8/一般条款签发面）一律不拦（含无时间+单
+    数值形态：一般重复裁决不经回填通道，机械闸不越界）；恰一方缺
+    主体+无时间+≥2 个一致核心数值（硬门槛下限满足）不拦；裸单位字
+    （"亿"被中文数字正则单独捕获归一 0）与中文计数词（"一宗"）不
+    冒充核心数值锚（下限 fail-safe：计不足→拦，绝不虚增放行）。"""
+    # 双方都写主体+无时间+单数值 → 不拦（R8/一般面豁免）
+    both_present = jme.build_machine_evidence(
+        SINGLEVAL_H, SINGLEVAL_C,
+        history_facts=_history(SINGLEVAL_H, "万科")["facts"],
+        current_facts=_current(SINGLEVAL_C, "万科")["facts"])
+    assert jme.r7_signing_gate(both_present) == {
+        "blockable": False, "rule": ""}
+    # 恰一方缺主体+无时间+单数值 → 拦（no_time_insufficient_values）
+    unilateral_single = jme.build_machine_evidence(
+        SINGLEVAL_H, SINGLEVAL_C,
+        history_facts=_history(SINGLEVAL_H, "万科")["facts"])
+    assert jme.r7_signing_gate(unilateral_single) == {
+        "blockable": True, "rule": "no_time_insufficient_values"}
+    # 恰一方缺主体+无时间+≥2 数值 → 不拦（硬门槛下限满足）
+    unilateral_multi = jme.build_machine_evidence(
+        NOTIME_H, NOTIME_C,
+        history_facts=_history(NOTIME_H, "台积电")["facts"])
+    assert jme.r7_signing_gate(unilateral_multi)["blockable"] is False
+    # 双方均缺主体 → 拦（both_missing_subject——时间/数值如何都不签）
+    both_missing = jme.build_machine_evidence(BOTHMISS_H, BOTHMISS_C)
+    assert jme.r7_signing_gate(both_missing) == {
+        "blockable": True, "rule": "both_missing_subject"}
+    # 核心数值下限计数：裸单位字/中文计数词不冒充（fail-safe 方向）
+    core = jme.core_value_anchors(SINGLEVAL_H, SINGLEVAL_C)
+    assert core["matched_norms"] == ["2.3E+8"]       # "亿"单位字、"一宗"不计
+    assert core["matched_count"] == 1
+    core2 = jme.core_value_anchors(NOTIME_H, NOTIME_C)
+    assert core2["matched_norms"] == ["2.5E+10", "69|p"]
+    assert core2["matched_count"] == 2
+
+
+def test_backfill_default_off_until_gold_reproven(monkeypatch):
+    """修复包钉④（令 4：默认关）：semantic 模式 env 缺席
+    DEDUP_JUDGE_BACKFILL（不显式开开关）→台积电型正例对判官判"重复"
+    也被撤签转边界（disabled_vetoed=1；开关态经 config 可溯 False）
+    ——直到硬门槛完工+金标重证才可显式置 1 恢复签发（对照 §4 正钉/
+    §8 钉③显式开=原令行为）。"""
+    spy, mock = _v6_real_callable(monkeypatch, _tsmc_responses())
+    monkeypatch.delenv(jvc.JUDGE_BACKFILL_ENV, raising=False)
+    out = _decide(TSMC_H, "台积电", TSMC_C, None, spy)
+    assert out.decision == "边界case/疑难case"
+    assert out.internal_code == "JUDGE_UNCERTAIN"
+    assert "独立开关关闭" in out.reason
+    assert len(mock.calls) == 2                      # 判官双序照常实调
+    assert out.judge_diagnostics["judge.backfill.triggered"] == 1
+    assert out.judge_diagnostics["judge.backfill.disabled_vetoed"] == 1
+    assert "judge.backfill.signed" not in out.judge_diagnostics
+    assert out.judge_version_config.backfill_enabled is False

@@ -22,9 +22,11 @@
 - 正文=v5 全量继承，只修订两条产品规则条款（R7/R8）：【输入纪律】/
   【判定口径】/【输出契约】/【硬性规则】/【用户消息格式】逐字不动；
   原【暂定边界条款】升格为【产品规则条款（一期 v6-lite，已冻结）】，
-  优先级条款保留（措辞按冻结后语义微调：先按本条款裁决）。机器层
-  （judge_machine_evidence.py）只产候选证据/前置硬闸证据，绝不直接判，
-  判官终审。
+  优先级条款保留（措辞按冻结后语义微调：先按本条款裁决）。
+  终审 P1 证据路线裁定（2026-10-11 修复包）：机器层
+  （judge_machine_evidence.py）证据**不进判官输入**——判官就双侧
+  正文独立裁决；机检硬事实由 decide/service 的确定性后置签发闸在
+  判官结论出来后机械执法（R7 签发权撤签，模型答错也拦得住）。
 - 输出契约沿用 v1 族（decision/evidence_a/evidence_b/numeric_check/
   time_check/reason）——在线链 SyncResidualJudge.validate_judge 零改动
   可消费；双序合并由调用侧（judge_pair.adjudicate_pair §4.2 矩阵）完成。

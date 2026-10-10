@@ -47,7 +47,9 @@ from news_flash_dedup.decide.policy_version import (
 )
 from news_flash_dedup.facts.rule import RULE_DICT_VERSION
 
-MANIFEST_SCHEMA_VERSION = "run_manifest_v1"
+# 终审 P1-manifest（2026-10-11 修复包）：R7 回填开关实际生效态入正式
+# 结构化字段 backfill_enabled（字段集变更）→schema 升 v2。
+MANIFEST_SCHEMA_VERSION = "run_manifest_v2"
 
 # 提交二（2026-10-10，p3-semantic-authority，方案 §5.2 文件 E/H）：policy
 # 版本字面量单源迁至 decide/policy_version.py（无循环依赖；本模块与
@@ -73,8 +75,10 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     # 提交二（§5.2 文件 H-2）补登记：判官证明路开关 + 判官进主链开关
     # 主窗补充令二（2026-10-11）补登记：R7 回填独立开关（policy_v4 层，
     # decide/judge_version_config.py——开关态随 JudgeVersionConfig 单源
-    # 携带可审计；缺席记空串=默认开）
-    "DEDUP_JUDGE_BACKFILL",             # decide/judge_version_config.py（R7 回填，默认开）
+    # 携带可审计）；终审修复包令 4（2026-10-11）：缺席=默认关（空串
+    # 记"未显式设置"；实际生效态见结构化字段 backfill_enabled——
+    # 终审 P1-manifest：快照之外再记 config 实态）
+    "DEDUP_JUDGE_BACKFILL",             # decide/judge_version_config.py（R7 回填，默认关）
     # 提交三（§5.3）补登记：判官裁决口径灰度开关（默认 legacy_proof_gate）
     "DEDUP_JUDGE_DECISION_MODE",        # decide/judge_pair.py（灰度，默认 legacy）
     "DEDUP_JUDGE_IN_CHAIN",             # decide/judge_pair.py（判官进主链，默认关）
@@ -145,13 +149,20 @@ def resolve_code_git_sha(
 
 @dataclass(frozen=True)
 class RunManifest:
-    """一次跑批的不可变版本清单。字段语义见模块 docstring 六元组+两锚。"""
+    """一次跑批的不可变版本清单。字段语义见模块 docstring 六元组+两锚。
+
+    终审 P1-manifest（2026-10-11 修复包）：增结构化字段 backfill_
+    enabled（R7 回填开关**实际生效态**，规范化 "1"/"0"——switch_state
+    只快照 env 原值，实际生效单源=JudgeVersionConfig.backfill_enabled
+    或 env 解析态；缺席=默认关，见 judge_version_config 修复包令 4）。
+    """
     schema_version: str
     pipeline_version: str
     dict_version: str
     prompt_version: str
     prompt_sha256: str
     policy_version: str
+    backfill_enabled: str
     model: str
     embedding_space: str
     switch_state: tuple[tuple[str, str], ...]
@@ -167,6 +178,7 @@ class RunManifest:
             "prompt_version": self.prompt_version,
             "prompt_sha256": self.prompt_sha256,
             "policy_version": self.policy_version,
+            "backfill_enabled": self.backfill_enabled,
             "model": self.model,
             "embedding_space": self.embedding_space,
             "switch_state": {name: value for name, value in self.switch_state},
@@ -237,6 +249,15 @@ def build_run_manifest(
     config 完全一致**——任何不一致直接 ValueError（修"传 v5 config 却
     用显式字符串登记 v1"的覆盖通道）。回放需要任意组合（提示词/策略/
     哈希不配套）走单独回放接口，不得经生产 manifest 普通参数绕过。
+
+    终审 P1-manifest（2026-10-11 修复包）：R7 回填开关**实际生效态**
+    记入正式结构化字段 backfill_enabled（规范化 "1"/"0"）——config
+    在场记 config.backfill_enabled（实际生效单源）；config 缺席按 env
+    解析（DEDUP_JUDGE_BACKFILL，缺席=默认关）。显式 config 与 env
+    DEDUP_JUDGE_BACKFILL **同传且冲突→ValueError fail-closed**（实际
+    生效开关态必须单源可溯，不得静默选边；env 显式设置且与 config 一
+    致、或 env 未显式设置=无冲突，config 权威）。switch_state 仍只快
+    照 env 原值（两口径并存可对拍：env 快照 vs 实际生效态）。
     """
     items = tuple(inputs)
     if judge_version_config is not None:
@@ -280,6 +301,25 @@ def build_run_manifest(
                         ("model", model)):
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{name} 不能为空串")
+    # 终审 P1-manifest（2026-10-11 修复包）：R7 回填开关实际生效态单源
+    # 解析（config 在场记 config 态；否则 env 解析；显式同传冲突拒——
+    # 见 build_run_manifest docstring）。
+    switch_source = os.environ if env is None else env
+    raw_backfill = (
+        switch_source.get(_jvc.JUDGE_BACKFILL_ENV) or "").strip()
+    if judge_version_config is not None:
+        if raw_backfill and _jvc.backfill_enabled_from_env(
+                switch_source) != judge_version_config.backfill_enabled:
+            raise ValueError(
+                f"judge_version_config.backfill_enabled="
+                f"{judge_version_config.backfill_enabled!r} 与 env "
+                f"{_jvc.JUDGE_BACKFILL_ENV}={raw_backfill!r} 同传冲突"
+                f"（终审 P1-manifest：实际生效开关态必须单源可溯，"
+                f"不得静默选边——显式 config 与 env 冲突即拒）")
+        effective_backfill = judge_version_config.backfill_enabled
+    else:
+        effective_backfill = _jvc.backfill_enabled_from_env(switch_source)
+    backfill_enabled_state = "1" if effective_backfill else "0"
     return RunManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
         pipeline_version=pipeline_version,
@@ -287,6 +327,7 @@ def build_run_manifest(
         prompt_version=prompt_version,
         prompt_sha256=prompt_sha256,
         policy_version=policy_version,
+        backfill_enabled=backfill_enabled_state,
         model=model,
         embedding_space=_embedding_space_id(embedding_space),
         switch_state=snapshot_switch_state(env),

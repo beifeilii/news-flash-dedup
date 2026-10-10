@@ -310,6 +310,20 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     判官判"重复"→judge.backfill.disabled_vetoed 计数+对级终态强制存疑
     转边界（JUDGE_UNCERTAIN）；R8 修订规则不受影响照常工作（shadow/
     灰度期发现回填误判时不动代码、不重部署，单点关闭该规则）。
+    终审 P0/P1 修复包（2026-10-11，第二 AI 终审三发现，老板逐条亲验
+    属实，最小范围不扩一期）：①**R7 确定性后置签发闸**——机检硬事实
+    在判官结论出来之后、对级映射之前机械执法（模型答错也拦得住）：
+    双方均缺主体锚（both_missing），或恰一方缺主体+双方均无时间+
+    机检一致核心数值不足 2 个（机器无法证明条件③c 硬门槛），判官判
+    "重复"→撤签强制存疑转边界（JUDGE_UNCERTAIN，detail 写明闸因+判官
+    原判，对级 used_evidence 留判官引文审计）；不改判不重复/存疑
+    （机械闸不判语义只撤签发权）；双方都写主体不拦（R8/一般条款签发
+    面不经回填通道）。②**机器证据不进判官输入**（终审 P1 证据路线
+    裁定）——machine_evidence 只用于确定性闸+审计观测，判官按 v6
+    条款就正文独立裁决（撤回一期"机器候选证据供判官终审"路线）。
+    ③**DEDUP_JUDGE_BACKFILL 缺席=默认关**（直到硬门槛完工+金标重证
+    ）。④manifest 记实际生效 backfill_enabled（run_manifest 结构化
+    字段；config 与 env 显式冲突拒）。
     默认模式仍
     legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
     2d0d418 全等。
@@ -412,7 +426,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                                 if judge_decision_mode is not None
                                 else judge_pair_module.judge_decision_mode())
         # 补充令二：R7 回填独立开关（DEDUP_JUDGE_BACKFILL，policy_v4 层）
-        # 随 env 单源解析入 config（缺席=默认开；非法值 fail-closed）
+        # 随 env 单源解析入 config（终审修复包令 4：缺席=默认关；非法值
+        # fail-closed）
         judge_version_cfg = (
             judge_version_config_module.judge_version_for_mode(
                 active_decision_mode,
@@ -633,7 +648,12 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #     强制存疑转边界，或判官另判）的对数；
     #   judge.backfill.disabled_vetoed——补充令二：开关关闭时 triggered
     #     且判官判"重复"被撤签（对级终态强制存疑转边界）的对数（
-    #     .no_time 孪生同步；signed/vetoed 开关关闭时不计数）。
+    #     .no_time 孪生同步；signed/vetoed 开关关闭时不计数）；
+    #   judge.backfill.gate.both_missing_subject / judge.backfill.gate.
+    #     no_time_insufficient_values——终审 P0 修复包：确定性签发闸
+    #     拦截的对数（判官判"重复"但机检硬事实不满足签发前提：双方均
+    #     缺主体锚/无时间锚且一致核心数值不足两个——模型答错也拦住
+    #     的可观测面；与开关态无关恒计数）。
     # 主窗补充令（2026-10-11）增量：c) 情形（双方都无时间/阶段表述，
     #   time_dimension.time_state=="both_missing"）单列可区分——上三计数
     #   各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
@@ -683,11 +703,14 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     "硬冲突检测器异常 fail-open 放行给判官 detector=%s: %r",
                     detector_name, exc)
 
-            # 一期 v6-lite（2026-10-11，分支 p3-v6-phase1）：机器候选证据
-            # 注入——仅 semantic_authority 模式装配（legacy 面零调用，默认
-            # 生产行为与基线 2d0d418 全等）；机器只产证据**绝不直接判**，
-            # 判官终审（R8 修订候选证据复用 core_conflict 退役区 _REVISION_RE；
-            # R7 条件①前置硬闸用证券代码/主体抽取现有件）。主体抽取现有件
+            # 一期 v6-lite（2026-10-11，分支 p3-v6-phase1）：机器确定性闸
+            # 证据装配——仅 semantic_authority 模式（legacy 面零调用，默认
+            # 生产行为与基线 2d0d418 全等）。终审 P1 证据路线裁定：机器
+            # 证据**不进判官输入**——只用于 R7 确定性后置签发闸（判官
+            # 结论出来后执法）与 shadow/审计观测；判官按 v6 条款就正文
+            # 独立裁决（R8 修订候选证据复用 core_conflict 退役区
+            # _REVISION_RE；R7 条件①硬闸用证券代码/主体抽取现有件；
+            # 条件③c 硬门槛下限用核心数值归一集）。主体抽取现有件
             # 取数映射：pair 的 history 侧可为首对 history 或任一 candidate。
             machine_evidence_enabled = (
                 active_decision_mode
@@ -742,10 +765,11 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                             "核心硬冲突前置拦截 pair=%s type=%s（判官零调用）",
                             pair.pair_id, hard.conflict_type)
                         continue
-                # 一期 v6-lite：机器候选证据注入（semantic 模式专属）——
-                # R8 修订候选证据 + R7 条件①前置硬闸证据 + 条件③时间维度
-                # 三分支证据（补充令；纯 JSON 增量字段入 pair_context；
-                # 缓存键/证明/审计消费面不读它）。
+                # 一期 v6-lite（终审 P1 证据路线裁定后）：机器闸证据装配
+                # （semantic 模式专属）——R8 修订候选证据+R7 条件①硬闸
+                # 证据+条件③时间维度证据+核心数值下限证据；**不进判官
+                # 输入**（build_pair_context 零机器证据，判官上下文键集
+                # 与基线全等），只供确定性签发闸与 shadow/审计消费。
                 machine_evidence = None
                 if machine_evidence_enabled:
                     machine_evidence = (
@@ -758,8 +782,7 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 pair_context = judge_pair_module.build_pair_context(
                     pair,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
-                    current_text=current_text,
-                    machine_evidence=machine_evidence)
+                    current_text=current_text)
                 # R7 shadow 计数①：条件①机器前置硬闸通过=回填条款被触发
                 # （双方都缺主体→硬闸不置位，回填不得触发，落判官存疑边界）；
                 # signed/vetoed 在判官双序结论出来后分账（见下方）。
@@ -822,6 +845,20 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # 段）；判官存疑/不重复本就不经回填签发，照常放行（R8
                 # 修订规则不受影响——其签发面在判官一般条款，非回填通道）。
                 # 开关开=原令行为（signed/vetoed 分账不变）。
+                # 终审 P0（R7 确定性后置签发闸）：机检硬事实在判官结论
+                # 出来后执法（模型答错也必须拦得住）——机械闸只撤"重复"
+                # 签发权，不改判不重复/存疑（不判语义）；拦截对的判官
+                # 原判与引文证据经对级 detail/used_evidence 入审计留痕。
+                machine_gate = (
+                    judge_machine_evidence_module.r7_signing_gate(
+                        machine_evidence)
+                    if machine_evidence is not None else None)
+                gate_block = bool(
+                    machine_gate is not None
+                    and machine_gate["blockable"]
+                    and sem_outcome == "equivalent")
+                if gate_block:
+                    _jcount(f"judge.backfill.gate.{machine_gate['rule']}")
                 backfill_kill = bool(
                     backfill_gate_open and not backfill_enabled
                     and sem_outcome == "equivalent")
@@ -832,7 +869,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                             if backfill_no_time:
                                 _jcount(
                                     "judge.backfill.disabled_vetoed.no_time")
-                    elif sem_outcome == "equivalent":
+                    elif sem_outcome == "equivalent" and not gate_block:
+                        # 签发=判官判"重复"且未被机械闸/开关拦截
                         _jcount("judge.backfill.signed")
                         if backfill_no_time:
                             _jcount("judge.backfill.signed.no_time")
@@ -858,7 +896,33 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     machine_findings=tuple(judged.machine_findings),
                     full_text_fallback_used=judged.full_text_fallback_used,
                     judge_decision_mode=judged.decision_mode)
-                if backfill_kill:
+                if gate_block:
+                    # 终审 P0 执法（R7 确定性后置签发闸）：机械闸拦截——
+                    # 对级终态强制存疑转边界（JUDGE_UNCERTAIN 白名单码）；
+                    # detail 写明闸因+判官原判（可溯），判官引文证据入
+                    # used_evidence 审计留痕（机器不判语义，只撤签发权；
+                    # 判官实际双序结论经 proofs 审计件另在案）。
+                    if machine_gate["rule"] == (
+                            judge_machine_evidence_module.
+                            GATE_RULE_BOTH_MISSING):
+                        gate_detail = (
+                            "R7 确定性签发闸拦截：双方均缺主体锚（机检硬"
+                            "事实——双侧证券代码与主体抽取均不在场），判官"
+                            "原判'重复'不得签发，强制存疑转边界。")
+                    else:
+                        matched = machine_evidence["core_values"][
+                            "matched_count"]
+                        gate_detail = (
+                            f"R7 确定性签发闸拦截：双方均无时间锚且机检仅"
+                            f"证得{matched}个一致核心数值（不足两个不同角"
+                            f"色），判官原判'重复'不得签发，强制存疑转边"
+                            f"界。")
+                    pair_results[index] = replace(
+                        pair, outcome="unresolved", code="JUDGE_UNCERTAIN",
+                        detail=gate_detail,
+                        used_evidence=tuple(judged.used_evidence),
+                        **judged_diagnostics)
+                elif backfill_kill:
                     # 补充令二终局（撤签改写）：R7 回填开关关闭——对级终态
                     # 强制存疑转边界（JUDGE_UNCERTAIN 白名单码）；判官实际
                     # 双序结论与证明已入 proofs 审计件留痕（机器不判语义，
@@ -888,7 +952,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         verified_conflicts=tuple(judged.verified_conflicts),
                         **judged_diagnostics)
                 pair_codes[pair.history_record_id] = (
-                    "JUDGE_UNCERTAIN" if backfill_kill else judged.code)
+                    "JUDGE_UNCERTAIN" if (gate_block or backfill_kill)
+                    else judged.code)
         # ③ 件级最终聚合（合同 §五 strict 口径）：本结果才是 decide_for_task
         # 的返回、才进 commit_one 写入计划；上方初聚合仅用于定位未决对，
         # 不写主记录。issue 集重建=extra_event 平行账（对级未决 issue 由

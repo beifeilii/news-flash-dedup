@@ -42,6 +42,14 @@ fail-closed（绝不静默落错 policy）。
   （decide/service.py 判官循环执行撤签：硬闸触发对判官判"重复"→
   强制存疑转边界），R8 修订规则不受影响照常工作——shadow/灰度期发现
   回填误判时不动代码、不重部署，单点关闭该规则。
+
+终审 P0/P1 修复包（2026-10-11，第二 AI 终审，老板批准，最小范围不
+扩一期）：
+- **开关默认改关（修复包令 4）**：DEDUP_JUDGE_BACKFILL 缺席/空串=
+  OFF（一期原令"缺席=默认开"废止）——在确定性签发闸完工+金标重证
+  之前默认关闭，显式置 1/true/on/yes 才开；JudgeVersionConfig.
+  backfill_enabled 及各构造函数缺省值同步改 False（缺省维度全局一致
+  ——缺席任何一层都不得默认签发）。
 """
 
 from __future__ import annotations
@@ -86,7 +94,8 @@ _MODE_TO_VERSION = {
 
 # 主窗补充令二（2026-10-11）：R7 回填独立开关（policy_v4 层，不依赖
 # 整个 v6/semantic 开关）。env 名登记入 run_manifest.KNOWN_SWITCHES
-# 快照入册（manifest 可溯）。
+# 快照入册（manifest 可溯）。终审修复包令 4（2026-10-11）：缺席=
+# 默认关（确定性签发闸完工+金标重证前不默认签发）。
 JUDGE_BACKFILL_ENV = "DEDUP_JUDGE_BACKFILL"
 _BACKFILL_OFF_VALUES = ("0", "false", "off", "no")
 _BACKFILL_ON_VALUES = ("1", "true", "on", "yes")
@@ -95,17 +104,17 @@ _BACKFILL_ON_VALUES = ("1", "true", "on", "yes")
 def backfill_enabled_from_env(environ=None) -> bool:
     """读 DEDUP_JUDGE_BACKFILL（R7 回填独立开关）：
 
-    - 缺席/空串 → True（默认开=一期原令行为——开关是为"发现误判后
-      单点关闭"而设，不是默认灰度）；
+    - 缺席/空串 → False（**默认关**——终审修复包令 4：确定性签发闸
+      完工+金标重证前不得默认签发；一期原令"缺席=默认开"废止）；
     - 0/false/off/no（大小写不敏感）→ False（关：回填永不签发）；
-    - 1/true/on/yes → True；
+    - 1/true/on/yes → True（显式开）；
     - 其他非空值 → ValueError（fail-closed 明确报错，不得静默选边
       ——同 DEDUP_JUDGE_DECISION_MODE 整改令二口径）。
     """
     raw = ((os.environ if environ is None else environ)
            .get(JUDGE_BACKFILL_ENV) or "").strip().lower()
     if not raw:
-        return True
+        return False
     if raw in _BACKFILL_OFF_VALUES:
         return False
     if raw in _BACKFILL_ON_VALUES:
@@ -113,7 +122,8 @@ def backfill_enabled_from_env(environ=None) -> bool:
     raise ValueError(
         f"{JUDGE_BACKFILL_ENV}={raw!r} 非法：只允许 "
         f"{'|'.join(_BACKFILL_OFF_VALUES)}（关）或 "
-        f"{'|'.join(_BACKFILL_ON_VALUES)}（开）；缺席=默认开")
+        f"{'|'.join(_BACKFILL_ON_VALUES)}（开）；缺席=默认关"
+        f"（终审修复包令 4）")
 
 
 @dataclass(frozen=True)
@@ -137,16 +147,18 @@ class JudgeVersionConfig:
     policy_v3、judge_v6→policy_v4）。decision_mode="" 只豁免"模式↔
     提示词映射"校验，不豁免哈希与策略校验。
 
-    主窗补充令二：backfill_enabled（R7 回填独立开关，默认开）——
-    policy_v4 层开关随本配置对象单源携带（不参与模式固定映射校验：
-    模式↔版本四维一致性不受开关态影响；开关只控制 service 判官循环的
-    R7 签发权）。非 bool 值构造即 ValueError（fail-closed）。
+    主窗补充令二：backfill_enabled（R7 回填独立开关）——policy_v4
+    层开关随本配置对象单源携带（不参与模式固定映射校验：模式↔版本
+    四维一致性不受开关态影响；开关只控制 service 判官循环的 R7 签发
+    权）。非 bool 值构造即 ValueError（fail-closed）。终审修复包令 4
+    （2026-10-11）：缺省值改 **False（默认关）**——确定性签发闸完工+
+    金标重证前缺席任何一层都不得默认签发。
     """
     prompt_version: str
     prompt_sha256: str
     policy_version: str
     decision_mode: str = ""
-    backfill_enabled: bool = True
+    backfill_enabled: bool = False
 
     def __post_init__(self) -> None:
         # 补充令二：开关字段类型闸（fail-closed，1/0 int 不得冒充 bool）
@@ -198,12 +210,13 @@ class JudgeVersionConfig:
 
 def judge_version_for_prompt(prompt_version: str,
                              *, decision_mode: str = "",
-                             backfill_enabled: bool = True
+                             backfill_enabled: bool = False
                              ) -> JudgeVersionConfig:
     """按 prompt 版本直解（显式注入 judge 的合同证明路径；未知
     prompt_version 由注册处 fail-closed，未登记 policy 映射本层
     fail-closed；decision_mode 非空时由构造器按固定映射校验；
-    backfill_enabled=R7 回填独立开关随配置携带【补充令二，默认开】）。"""
+    backfill_enabled=R7 回填独立开关随配置携带【补充令二；终审修复包
+    令 4：缺省=默认关】）。"""
     _text, prompt_sha = _lr.judge_prompt_for_version(prompt_version)
     policy = _PROMPT_TO_POLICY.get(prompt_version)
     if policy is None:
@@ -217,12 +230,13 @@ def judge_version_for_prompt(prompt_version: str,
 
 
 def judge_version_for_mode(decision_mode: str, *,
-                           backfill_enabled: bool = True
+                           backfill_enabled: bool = False
                            ) -> JudgeVersionConfig:
     """按判定模式分发（条 3：legacy→v1+policy_v2，semantic→v6+policy_v4
     ——一期 v6-lite 起 semantic 映射 v6；非法模式 fail-closed；
-    backfill_enabled=R7 回填独立开关【补充令二，默认开——不参与模式
-    固定映射校验，仅控制 service 判官循环的 R7 签发权】）。"""
+    backfill_enabled=R7 回填独立开关【补充令二；终审修复包令 4：
+    缺省=默认关——不参与模式固定映射校验，仅控制 service 判官循环
+    的 R7 签发权】）。"""
     prompt_version = _MODE_TO_PROMPT.get(decision_mode)
     if prompt_version is None:
         raise ValueError(
@@ -237,8 +251,9 @@ def default_judge_version(environ=None) -> JudgeVersionConfig:
     """缺省装配（adapter 默认配置/run_manifest 缺省登记的共同单源）：
     读 DEDUP_JUDGE_DECISION_MODE（缺席/空串=legacy_proof_gate 默认；
     非法值=judge_pair 明确报错）后按模式分发；读 DEDUP_JUDGE_BACKFILL
-    （缺席/空串=默认开；非法值 fail-closed）定 R7 回填独立开关
-    （补充令二——开关态随 config 单源携带可审计）。"""
+    （缺席/空串=默认关——终审修复包令 4：签发闸完工+金标重证前
+    不默认签发；非法值 fail-closed）定 R7 回填独立开关（补充令二
+    ——开关态随 config 单源携带可审计）。"""
     return judge_version_for_mode(
         _judge_pair.judge_decision_mode(environ),
         backfill_enabled=backfill_enabled_from_env(environ))

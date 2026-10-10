@@ -272,21 +272,18 @@ def _sha256(text: str) -> str:
 
 # ---------------------------------------------------------------- pair_context 构造
 
-def build_pair_context(pair, *, history_text: str, current_text: str,
-                       machine_evidence: Mapping | None = None) -> dict:
+def build_pair_context(pair, *, history_text: str, current_text: str) -> dict:
     """由 PairResult + 双侧正文构造判官注入上下文（纯 JSON 数据）。
 
     order 维度由 adjudicate_pair 按 "ab"（a=history 先）/ "ba"（a=current 先）
     双序各自展开（_order_context）。"ab" 与 llm_residual 的 hc 同向。
 
-    machine_evidence（一期 v6-lite，2026-10-11 分支 p3-v6-phase1）：可选
-    机器候选证据注入件（decide/judge_machine_evidence.build_machine_
-    evidence 产物——R8 修订候选证据+R7 条件①前置硬闸证据；仅
-    semantic_authority 模式由 decide/service 装配注入）。纯 JSON 增量
-    字段：缓存键/证明/审计消费面均不读它（compute_cache_key 内容寻址
-    键不受影响），legacy 面 machine_evidence=None=缺席零字段（现役键集
-    逐字节不变，基线 2d0d418 行为全等）。机器只产证据绝不直接判，判官
-    终审。
+    终审 P1 证据路线裁定（2026-10-11 修复包）：判官输入**零机器证据**
+    ——judge_machine_evidence 产物只用于 decide/service 的确定性签发
+    闸（r7_signing_gate，判官结论出来后执法）与审计观测，不经本函数
+    注入判官上下文（撤回一期"机器候选证据供判官终审"的实现路线；判官
+    按 judge_v6 条款就正文独立裁决）。上下文键集与基线 2d0d418 全等
+    （缓存键/证明/审计面零增量字段）。
     """
     ctx = {
         "pair_id": pair.pair_id,
@@ -299,8 +296,6 @@ def build_pair_context(pair, *, history_text: str, current_text: str,
         "history_text_sha256": _sha256(history_text),
         "current_text_sha256": _sha256(current_text),
     }
-    if machine_evidence is not None:
-        ctx["machine_evidence"] = machine_evidence
     return ctx
 
 

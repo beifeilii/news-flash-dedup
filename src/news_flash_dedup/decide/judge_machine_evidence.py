@@ -4,11 +4,14 @@
 
 规则一（R8 修订改值）机器层：复用 compare/core_conflict.py **退役区**
 正则 _REVISION_RE（终审 P0-4 摘除后保留在案）产"修订候选证据"——
-结构化（模式命中位置/表面形/前值/后值/归一值），经 judge_pair.
-build_pair_context 注入判官上下文（context["machine_evidence"]）。
-机器**绝不直接判**（退役层不得复活硬判）：只作候选证据供判官终审；
-判官按 judge_v6 R8 条款裁决（修订改值→不重复；同指向同一修订值省略
-过程→重复；只补背景有效值相同→重复；角色/指标/时间对不上→存疑）。
+结构化（模式命中位置/表面形/前值/后值/归一值）。
+终审 P1 证据路线裁定（2026-10-11 修复包）：机器证据**不进判官输入**
+——只用于确定性签发闸（r7_signing_gate，由 decide/service 在判官
+结论出来后执法）与审计观测，不经 judge_pair.build_pair_context 注入
+判官上下文（撤回一期"机器候选证据供判官终审"的实现路线）。机器
+**绝不判语义**（退役层不得复活硬判）：判官按 judge_v6 R8 条款就正文
+独立裁决（修订改值→不重复；同指向同一修订值省略过程→重复；只补
+背景有效值相同→重复；角色/指标/时间对不上→存疑）。
 
 规则二（R7 主体单方缺失受约束回填）机器层：条件①机器前置硬闸——
 "有且仅有一方缺主体且另一方明确写了主体"的机检可判域判定，判据=
@@ -30,9 +33,25 @@ expression present），输出双侧表面形+在场布尔+三分支态：
 - unilateral_missing（条款③b：一方有一方无=单方信息补充）；
 - both_missing（条款③c：双方都无时间/阶段——判官按硬门槛裁决：
   仅单一数值一致强制存疑转边界，防无时间锚的同口径跨期撞稿）。
-机器只观测不判：time_state 喂 shadow 计数 no_time 单列标签与判官
-上下文证据（闭形域外的表述由判官按正文语义自行评估——机检无判据
-绝不冒充判据）。
+机器只观测不判：time_state 喂 shadow 计数 no_time 单列标签与签发闸
+证据（闭形域外的表述由判官按正文语义自行评估——机检无判据绝不冒
+充判据）。
+
+终审 P0/P1 修复包（2026-10-11，第二 AI 终审三发现，老板逐条亲验
+属实，最小范围不扩一期）：
+- **R7 确定性后置签发闸** r7_signing_gate——机检硬事实在判官结论
+  出来之后、对级映射之前执法（模型答错也必须拦得住）：
+  ①双方均缺主体锚（both_missing，机检硬事实）且判官判"重复"→拦；
+  ②恰一方缺主体+双方均无时间/阶段表述+机检一致核心数值不足 2 个
+  （"两个不同角色"语义不可机检，以"≥2 个不同归一数值一致"为确定性
+  下限——不足即**机器无法证明硬条件**）且判官判"重复"→拦；
+  拦=撤"重复"签发权转边界（JUDGE_UNCERTAIN），不改判不重复/存疑
+  （机械闸不判语义）；双方都写主体→不拦（R8/一般条款签发面不经
+  回填通道，机械闸不越界评一般重复）。
+- **证据路线改口**：机器证据不进判官输入（见上）；本模块产物只
+  供 decide/service 签发闸与 shadow/审计消费。
+- **开关默认关**：DEDUP_JUDGE_BACKFILL 缺席=OFF（judge_version_
+  config 层，直到硬门槛完工+金标重证——修复包令 4）。
 
 shadow 指标（decide/service.py 现状机制 _jcount+DecideOutcome.
 judge_diagnostics，仅 semantic 模式计数）：
@@ -43,12 +62,17 @@ judge_diagnostics，仅 semantic 模式计数）：
   边界，或判官另判）的对数；
 - 补充令增量：c) 情形（双方都无时间/阶段）单列可区分——上三计数
   各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
-  signed.no_time/vetoed.no_time，标签带时间态；基础三计数仍聚合）。
+  signed.no_time/vetoed.no_time，标签带时间态；基础三计数仍聚合）；
+- 终审 P0 增量：签发闸拦截计数 judge.backfill.gate.both_missing_
+  subject / judge.backfill.gate.no_time_insufficient_values（判官
+  判"重复"但机检硬事实不满足签发前提被拦的对数——模型答错也拦
+  住的可观测面）。
 
 纪律：
-- 本模块只产**纯 JSON 证据**（可入 pair_context / 审计面），不判、
-  不降级、不改公共五字段；机器绝不直接判是铁律（fp 风险全集中在
-  R7 签发侧——三防线：①本层硬闸+②-⑤判官条款+⑥强制存疑）；
+- 本模块只产**纯 JSON 证据**（签发闸+审计面消费；不进判官输入——
+  终审 P1 证据路线裁定），不判、不降级、不改公共五字段；机器绝不
+  判语义是铁律（fp 风险全集中在 R7 签发侧——防线：①本层硬闸证据+
+  ②-⑤判官条款+⑥强制存疑+**确定性后置签发闸机械执法**）；
 - 仅 semantic_authority 模式由 service 装配（legacy 面零调用，默认
   生产行为与基线 2d0d418 全等）；
 - 泛指占位（"公司股票"/"该公司"）不在机检可判域——主体抽取现有件
@@ -57,16 +81,13 @@ judge_diagnostics，仅 semantic 模式计数）：
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 
 from news_flash_dedup.compare import core_conflict as _cc
 from news_flash_dedup.decide import machine_verify as _mv
 
-MACHINE_EVIDENCE_VERSION = "v6_lite_phase1b"
-
-# 判官上下文注入键（build_pair_context 消费；缓存键/证明/审计面不读它
-# ——内容寻址键不受影响，legacy 面 None=缺席零字段）
-CONTEXT_KEY = "machine_evidence"
+MACHINE_EVIDENCE_VERSION = "v6_lite_phase1c"   # 修复包：+core_values/签发闸（终审 P0/P1）
 
 
 # ---------------------------------------------------------------- R8 修订候选证据
@@ -224,12 +245,78 @@ def time_dimension_gate(history_text: str, current_text: str, *,
     }
 
 
-# ---------------------------------------------------------------- 总装（注入判官上下文）
+# ---------------------------------------------------------------- R7 确定性后置签发闸（终审 P0 修复包）
+
+GATE_RULE_BOTH_MISSING = "both_missing_subject"
+GATE_RULE_NO_TIME_VALUES = "no_time_insufficient_values"
+
+
+def _core_value_norms(text: str) -> tuple[str, ...]:
+    """单侧核心数值归一集（machine_verify number_mentions R3 语境过滤
+    口径：剔除日期/编号序数型 token；另要求表面形含阿拉伯数字——裸
+    单位字"亿/万"会被中文数字正则单独捕获并归一为 0、"一宗"类纯中文
+    数词同为计数词而非量值，均不得冒充核心数值计数；纯中文数词数值
+    本层不计=下限闸 fail-safe 方向（计不足→拦，绝不虚增放行））。
+    排序输出（纯 JSON 确定性）。"""
+    norms = {
+        m["norm"] for m in _mv.number_mentions(text)
+        if re.search(r"\d", m["surface"])}
+    return tuple(sorted(norms))
+
+
+def core_value_anchors(history_text: str, current_text: str) -> dict:
+    """条件③c 硬门槛机检下限证据（终审 P0 修复包；只产证据不判）：
+    双侧核心数值归一集+一致归一值清单+计数。"两个不同角色"语义不可
+    机检——以"≥2 个不同归一数值一致"为确定性下限（不足 2 即机器
+    无法证明硬条件；R3 语境过滤剔除日期/编号序数型，不把时间数值
+    冒充核心数值）。"""
+    h_norms = _core_value_norms(history_text)
+    c_norms = _core_value_norms(current_text)
+    matched = tuple(n for n in h_norms if n in set(c_norms))
+    return {
+        "history_norms": list(h_norms),
+        "current_norms": list(c_norms),
+        "matched_norms": list(matched),
+        "matched_count": len(matched),
+    }
+
+
+def r7_signing_gate(machine_evidence) -> dict:
+    """R7 确定性后置签发闸（终审 P0 修复包，2026-10-11）——只评机检
+    硬事实给出"重复"签发可拦态；执法点在 decide/service 判官结论出来
+    之后、对级映射之前（判官判"重复"且可拦→撤签转边界；判官判不
+    重复/存疑照常放行——机械闸不判语义）：
+
+    - both_missing_subject：双方均缺主体锚（证券代码∪主体抽取双不
+      在场）→可拦（v6 条款"双方都缺主体时本条不适用，判存疑"的
+      机械执法——模型答错也拦得住）；
+    - no_time_insufficient_values：恰一方缺主体+双方均无时间/阶段
+      表述+一致核心数值不足 2 个（机器无法证明条件③c 硬门槛）→
+      可拦（防无时间锚的同口径跨期撞稿）；
+    - 双方都写主体→不拦（R8/一般条款签发面不经回填通道，机械闸
+      不越界评一般重复）；恰一方缺主体+数值≥2 个一致→机器证得
+      硬条件下限，放行给判官结论。
+    """
+    subj = (machine_evidence or {}).get("subject_backfill") or {}
+    time_dim = (machine_evidence or {}).get("time_dimension") or {}
+    core = (machine_evidence or {}).get("core_values") or {}
+    if subj.get("both_missing"):
+        return {"blockable": True, "rule": GATE_RULE_BOTH_MISSING}
+    if (subj.get("unilateral_missing")
+            and time_dim.get("time_state") == "both_missing"
+            and int(core.get("matched_count") or 0) < 2):
+        return {"blockable": True, "rule": GATE_RULE_NO_TIME_VALUES}
+    return {"blockable": False, "rule": ""}
+
+
+# ---------------------------------------------------------------- 总装（闸+审计面消费；不进判官输入）
 
 def build_machine_evidence(history_text: str, current_text: str, *,
                            history_facts: Iterable | None = (),
                            current_facts: Iterable | None = ()) -> dict:
-    """v6-lite 一期机器候选证据总装（纯 JSON dict，判官上下文注入件）。
+    """v6-lite 一期机器证据总装（纯 JSON dict）。终审 P1 证据路线裁定
+    （2026-10-11 修复包）：**不进判官输入**——产物只供 decide/service
+    的 R7 确定性后置签发闸（r7_signing_gate 消费）与 shadow/审计观测。
 
     - revision_candidates：R8 机器候选证据（双侧独立抽取，结构化位置/
       前后值；hit_any_side=任一侧有修订措辞命中——可观测性旗标，非判据）；
@@ -237,9 +324,12 @@ def build_machine_evidence(history_text: str, current_text: str, *,
       现有件）；
     - time_dimension：R7 条件③时间维度三分支证据（主窗补充令：日期/
       阶段/相对词闭形域+时间抽取现有件；time_state 供 shadow no_time
-      单列标签）。
+      单列标签）；
+    - core_values：条件③c 硬门槛机检下限证据（终审 P0 修复包：双侧
+      核心数值归一集+一致计数——R3 语境过滤口径）。
 
-    机器绝不直接判：判官按 judge_v6 产品规则条款终审。
+    机器绝不判语义：判官按 judge_v6 产品规则条款就正文独立裁决；
+    机检硬事实由 service 在判官结论后机械执法（撤"重复"签发权）。
     """
     h_rev = revision_candidates(history_text)
     c_rev = revision_candidates(current_text)
@@ -251,6 +341,7 @@ def build_machine_evidence(history_text: str, current_text: str, *,
         history_text, current_text,
         history_times=fact_time_values(history_facts),
         current_times=fact_time_values(current_facts))
+    core = core_value_anchors(history_text, current_text)
     return {
         "version": MACHINE_EVIDENCE_VERSION,
         "revision_candidates": {
@@ -260,15 +351,19 @@ def build_machine_evidence(history_text: str, current_text: str, *,
         },
         "subject_backfill": gate,
         "time_dimension": time_dim,
+        "core_values": core,
     }
 
 
 __all__ = [
+    "GATE_RULE_BOTH_MISSING",
+    "GATE_RULE_NO_TIME_VALUES",
     "MACHINE_EVIDENCE_VERSION",
-    "CONTEXT_KEY",
+    "core_value_anchors",
     "revision_candidates",
     "fact_subject_values",
     "fact_time_values",
+    "r7_signing_gate",
     "subject_backfill_gate",
     "time_dimension_gate",
     "build_machine_evidence",

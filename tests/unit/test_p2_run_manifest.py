@@ -51,7 +51,8 @@ def test_manifest_fields_complete():
     d = _build().to_dict()
     assert set(d) == {
         "schema_version", "pipeline_version", "dict_version",
-        "prompt_version", "prompt_sha256", "policy_version", "model",
+        "prompt_version", "prompt_sha256", "policy_version",
+        "backfill_enabled", "model",
         "embedding_space", "switch_state", "code_git_sha",
         "inputs_sha256", "input_count",
     }
@@ -63,6 +64,9 @@ def test_manifest_fields_complete():
     # 提交一修复并入复审条 2：缺省登记=按模式分发的实际生效版本
     # （env={}=legacy 默认→judge_v1+policy_v2，修"实跑 v5 却登记 v1"）
     assert d["policy_version"] == "policy_v2"
+    # 终审 P1-manifest（2026-10-11 修复包）：实际生效 backfill 态入正式
+    # 结构化字段（规范化 "1"/"0"；env={} 缺席=默认关，修复包令 4）
+    assert d["backfill_enabled"] == "0"
     assert d["model"] == DEFAULT_MODEL
     assert d["embedding_space"] == FAKE_SPACE_ID
     assert d["code_git_sha"] == GIT_SHA
@@ -170,6 +174,52 @@ def test_switch_state_snapshot_honors_injected_env():
     assert state["DEDUP_COVERAGE_FRONTIER"] == ""             # 缺席记空串
     assert "UNRELATED_ENV" not in state                       # 非登记开关不入册
     assert [name for name, _ in manifest.switch_state] == list(rm.KNOWN_SWITCHES)
+
+
+def test_manifest_backfill_effective_state_structured_field():
+    """终审 P1-manifest（2026-10-11 修复包）：R7 回填开关**实际生效态**
+    入正式结构化字段 backfill_enabled（规范化 "1"/"0"）——config 在场
+    记 config.backfill_enabled（实际生效单源）；config 缺席按 env 解析
+    （DEDUP_JUDGE_BACKFILL；缺席=默认关，修复包令 4）；**显式 config
+    与 env 同传且冲突→ValueError fail-closed**（实际生效开关态必须
+    单源可溯，不得静默选边；env 缺席/与 config 一致=无冲突）。"""
+    from news_flash_dedup.decide import judge_version_config as jvc
+    on = jvc.judge_version_for_mode("semantic_authority",
+                                    backfill_enabled=True)
+    off = jvc.judge_version_for_mode("semantic_authority",
+                                     backfill_enabled=False)
+    kw = dict(inputs=("rec-a",), embedding_space=FAKE_SPACE_ID,
+              code_git_sha=GIT_SHA)
+    # env 缺席：config 态即实际生效态（显式 config 权威，无冲突面）
+    assert rm.build_run_manifest(
+        env={}, judge_version_config=on, **kw).backfill_enabled == "1"
+    assert rm.build_run_manifest(
+        env={}, judge_version_config=off, **kw).backfill_enabled == "0"
+    # env 显式与 config 一致 → 放行
+    assert rm.build_run_manifest(
+        env={"DEDUP_JUDGE_BACKFILL": "0"},
+        judge_version_config=off, **kw).backfill_enabled == "0"
+    assert rm.build_run_manifest(
+        env={"DEDUP_JUDGE_BACKFILL": "1"},
+        judge_version_config=on, **kw).backfill_enabled == "1"
+    # env 显式与 config 冲突 → ValueError（两个方向都拒）
+    with pytest.raises(ValueError, match="同传冲突"):
+        rm.build_run_manifest(
+            env={"DEDUP_JUDGE_BACKFILL": "0"},
+            judge_version_config=on, **kw)
+    with pytest.raises(ValueError, match="同传冲突"):
+        rm.build_run_manifest(
+            env={"DEDUP_JUDGE_BACKFILL": "1"},
+            judge_version_config=off, **kw)
+    # config 缺席：env 解析态（缺席=默认关→"0"）
+    assert rm.build_run_manifest(
+        env={"DEDUP_JUDGE_BACKFILL": "0"}, **kw).backfill_enabled == "0"
+    assert rm.build_run_manifest(
+        env={"DEDUP_JUDGE_BACKFILL": "1"}, **kw).backfill_enabled == "1"
+    assert rm.build_run_manifest(env={}, **kw).backfill_enabled == "0"
+    # env 非法值 fail-closed（jvc 解析层报错穿透）
+    with pytest.raises(ValueError):
+        rm.build_run_manifest(env={"DEDUP_JUDGE_BACKFILL": "banana"}, **kw)
 
 
 # ---------- git sha 解析（fail-closed） ----------
