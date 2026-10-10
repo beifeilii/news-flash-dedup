@@ -73,12 +73,23 @@ def test_prompt_sha256_matches_d32_file():
 
 # ---------------------------------------------------------------- 2 · 缓存键字节级兼容
 
+# TFIX-p23（2026-10-11 测试债修复·换模债）：7b965b6 将 lr.DEFAULT_MODEL
+# qwen-turbo→qwen-plus 后，本测试若继续跟随 DEFAULT_MODEL 计算键，则与
+# D32 遗产缓存条目（1440 枚全部 turbo 时代键，条目内嵌 model="qwen-turbo"
+# 实测在案）键门失配——假报"键布局漂移"。缓存键兼容性测试的语义=验证
+# 本模块键公式与 D32 既有条目**字节级同构**（历史键复用凭证），故钉
+# 历史型号字面量而非跟随现役默认（换模不改缓存布局；D32 遗产条目本就
+# 是 turbo 时代产物）。
+_D32_HERITAGE_MODEL = "qwen-turbo"
+
+
 def test_cache_key_hits_existing_d32_entries(d32_assets):
     meta, _, _ = d32_assets
     sample = sorted(meta)[:5]                              # 抽样 5 对×2 顺序
     for pid in sample:
         for order in ("hc", "ch"):
-            key = lr.residual_cache_key(lr.DEFAULT_MODEL, lr.JUDGE_PROMPT_VERSION,
+            key = lr.residual_cache_key(_D32_HERITAGE_MODEL,
+                                        lr.JUDGE_PROMPT_VERSION,
                                         pid, lr.PROMPT_SHA256, order)
             assert (_CACHE_DIR / f"{key}.json").exists(), (
                 f"按本模块键公式计算的 {order} 条目不在 D32 cache——键布局漂移")
