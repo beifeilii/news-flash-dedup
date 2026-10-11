@@ -13,8 +13,9 @@
    与 prepared_seq（=checkpoint 内嵌准备前沿；孔洞纪律 L175：逐文档 ready 证据
    推进，缺号不越过——W-R4 起按 09 §3.4 原文口径补跳过凭证明语义：
    arrival_seq 为全局序号域，分区证据集是其稀疏子集；前沿遇全局序号孔洞时
-   向 admission 域查证登记归属（seq 登记映射/pending 受理日志），登记证明
-   属他域/日 → 凭证明跳过续推，无法证明（登记缺席/属本分区未就绪）→
+   向 admission 域查证登记归属（seq 登记映射/work 任务文档族受理登记），
+   登记证明属他域/日 → 凭证明跳过续推，无法证明（登记缺席/属本分区未
+   就绪）→
    维持停摆 fail-closed，「缺号未知须恢复，不能猜不存在」；
    P0-T5 全前沿令②（主窗口扩充令）：孔洞另查**墓簿**——本域本日
    item_permanent 终态序号（物化域确定性已处理）与外国证明同为跳洞
@@ -34,10 +35,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from news_flash_dedup.admission import CONTROL_INDEX, REQUEST_INDEX
-from news_flash_dedup.batch_admission import HEAD_ID, pending_registration
+from news_flash_dedup.batch_admission import (
+    HEAD_ID, pending_registration)
 from news_flash_dedup.batch_es_store import ElasticsearchBatchStore
 from news_flash_dedup.es_admission_schema import day_index
 from news_flash_dedup.materialize_terminal import scan_terminal_tombstone_seqs
+from news_flash_dedup.work_queue import WORK_INDEX_PATTERN
 
 from .entities import extract_body_entities
 from .hash_channel import prepare_recall_fields
@@ -229,8 +232,14 @@ class PrepareWorker:
         ① ES seq 登记映射（REQUEST_INDEX 物化登记，batch_admission.py:467
            形态）——按 arrival_seq 升序有界分页（游标式，proof_page_size×
            max_proof_pages 上限内）；
-        ② 头文档 pending 受理日志（未物化段登记，batch_admission.py
-           pending_registration 查询面）——①未涵盖序号的最末兜底。
+        ② 头文档 pending 受理日志（legacy 头未物化段登记，
+           pending_registration 查询面）——P1a-T2 双写窗过渡保留（游标
+           形头 pending 恒空壳 → 本源恒不证，自然旁路；P1a-T6 全量翻转
+           后摘除）；
+        ③ work 任务文档族（P1a-T2 受理入队面——任务文档即登记本体；
+           WORK_INDEX_PATTERN 跨业务日通配单页枚举）——②后残序兜底。
+           文档在案即登记在案（状态不拘——登记归属由 scope/business_date
+           决定）。
 
         登记缺席、形态不识别、登记属本分区（同 scope 同 business_date）→
         不证（调用方遇未证孔洞即停，fail-closed 不猜——「缺号未知须恢复，
@@ -278,11 +287,44 @@ class PrepareWorker:
             if len(hits) < self.proof_page_size or cursor >= hi:
                 break
         if remaining and head_source is not None:
+            # ②路 legacy 头 pending 兜底（P1a-T2 双写窗过渡保留；游标形
+            # 头恒空壳 → 恒 None，零行为面）。
             for seq in sorted(remaining):
                 registration = pending_registration(head_source, seq)
                 if (registration is not None
                         and registration != (scope_id, business_date)):
                     proven.add(seq)
+                if registration is not None:
+                    remaining.discard(seq)
+        if remaining:
+            # ③路 P1a-T2 新面：work 任务文档族检索（受理入队登记本体；
+            # remaining 已受 proof 预算约束，单页 size=余量即全枚举）。
+            body = {
+                "size": len(remaining),
+                "track_total_hits": True,
+                "query": {"bool": {"filter": [
+                    {"terms": {"arrival_seq": sorted(remaining)}},
+                ]}},
+                "sort": [{"arrival_seq": "asc"}],
+                "_source": ["arrival_seq", "scope_id", "business_date"],
+            }
+            result = self.client.search(
+                index=self.index_prefix + WORK_INDEX_PATTERN, body=body)
+            hits = result.get("hits", {}).get("hits", [])
+            for hit in hits if isinstance(hits, list) else []:
+                source = hit.get("_source", {})
+                seq = source.get("arrival_seq")
+                if type(seq) is not int or seq not in remaining:
+                    continue
+                registered_scope = source.get("scope_id")
+                registered_day = source.get("business_date")
+                if (isinstance(registered_scope, str) and
+                        isinstance(registered_day, str) and
+                        (registered_scope, registered_day)
+                        != (scope_id, business_date)):
+                    proven.add(seq)
+                # 属本分区：受理在案未物化——不证，停摆等物化（同 legacy
+                # ②路同域语义）。
         return proven
 
     # ---------- 单文档准备（③ CAS 合并） ----------
@@ -353,7 +395,12 @@ class PrepareWorker:
         head = self._store.get(CONTROL_INDEX, HEAD_ID)
         materialized = 0
         if head is not None:
-            value = head["source"].get("last_materialized_seq", 0)
+            # P1a-T2：物化游标读源更名——last_terminal（游标形头）；
+            # legacy 头（双写窗 False 侧）别名 last_materialized_seq 兼容读。
+            source = head["source"]
+            value = source.get("last_terminal")
+            if value is None:
+                value = source.get("last_materialized_seq", 0)
             materialized = value if type(value) is int and value > 0 else 0
         ready_seqs = self._scan_ready_seqs(scope_id, physical_index)
         now = _utc_iso(self.clock())
@@ -434,7 +481,7 @@ class PrepareWorker:
                     "scope_id": scope_id, "business_date": business_date,
                     "evidence": "per_doc_ready",
                     # 本轮推进凭登记证明跳过的他域/日序号计数（有界审计位；
-                    # 证明本体可由 seq 登记映射/pending 日志确定性重导）
+                    # 证明本体可由 seq 登记映射/work 任务文档族确定性重导）
                     "foreign_proof_count": sum(
                         1 for seq in foreign if stored < seq <= frontier),
                     # P0-T5 全前沿令②：凭墓簿跳过的本域日终态序号计数

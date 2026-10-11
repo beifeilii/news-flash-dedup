@@ -124,10 +124,15 @@ def test_scan_pending_zero_check_form_collects_insertion_order():
 # ---- (a)-12 EWΔ F-5：公开函数入 __all__ ----
 
 def test_expired_pending_cleanup_in_all():
-    """EWΔ F-5：公开函数入 __all__（包装契约一致；17→18 计数钉）。"""
+    """EWΔ F-5：公开函数入 __all__（包装契约一致）。
+
+    P1a-T5：18→23 计数钉随清理域扩 kind=work|tombstones 更新
+    （+CLEANUP_DAY_KINDS/WorkTaskCleanupTarget/execute_work_task_cleanup/
+    plan_work_task_cleanup/work_task_state_query 五件）。
+    """
     from news_flash_dedup import lifecycle
     assert "execute_expired_pending_cleanup" in lifecycle.__all__
-    assert len(lifecycle.__all__) == 18
+    assert len(lifecycle.__all__) == 23
     namespace = {}
     exec("from news_flash_dedup.lifecycle import *", namespace)
     assert callable(namespace["execute_expired_pending_cleanup"])

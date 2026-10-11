@@ -80,10 +80,11 @@ PREFIX = "p01-batch-w2fd2-"
 # ---------- required_indices 带前缀形 ----------
 
 def test_required_indices_with_prefix_returns_prefixed_names():
-    """四位一体（建）：required_indices 接受 index_prefix，六名全带前缀且逻辑尾部不变。"""
+    """四位一体（建）：required_indices 接受 index_prefix，八名全带前缀且逻辑尾部不变。
+    （P1a-T1：+两日 work——六名→八名，机械钉随新世界更新。）"""
     prefixed = required_indices(DAY, index_prefix=PREFIX)
     canonical = required_indices(DAY)
-    assert len(prefixed) == 6
+    assert len(prefixed) == 8
     for name in prefixed:
         assert name.startswith(PREFIX)
     assert {name[len(PREFIX):] for name in prefixed} == set(canonical)
@@ -117,7 +118,7 @@ def test_provision_creates_prefixed_names_pairable_with_batch_store():
     result = provision_isolated_indices(_Client(indices), PREFIX, business_day=DAY)
     expected = set(required_indices(DAY, index_prefix=PREFIX).keys())
     assert set(indices.created) == expected
-    assert len(indices.created) == 6
+    assert len(indices.created) == 8
     store = ElasticsearchBatchStore(_Client(_Indices()), index_prefix=PREFIX)
     for logical in required_indices(DAY):
         assert store._physical(logical) in expected  # 访：配对连通，不再 404

@@ -354,6 +354,10 @@ def test_g5_2_held_day_index_named_by_cleanup_dry_run():
     class _StubClient:
         indices = _StubIndices()
 
+        def count(self, *, index, body):
+            # P1a-T5：dry-run 对在场 work 索引做非终态在位检查（零活任务）。
+            return {"count": 0, "_shards": {"total": 1, "successful": 1, "failed": 0}}
+
     audit = lifecycle.CleanupAuditLog(operator="held-red")
     report = lifecycle.dry_run_cleanup(
         _StubClient(), datetime.date(2026, 10, 6), audit, retention_days=7)

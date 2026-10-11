@@ -11,11 +11,12 @@ from news_flash_dedup.es_admission_index import (
 from news_flash_dedup.es_admission_schema import day_index
 
 
-def test_required_indices_contains_six_indices():
+def test_required_indices_contains_eight_indices():
     business = date(2026, 9, 24)
     indices = required_indices(business)
-    # control + request + 2 days × (items + audits) = 6
-    assert len(indices) == 6
+    # control + request + 2 days × (items + audits + work) = 8
+    # P1a-T1：work 任务索引进 required（蓝图 §七-2 裁定——受理主路径）。
+    assert len(indices) == 8
 
 
 def test_required_indices_includes_control_and_request():
@@ -30,11 +31,24 @@ def test_required_indices_includes_two_days_of_items_and_audits():
     indices = required_indices(business)
     assert day_index(business.isoformat()) in indices
     # 窗口 Z3 恒死分支清理：旧表达式 `... if False else "2026-09-25"` 恒取字面
-    # 量分支（前支永不求值），改为由 business 真实推导次日 items 索引名
+    # 量分支（前支永不求值），改为由 business 真实推导次日索引名
     # （2026-09-24 + 1d = 2026-09-25，与旧恒取分支同值，语义不变但不再有死码）
     assert day_index((business + timedelta(days=1)).isoformat()) in indices
     assert day_index(business.isoformat(), "audits") in indices
     assert day_index("2026-09-25", "audits") in indices
+
+
+def test_required_indices_includes_two_days_of_work():
+    """P1a-T1：work 任务队列索引两日窗与 items 同梯（受理主路径）。"""
+    business = date(2026, 9, 24)
+    indices = required_indices(business)
+    assert day_index(business.isoformat(), "work") in indices
+    assert day_index((business + timedelta(days=1)).isoformat(), "work") in indices
+    work_props = indices[day_index(business.isoformat(), "work")][
+        "mappings"]["properties"]
+    assert work_props["task_state"]["type"] == "keyword"
+    assert work_props["text"]["index"] is False
+    assert work_props["arrival_seq"]["type"] == "long"
 
 
 def test_required_indices_set_one_shard_no_replica():
@@ -116,20 +130,21 @@ class _FakeClient:
         self.indices = indices_api
 
 
-def test_provision_creates_six_indices_and_topology():
+def test_provision_creates_eight_indices_and_topology():
     """D25：fresh namespace 下全函数真实驱动（原 Mapping NameError 隐雷区）。
 
     现契约钉值（09-28 用户授权四位一体裁定）：create 用 index_prefix+逻辑名
     带前缀形——建/闸/访/清同口径（与 batch_es_store 强制前缀、bench/probe
     两原件、lifecycle 双兼容正则一致；旧"canonical 名+命名归属待裁定"钉值
-    随裁定落地作废），本测试钉住该形态防静默漂移。"""
+    随裁定落地作废），本测试钉住该形态防静默漂移。P1a-T1：8 索引（+两日
+    work）。"""
     api = _FakeIndicesApi()
     result = provision_isolated_indices(
         _FakeClient(api), "p01-batch-test1-", business_day=date(2026, 9, 24))
     expected = set(required_indices(date(2026, 9, 24), index_prefix="p01-batch-test1-").keys())
     assert set(api.created) == expected
-    assert len(api.created) == 6
-    assert len(result["topology"]) == 6
+    assert len(api.created) == 8
+    assert len(result["topology"]) == 8
     assert result["business_day"] == "2026-09-24"
 
 

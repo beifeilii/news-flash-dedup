@@ -35,6 +35,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from news_flash_dedup.batch_admission import (
+    ADMISSION_CONFIG_VERSION, DURABLE_QUEUE_CAPACITY,
+    DURABLE_QUEUE_CRITICAL_DEPTH, DURABLE_QUEUE_WARNING_DEPTH,
+)
 from news_flash_dedup.decide import judge_version_config as _jvc
 from news_flash_dedup.decide.llm_residual import (
     DEFAULT_MODEL,
@@ -47,13 +51,19 @@ from news_flash_dedup.decide.policy_version import (
 )
 from news_flash_dedup.facts.rule import RULE_DICT_VERSION
 from news_flash_dedup.recall.fact_supply import fact_supply_mode_from_env
+from news_flash_dedup.work_queue import WORK_LEASE_DEFAULT_SECONDS
 
 # 终审 P1-manifest（2026-10-11 修复包）：R7 回填开关实际生效态入正式
 # 结构化字段 backfill_enabled（字段集变更）→schema 升 v2。
 # 用户令 2026-10-11（LLM 事实供给接进服务主链）：供给选择实际生效态入
 # 正式结构化字段 fact_supply（env 单源 DEDUP_FACT_SUPPLY，缺席=rule；
 # 字段集变更）→schema 升 v3。
-MANIFEST_SCHEMA_VERSION = "run_manifest_v3"
+# P1a-T4（2026-10-11，卡3.5）：durable 队列实态五字段——durable_queue
+# （env 单源 DEDUP_DURABLE_QUEUE，缺席=0=双写窗 legacy 侧）+容量三档
+# （4096/3277/3891，batch_admission 单源常量）+work_lease_seconds
+# （work_queue 单源缺省租约）+admission_config_version（头文档配置纪元
+# 单源）→schema 升 v4。
+MANIFEST_SCHEMA_VERSION = "run_manifest_v4"
 
 # 提交二（2026-10-10，p3-semantic-authority，方案 §5.2 文件 E/H）：policy
 # 版本字面量单源迁至 decide/policy_version.py（无循环依赖；本模块与
@@ -90,6 +100,9 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_JUDGE_DECISION_MODE",        # decide/judge_pair.py（灰度，默认 legacy）
     "DEDUP_JUDGE_IN_CHAIN",             # decide/judge_pair.py（判官进主链，默认关）
     "DEDUP_JUDGE_PROOF",                # decide/judge_proof.py（证明路，默认关）
+    # P1a-T4（卡3.5）：durable 队列模式（双写窗受理侧选择；缺席=0=
+    # legacy pending 全塞路径；实际生效态同时记结构化字段 durable_queue）
+    "DEDUP_DURABLE_QUEUE",              # batch_admission.py（受理模式，双写窗）
     "DEDUP_RECALL_MODE",                # recall/service.py（召回/判重模式闸）
 )
 
@@ -98,6 +111,36 @@ def snapshot_switch_state(env: Mapping[str, str] | None = None) -> tuple[tuple[s
     """已知开关快照：((名称, 值), …)，固定 KNOWN_SWITCHES 序；缺省读 os.environ。"""
     source = os.environ if env is None else env
     return tuple((name, source.get(name, "")) for name in KNOWN_SWITCHES)
+
+
+# P1a-T4（卡3.5）：durable 队列模式 env 单源（缺席=0=双写窗 legacy 侧；
+# 解析口径同 DEDUP_JUDGE_BACKFILL——非空非法值 fail-closed 拒产）。
+DURABLE_QUEUE_ENV = "DEDUP_DURABLE_QUEUE"
+_DURABLE_OFF_VALUES = ("0", "false", "off", "no")
+_DURABLE_ON_VALUES = ("1", "true", "on", "yes")
+
+
+def durable_queue_enabled_from_env(environ: Mapping[str, str] | None = None) -> bool:
+    """读 DEDUP_DURABLE_QUEUE（durable 队列模式实态）：
+
+    - 缺席/空串 → False（双写窗默认 legacy 侧——P1a-T6 全量翻转前
+      生产主链仍走 pending 全塞路径）；
+    - 0/false/off/no（大小写不敏感）→ False；
+    - 1/true/on/yes → True；
+    - 其他非空值 → ValueError（fail-closed，同 backfill 解析口径）。
+    """
+    raw = ((os.environ if environ is None else environ)
+           .get(DURABLE_QUEUE_ENV) or "").strip().lower()
+    if not raw:
+        return False
+    if raw in _DURABLE_OFF_VALUES:
+        return False
+    if raw in _DURABLE_ON_VALUES:
+        return True
+    raise ValueError(
+        f"{DURABLE_QUEUE_ENV}={raw!r} 非法：只允许 "
+        f"{'|'.join(_DURABLE_OFF_VALUES)}（legacy）或 "
+        f"{'|'.join(_DURABLE_ON_VALUES)}（durable）；缺席=默认 legacy")
 
 
 def inputs_manifest_sha256(inputs: Iterable[str]) -> str:
@@ -167,6 +210,14 @@ class RunManifest:
     选择实际生效态 "rule"/"llm"——env 单源 DEDUP_FACT_SUPPLY，缺席=
     rule；无 config 对象故无同传冲突面，与 switch_state 快照双口径可
     对拍）。
+
+    P1a-T4（卡3.5）：增 durable 队列实态五字段（schema v4）——
+    durable_queue（env 单源 DEDUP_DURABLE_QUEUE 实态，规范化 "1"/"0"）
+    +queue_capacity/queue_warning_depth/queue_critical_depth（batch_
+    admission 单源常量——manifest 记录**该代码版**容量三档；运行期
+    测试注入的小容量不入生产 manifest 面）+work_lease_seconds（work_
+    queue 单源缺省租约）+admission_config_version（头文档配置纪元
+    单源——受理配置漂移可回溯）。
     """
     schema_version: str
     pipeline_version: str
@@ -182,6 +233,12 @@ class RunManifest:
     code_git_sha: str
     inputs_sha256: str
     input_count: int
+    durable_queue: str
+    queue_capacity: int
+    queue_warning_depth: int
+    queue_critical_depth: int
+    work_lease_seconds: int
+    admission_config_version: int
 
     def to_dict(self) -> dict:
         return {
@@ -199,6 +256,12 @@ class RunManifest:
             "code_git_sha": self.code_git_sha,
             "inputs_sha256": self.inputs_sha256,
             "input_count": self.input_count,
+            "durable_queue": self.durable_queue,
+            "queue_capacity": self.queue_capacity,
+            "queue_warning_depth": self.queue_warning_depth,
+            "queue_critical_depth": self.queue_critical_depth,
+            "work_lease_seconds": self.work_lease_seconds,
+            "admission_config_version": self.admission_config_version,
         }
 
     def to_json(self) -> str:
@@ -338,6 +401,10 @@ def build_run_manifest(
     # H 项——无 config 对象无同传冲突面；switch_state 已同时快照 env
     # 原值，双口径可对拍）。
     fact_supply_state = fact_supply_mode_from_env(env)
+    # P1a-T4（卡3.5）：durable 队列实态（env 单源；容量/租约/纪元取
+    # 域层单源常量——代码版配置即版本清单锚）。
+    durable_queue_state = (
+        "1" if durable_queue_enabled_from_env(env) else "0")
     return RunManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
         pipeline_version=pipeline_version,
@@ -353,6 +420,12 @@ def build_run_manifest(
         code_git_sha=resolve_code_git_sha(code_git_sha, env=env, repo_root=repo_root),
         inputs_sha256=inputs_manifest_sha256(items),
         input_count=len(items),
+        durable_queue=durable_queue_state,
+        queue_capacity=DURABLE_QUEUE_CAPACITY,
+        queue_warning_depth=DURABLE_QUEUE_WARNING_DEPTH,
+        queue_critical_depth=DURABLE_QUEUE_CRITICAL_DEPTH,
+        work_lease_seconds=int(WORK_LEASE_DEFAULT_SECONDS),
+        admission_config_version=ADMISSION_CONFIG_VERSION,
     )
 
 
@@ -361,6 +434,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_PIPELINE_VERSION",
     "DEFAULT_POLICY_VERSION",
+    "DURABLE_QUEUE_ENV",
     "JUDGE_PROMPT_VERSION",
     "KNOWN_SWITCHES",
     "MANIFEST_SCHEMA_VERSION",
@@ -369,6 +443,7 @@ __all__ = [
     "RULE_DICT_VERSION",
     "RunManifest",
     "build_run_manifest",
+    "durable_queue_enabled_from_env",
     "inputs_manifest_sha256",
     "resolve_code_git_sha",
     "snapshot_switch_state",

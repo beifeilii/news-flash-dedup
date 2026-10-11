@@ -20,7 +20,18 @@ def test_p01_mappings_keep_strict_field_contract():
     assert len(request["mappings"]["properties"]) == 10
     control = control_mapping()
     assert control["mappings"]["dynamic"] == "strict"
-    assert len(control["mappings"]["properties"]) == 13
+    # P1a-T2：头文档游标化——+last_terminal/last_decision_seq/config_version
+    # 三长字段（13→16；last_materialized_seq/pending 保留映射槽位=
+    # 过渡别名与空壳，见 control_mapping 注记）。
+    assert len(control["mappings"]["properties"]) == 16
+    assert set(control["mappings"]["properties"]) == {
+        "kind", "scope_id", "business_date", "pipeline_version", "owner_id",
+        "last_allocated_seq", "last_materialized_seq", "last_terminal",
+        "last_decision_seq", "config_version", "lexical_watermark",
+        "decision_watermark", "updated_at", "expires_at", "pending",
+        "checkpoint",
+    }
+    assert control["mappings"]["properties"]["pending"]["enabled"] is False
 
 
 def test_audit_mapping_has_13_strict_fields():

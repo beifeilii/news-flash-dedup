@@ -58,6 +58,117 @@ class MemoryStore:
     def is_conflict(self, error):
         return isinstance(error, Conflict)
 
+    # ---------- P1a-T2：任务文档检索面（受理复用/容量/孤儿探针消费） ----------
+
+    @staticmethod
+    def _match_clause(source, clause):
+        if len(clause) != 1:
+            raise RuntimeError("memory search: clause must be single-key")
+        kind, body = next(iter(clause.items()))
+        if kind == "term":
+            field, value = next(iter(body.items()))
+            return source.get(field) == value
+        if kind == "terms":
+            field, values = next(iter(body.items()))
+            return source.get(field) in values
+        if kind == "range":
+            field, bounds = next(iter(body.items()))
+            value = source.get(field)
+            if value is None:
+                return False
+            if "gt" in bounds and not value > bounds["gt"]:
+                return False
+            if "gte" in bounds and not value >= bounds["gte"]:
+                return False
+            if "lt" in bounds and not value < bounds["lt"]:
+                return False
+            if "lte" in bounds and not value <= bounds["lte"]:
+                return False
+            return True
+        raise RuntimeError(f"memory search: unsupported clause {kind!r}")
+
+    @staticmethod
+    def _index_matches(pattern, index):
+        # 尾星通配（work 族跨日 "news-dedup-work-v1-*"）；中缀/多星即拒。
+        if "*" not in pattern:
+            return pattern == index
+        prefix, star, suffix = pattern.partition("*")
+        if star != "*" or "*" in prefix or "*" in suffix:
+            raise RuntimeError(
+                "memory search: only trailing-star wildcard supported")
+        return index.startswith(prefix) and (
+            not suffix or index.endswith(suffix))
+
+    def search(self, index, body):
+        """b4_fake_es.FakeESClient.search 同语义最小求值器（duck 面）。
+
+        支持：bool.filter term/terms/range、must_not terms、
+        should terms（minimum_should_match=1）、arrival_seq asc/desc 排序、
+        尾星通配索引、size/_source 投影/track_total_hits；超出即拒。
+        """
+        query = body.get("query", {})
+        bool_q = query.get("bool") if isinstance(query, dict) else None
+        if bool_q is None and query not in ({}, {"match_all": {}}):
+            raise RuntimeError("memory search: only bool/match_all queries")
+        bool_q = bool_q or {}
+        should = bool_q.get("should")
+        if should is not None:
+            msm = bool_q.get("minimum_should_match", 1)
+            if msm != 1:
+                raise RuntimeError(
+                    "memory search: only minimum_should_match=1 supported")
+        with self.lock:
+            snapshot = [
+                (idx, key, deepcopy(doc["source"]))
+                for (idx, key), doc in self.docs.items()]
+        matched = []
+        for idx, doc_id, source in snapshot:
+            if not self._index_matches(index, idx):
+                continue
+            if any(not self._match_clause(source, clause)
+                    for clause in bool_q.get("filter", [])):
+                continue
+            if any(self._match_clause(source, clause)
+                    for clause in bool_q.get("must_not", [])):
+                continue
+            if should is not None and not any(
+                    self._match_clause(source, clause) for clause in should):
+                continue
+            matched.append((idx, doc_id, source))
+        sort = body.get("sort") or [{"arrival_seq": "asc"}]
+        sort_specs = []
+        for spec in sort:
+            field, order = next(iter(spec.items()))
+            if order not in ("asc", "desc"):
+                raise RuntimeError("memory search: only asc/desc sort")
+            sort_specs.append((field, order))
+
+        def _sort_key(item):
+            keys = []
+            for field, order in sort_specs:
+                value = item[2].get(field) if field != "record_id" else item[1]
+                if order == "desc":
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        raise RuntimeError(
+                            "memory search: desc sort requires int field")
+                    value = -value
+                keys.append(value)
+            return tuple(keys) + (item[1],)
+        matched.sort(key=_sort_key)
+        total = len(matched)
+        size = body.get("size", 10)
+        page = matched[:size]
+        wanted = body.get("_source")
+        hits = []
+        for idx, doc_id, source in page:
+            shown = source if wanted is None else {
+                key: source.get(key) for key in wanted if key in source}
+            hits.append({"_index": idx, "_id": doc_id, "_source": shown})
+        return {"timed_out": False,
+                "_shards": {"total": 1, "successful": 1, "failed": 0},
+                "hits": {"total": {"value": total, "relation": "eq"},
+                         "hits": hits}}
+
 
 def request(request_id="100-1", item_id="100-1", text="甲公司发布新产品。", when=None):
     return AdmissionRequest(

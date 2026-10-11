@@ -8,7 +8,9 @@
   index(op_type=create / if_seq_no+if_primary_term)、create、get、indices.*。
 
 仅实现本批测试用到的查询形态（bool.filter term/terms/range +
-must_not term/terms + arrival_seq 升序 + size + _source 投影 +
+must_not term/terms + bool.should terms（minimum_should_match=1，
+P1a-T2 受理复用检索）+ arrival_seq 升序/降序 + 尾星通配索引形态
+（P1a-T2 work 族跨日检索）+ size + _source 投影 +
 track_total_hits），非通用 ES 模拟器；查询形态超出即 RuntimeError
 （fail-closed，防测试静默绿）。
 """
@@ -242,6 +244,18 @@ class FakeESClient:
             return True
         raise RuntimeError(f"fake search: unsupported clause {kind!r}")
 
+    @staticmethod
+    def _index_matches(pattern: str, index: str) -> bool:
+        # P1a-T2：通配索引形态（work 族跨日检索 "news-dedup-work-v1-*"）。
+        # 尾部单星=前缀匹配；中缀/多星超出即拒（fail-closed 防静默绿）。
+        if "*" not in pattern:
+            return pattern == index
+        prefix, star, suffix = pattern.partition("*")
+        if star != "*" or "*" in prefix or "*" in suffix:
+            raise RuntimeError("fake search: only trailing-star wildcard supported")
+        return index.startswith(prefix) and (
+            not suffix or index.endswith(suffix))
+
     def search(self, *, index: str, body: dict):
         self.calls.append(("search", index, copy.deepcopy(body)))
         query = body.get("query", {})
@@ -249,37 +263,60 @@ class FakeESClient:
         if bool_q is None and query not in ({}, {"match_all": {}}):
             raise RuntimeError("fake search: only bool/match_all queries")
         bool_q = bool_q or {}
+        should = bool_q.get("should")
+        if should is not None:
+            # P1a-T2：should 子句（受理复用检索 request_id/item_id 双路并查）。
+            # 仅支持 minimum_should_match=1（缺省即 1——ES 语义）。
+            msm = bool_q.get("minimum_should_match", 1)
+            if msm != 1:
+                raise RuntimeError(
+                    "fake search: only minimum_should_match=1 supported")
         matched = []
         for (idx, doc_id), doc in self.docs.items():
-            if idx != index:
+            if not self._index_matches(index, idx):
                 continue
             source = doc["_source"]
+            if should is not None and not any(
+                    self._match_clause(source, clause) for clause in should):
+                continue
             if any(not self._match_clause(source, clause)
                    for clause in bool_q.get("filter", [])):
                 continue
             if any(self._match_clause(source, clause)
                    for clause in bool_q.get("must_not", [])):
                 continue
-            matched.append((doc_id, source))
+            matched.append((idx, doc_id, source))
         sort = body.get("sort") or [{"arrival_seq": "asc"}]
-        sort_keys = []
+        sort_specs = []
         for spec in sort:
             field, order = next(iter(spec.items()))
-            if order != "asc":
-                raise RuntimeError("fake search: only asc sort")
-            sort_keys.append(field)
-        matched.sort(key=lambda item: tuple(
-            item[1].get(field) if field != "record_id" else item[0]
-            for field in sort_keys) + (item[0],))
+            if order not in ("asc", "desc"):
+                raise RuntimeError("fake search: only asc/desc sort")
+            sort_specs.append((field, order))
+
+        # P1a-T2：desc 排序（孤儿探针取最大序）——数值字段取负实现倒序；
+        # desc 遇非数值字段超出即拒（fail-closed 防静默绿）。
+        def _sort_key(item):
+            keys = []
+            for field, order in sort_specs:
+                value = item[2].get(field) if field != "record_id" else item[1]
+                if order == "desc":
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        raise RuntimeError(
+                            "fake search: desc sort requires int field")
+                    value = -value
+                keys.append(value)
+            return tuple(keys) + (item[1],)
+        matched.sort(key=_sort_key)
         total = len(matched)
         size = body.get("size", 10)
         page = matched[:size]
         wanted = body.get("_source")
         hits = []
-        for doc_id, source in page:
+        for idx, doc_id, source in page:
             shown = source if wanted is None else {
                 key: source.get(key) for key in wanted if key in source}
-            hits.append({"_index": index, "_id": doc_id, "_source": shown})
+            hits.append({"_index": idx, "_id": doc_id, "_source": shown})
         # W-A 族④(c)-5（设计 §2.2 ④c 4 配套，additive）：search 成功返回体
         # 补 timed_out/_shards 字面（成功语义字面化，非放宽闸门）——护
         # 全真扫描路径绿件（worker scan G2/G3 缺键即拒的静默默认拆除）。

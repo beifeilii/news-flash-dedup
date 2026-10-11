@@ -55,6 +55,10 @@ def test_manifest_fields_complete():
         "backfill_enabled", "fact_supply", "model",
         "embedding_space", "switch_state", "code_git_sha",
         "inputs_sha256", "input_count",
+        # P1a-T4（卡3.5）：durable 队列实态五字段（schema v3→v4）。
+        "durable_queue", "queue_capacity", "queue_warning_depth",
+        "queue_critical_depth", "work_lease_seconds",
+        "admission_config_version",
     }
     assert d["schema_version"] == rm.MANIFEST_SCHEMA_VERSION
     assert d["pipeline_version"] == "dedup_v1"
@@ -75,6 +79,15 @@ def test_manifest_fields_complete():
     assert d["code_git_sha"] == GIT_SHA
     assert d["input_count"] == 3
     assert set(d["switch_state"]) == set(rm.KNOWN_SWITCHES)
+    # P1a-T4：durable 队列实态（env 缺席=0=双写窗 legacy 侧；容量三档/
+    # 租约/配置纪元=域层单源常量原样登记）。
+    assert d["durable_queue"] == "0"
+    assert d["queue_capacity"] == 4096
+    assert d["queue_warning_depth"] == 3277
+    assert d["queue_critical_depth"] == 3891
+    assert d["work_lease_seconds"] == 60
+    assert d["admission_config_version"] == 1
+    assert "DEDUP_DURABLE_QUEUE" in rm.KNOWN_SWITCHES
 
 
 def test_policy_version_literal_defaults():
@@ -193,11 +206,35 @@ def test_manifest_fact_supply_field_and_switch_snapshot():
     assert m_absent.fact_supply == "rule"          # 缺席默认=rule
     assert dict(m_absent.switch_state)["DEDUP_FACT_SUPPLY"] == ""
     assert "DEDUP_FACT_SUPPLY" in rm.KNOWN_SWITCHES
-    assert rm.MANIFEST_SCHEMA_VERSION == "run_manifest_v3"
+    assert rm.MANIFEST_SCHEMA_VERSION == "run_manifest_v4"
     with pytest.raises(ValueError):
         _build(env={"DEDUP_FACT_SUPPLY": "nope"})   # fail-closed 拒产
     # 语义可分：同输入不同供给态 → 内容指纹不同（审计锚敏感）
     assert m_llm.manifest_sha256() != m_absent.manifest_sha256()
+
+
+def test_manifest_durable_queue_fields_and_switch_snapshot():
+    """P1a-T4（卡3.5）：durable 队列实态字段（schema v4）——durable_queue
+    =env 单源 DEDUP_DURABLE_QUEUE（缺席=0=双写窗 legacy 侧；非法值
+    ValueError fail-closed，同 backfill 解析口径）；容量三档/租约/配置
+    纪元=域层单源常量；DEDUP_DURABLE_QUEUE 同入 KNOWN_SWITCHES 快照
+    （双口径可对拍）。"""
+    m_on = _build(env={"DEDUP_DURABLE_QUEUE": "1"})
+    assert m_on.durable_queue == "1"
+    assert dict(m_on.switch_state)["DEDUP_DURABLE_QUEUE"] == "1"
+    m_off = _build(env={"DEDUP_DURABLE_QUEUE": "0"})
+    assert m_off.durable_queue == "0"
+    m_absent = _build(env={})
+    assert m_absent.durable_queue == "0"            # 缺席=双写窗 legacy 侧
+    assert dict(m_absent.switch_state)["DEDUP_DURABLE_QUEUE"] == ""
+    assert "DEDUP_DURABLE_QUEUE" in rm.KNOWN_SWITCHES
+    with pytest.raises(ValueError, match="DEDUP_DURABLE_QUEUE"):
+        _build(env={"DEDUP_DURABLE_QUEUE": "banana"})   # fail-closed 拒产
+    # 布尔等价写法（大小写不敏感，同 backfill 口径）
+    assert _build(env={"DEDUP_DURABLE_QUEUE": "TRUE"}).durable_queue == "1"
+    assert _build(env={"DEDUP_DURABLE_QUEUE": "off"}).durable_queue == "0"
+    # 语义可分：同输入不同受理模式 → 内容指纹不同（审计锚敏感）
+    assert m_on.manifest_sha256() != m_absent.manifest_sha256()
 
 
 def test_manifest_backfill_effective_state_structured_field():

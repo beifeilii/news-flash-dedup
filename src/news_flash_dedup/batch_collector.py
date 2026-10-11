@@ -12,7 +12,10 @@ from time import monotonic
 from .admission import (
     AdmissionConflict, AdmissionReceipt, AdmissionRequest, AdmissionUnknown, IdentityConflict,
 )
-from .batch_admission import AdmissionCapacityExceeded, BatchAdmissionCoordinator, _bytes
+from .batch_admission import (
+    AdmissionCapacityExceeded, BatchAdmissionCoordinator, DurableQueueDepth,
+    _bytes,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -59,6 +62,12 @@ class CollectorSnapshot:
     # P0-T6 队列告警层越层计数（additive 尾字段；越层一次计一，回落复位
     # 不清零——审计连续口径，默认 0 既有观察者零回归）。
     depth_warnings: int = 0
+    # P1a-T4 durable 队列深度联动观测（additive 尾字段；queue_depth_face
+    # 未接线恒 None/0——既有观察者零回归）。durable_tier_events=档位
+    # 迁入 warning/critical/hard 的累计次数（审计连续口径）。
+    durable_depth: int | None = None
+    durable_tier: str | None = None
+    durable_tier_events: int = 0
 
 
 @dataclass(eq=False)
@@ -98,6 +107,7 @@ class BatchAdmissionCollector:
         warning_depth: int = 400,
         request_timeout_seconds: float = 5,
         close_timeout_seconds: float = 5,
+        queue_depth_face: Callable[[], DurableQueueDepth | None] | None = None,
     ) -> None:
         # P0-T6 参数分层（域层默认值，主窗令）：
         # - max_wait_seconds 0.1→0.02（更快合批节奏——短等待摊薄单条时延）；
@@ -152,6 +162,18 @@ class BatchAdmissionCollector:
         # 越层告警一次并置位；回落（下一 accept 观察到低于告警层）复位。
         self._depth_warned = False
         self._depth_warnings = 0
+        # P1a-T4 容量数据源换队深度（蓝图 §1.4）：queue_depth_face 返回
+        # 协调器深度计数器（durable 档位）——hard 档本地快拒 queue_full
+        # （省一轮 ES 往返；复用身份在该窗同样被拒=既有内存 queue_full
+        # 同型取舍，协调器闸"已受理身份永不 429"铁律不受影响），warning/
+        # critical 档位观测入 snapshot（additive 尾字段）。未接线（缺省
+        # None）=零行为 diff；内存等待队列档（512/4MB+告警 400）独立
+        # 保留。观测面 fail-soft：face 异常按 None（权威闸在协调器锁内）。
+        self._queue_depth_face = queue_depth_face
+        self._durable_depth: int | None = None
+        self._durable_tier: str | None = None
+        self._durable_tier_events = 0
+        self._durable_tier_last: str | None = None
         # 异步物化器订阅：每个成功 flush（202 已确认）的批次触发一次，
         # 物化器无需再以固定间隔轮询；仍未消除的事件由后续兜底短超时捕获。
         self.batch_flushed = Event()
@@ -197,6 +219,33 @@ class BatchAdmissionCollector:
         else:
             self._depth_warned = False
 
+    def _observe_durable_tier(self) -> None:
+        """durable 深度档位观测+hard 档本地快拒（须持 condition 锁调用）。
+
+        只读计数器（int 读原子）——权威闸门在协调器受理锁内
+        ``_durable_depth``；本面为预拒收/观测性质（省一轮 ES 往返）。
+        face 异常按 None 处理（fail-soft：观测面不得反噬受理）。
+        """
+        counter = None
+        try:
+            counter = self._queue_depth_face()
+        except Exception:
+            counter = None
+        if counter is None:
+            return
+        depth = counter.depth()
+        tier = counter.tier()
+        self._durable_depth, self._durable_tier = depth, tier
+        if tier != self._durable_tier_last:
+            self._durable_tier_last = tier
+            if tier != "normal":
+                self._durable_tier_events += 1
+                _log.warning(
+                    "collector observed durable queue tier %s (depth=%d)",
+                    tier, depth)
+        if tier == "hard":
+            raise CollectorRejected("queue_full")
+
     def _finish(self, item: _Waiting, *, receipt: AdmissionReceipt | None = None,
                 error: Exception | None = None) -> None:
         # 迟到的确认不能改写调用者已经拿到的 unknown。
@@ -222,6 +271,8 @@ class BatchAdmissionCollector:
         with self._condition:
             if self._closed:
                 raise CollectorRejected("worker_failed" if self._failed else "closed")
+            if self._queue_depth_face is not None:
+                self._observe_durable_tier()
             if (len(self._waiting) + len(self._inflight) >= self.max_queue_items or
                     self._waiting_bytes + self._inflight_bytes + size > self.max_queue_bytes):
                 raise CollectorRejected("queue_full")
@@ -378,6 +429,9 @@ class BatchAdmissionCollector:
                 closed=self._closed, failed=self._failed, worker_alive=self._thread.is_alive(),
                 flushed_signal=self._flushed_signal, resets=self._resets,
                 depth_warnings=self._depth_warnings,
+                durable_depth=self._durable_depth,
+                durable_tier=self._durable_tier,
+                durable_tier_events=self._durable_tier_events,
             )
 
     def close(self) -> None:

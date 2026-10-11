@@ -27,6 +27,7 @@ import provision_day_rollover as rollover  # noqa: E402
 DAY = date(2026, 9, 29)
 ITEMS = "news-dedup-items-v1-2026.09.29"
 AUDITS = "news-dedup-audits-v1-2026.09.29"
+WORK = "news-dedup-work-v1-2026.09.29"
 PREFIX = "p01-batch-w2fd2-"
 
 
@@ -65,10 +66,10 @@ def test_dry_run_is_default_and_writes_nothing():
     indices = _FakeIndices()
     report = rollover.plan_day_rollover(_FakeClient(indices), DAY)
     assert report["dry_run"] is True
-    assert report["would_create"] == [ITEMS, AUDITS]
+    assert report["would_create"] == [ITEMS, AUDITS, WORK]
     assert report["skipped_existing"] == []
     assert indices.created == []  # 零写
-    assert set(indices.exists_calls) == {ITEMS, AUDITS}  # HEAD 点验为只读
+    assert set(indices.exists_calls) == {ITEMS, AUDITS, WORK}  # HEAD 点验为只读
 
 
 # ---------- 幂等=已存在跳过 ----------
@@ -79,20 +80,20 @@ def test_execute_creates_missing_and_skips_existing_idempotent():
     client = _FakeClient(indices)
     report = rollover.execute_day_rollover(client, DAY)
     assert report["dry_run"] is False
-    assert report["created"] == [AUDITS]
+    assert report["created"] == [AUDITS, WORK]
     assert report["skipped_existing"] == [ITEMS]
     again = rollover.execute_day_rollover(client, DAY)
     assert again["created"] == []
-    assert again["skipped_existing"] == [ITEMS, AUDITS]
-    assert indices.created == [AUDITS]  # 两轮合计仅 1 次 create
+    assert again["skipped_existing"] == [ITEMS, AUDITS, WORK]
+    assert indices.created == [AUDITS, WORK]  # 两轮合计仅 2 次 create
 
 
 def test_execute_all_existing_is_full_skip():
     """幂等边界：全部已存在 → 零 create、全 skipped_existing。"""
-    indices = _FakeIndices(existing={ITEMS, AUDITS})
+    indices = _FakeIndices(existing={ITEMS, AUDITS, WORK})
     report = rollover.execute_day_rollover(_FakeClient(indices), DAY)
     assert report["created"] == []
-    assert report["skipped_existing"] == [ITEMS, AUDITS]
+    assert report["skipped_existing"] == [ITEMS, AUDITS, WORK]
     assert indices.created == []
 
 
@@ -120,7 +121,8 @@ def test_generated_names_pass_lifecycle_hard_regex():
 
     for prefix in ("", PREFIX):
         names = rollover.rollover_indices(DAY, index_prefix=prefix)
-        assert set(names) == {prefix + ITEMS, prefix + AUDITS}
+        # P1a-T5：滚动集三件（items/audits/work）——tombstones 不进滚动
+        assert set(names) == {prefix + ITEMS, prefix + AUDITS, prefix + WORK}
         for name in names:
             assert _CLEANUP_TARGET_PATTERN.fullmatch(name), name
 

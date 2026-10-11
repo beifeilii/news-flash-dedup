@@ -33,6 +33,7 @@ from .es_admission_schema import (
     day_index,
     item_mapping,
     request_mapping,
+    work_mapping,
 )
 
 
@@ -78,11 +79,15 @@ def _cleanup_half_created(client: Any,
 
 
 def required_indices(business_day: date, index_prefix: str = "") -> dict[str, dict]:
-    """返回某业务日需要的全部索引名 → mapping（含 control/request/两日 items/两日 audits）。
+    """返回某业务日需要的全部索引名 → mapping（含 control/request/两日 items/两日 audits/两日 work）。
 
     W2Fδ2（09-28 用户授权四位一体裁定）：`index_prefix` 缺省 "" = 10 §2
     canonical 生产形；非空必须全匹配 `p01-batch-[A-Za-z0-9-]+-`（与
     `ElasticsearchBatchStore`/bench/probe 两原件/lifecycle 同口径，fail-closed）。
+
+    P1a-T1（蓝图 §七-2 裁定）：每日增 work 任务索引（`day_index(iso,
+    "work")`——受理主路径，队列写前必须在场；当/次日两窗与 items 同梯）。
+    tombstones 维持按需 ensure 口径（T3 纪律），不在本清单。
     """
     if index_prefix and not re.fullmatch(r"p01-batch-[A-Za-z0-9-]+-", index_prefix):
         raise ValueError("isolated prefix required (p01-batch-*)")
@@ -94,6 +99,7 @@ def required_indices(business_day: date, index_prefix: str = "") -> dict[str, di
         iso = current.isoformat()
         result[index_prefix + day_index(iso)] = item_mapping()
         result[index_prefix + day_index(iso, "audits")] = audit_mapping()
+        result[index_prefix + day_index(iso, "work")] = work_mapping()
     for mapping in result.values():
         mapping.setdefault("settings", {}).update(number_of_shards=1, number_of_replicas=0)
     return result

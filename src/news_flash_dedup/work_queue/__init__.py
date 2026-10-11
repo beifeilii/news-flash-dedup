@@ -1,0 +1,91 @@
+"""P1a 任务队列域（队列持久化：待处理任务 → 独立 ES 任务文档族）。
+
+蓝图 = log\\P1a-预备设计-2026-10-11.md §1.1/§1.3（逐字段+租约口径）。
+模块边界照 shadow-queue 计划 Task 1/2 文件清单：
+- ``schema.py``：``WorkItemV1``/``WorkResultV1`` strict schema + 状态机值域；
+- ``es_store.py``：确定性 ID enqueue/claim/complete/defer/terminalize/
+  recover_expired_leases（create→读回对拍+CAS fencing）；
+- ``migration.py``：旧形态（头文档 pending 全塞）两阶段搬迁（P1a-T6）。
+"""
+
+from .es_store import (
+    WORK_INDEX_PATTERN,
+    WORK_LEASE_DEFAULT_SECONDS,
+    WorkClaimResult,
+    WorkEnqueueResult,
+    WorkLeaseLost,
+    WorkPersistUnknown,
+    claim_work_item,
+    complete_work_item,
+    defer_work_item,
+    enqueue_work_item,
+    load_work_item,
+    recover_expired_lease,
+    scan_expired_leases,
+    terminalize_work_item,
+    work_coords,
+    work_documents,
+    work_index,
+    work_item_id,
+)
+from .schema import (
+    ACTIVE_TASK_STATES,
+    FROZEN_FIELDS,
+    MATERIALIZE_ACCEPTED,
+    MATERIALIZE_EXPIRED,
+    MATERIALIZE_MATERIALIZING,
+    MATERIALIZE_READY,
+    MATERIALIZE_RETRY_WAIT,
+    MATERIALIZE_TOMBSTONE,
+    TERMINAL_TASK_STATES,
+    WORK_TASK_COMPENSATING,
+    WORK_TASK_EXPIRED,
+    WORK_TASK_LEASED,
+    WORK_TASK_PENDING,
+    WORK_TASK_READY,
+    WORK_TASK_RETRY_WAIT,
+    WORK_TASK_TOMBSTONED,
+    WorkItemV1,
+    WorkResultV1,
+    validate_work_item_invariants,
+)
+
+__all__ = [
+    "ACTIVE_TASK_STATES",
+    "FROZEN_FIELDS",
+    "WORK_INDEX_PATTERN",
+    "MATERIALIZE_ACCEPTED",
+    "MATERIALIZE_EXPIRED",
+    "MATERIALIZE_MATERIALIZING",
+    "MATERIALIZE_READY",
+    "MATERIALIZE_RETRY_WAIT",
+    "MATERIALIZE_TOMBSTONE",
+    "TERMINAL_TASK_STATES",
+    "WORK_LEASE_DEFAULT_SECONDS",
+    "WORK_TASK_COMPENSATING",
+    "WORK_TASK_EXPIRED",
+    "WORK_TASK_LEASED",
+    "WORK_TASK_PENDING",
+    "WORK_TASK_READY",
+    "WORK_TASK_RETRY_WAIT",
+    "WORK_TASK_TOMBSTONED",
+    "WorkClaimResult",
+    "WorkEnqueueResult",
+    "WorkItemV1",
+    "WorkLeaseLost",
+    "WorkPersistUnknown",
+    "WorkResultV1",
+    "claim_work_item",
+    "complete_work_item",
+    "defer_work_item",
+    "enqueue_work_item",
+    "load_work_item",
+    "recover_expired_lease",
+    "scan_expired_leases",
+    "terminalize_work_item",
+    "validate_work_item_invariants",
+    "work_coords",
+    "work_documents",
+    "work_index",
+    "work_item_id",
+]

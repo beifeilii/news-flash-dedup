@@ -3,6 +3,12 @@
 按用户指令：测试必须真实构造跨零点场景，不接受纯 mock 时钟断言就算过——
 模拟时钟可以，但 ES 侧索引必须是真实 UAT 读写。
 
+P1a-T5（卡3.6"跨日"项）：本套件迁任务文档形态（durable 队列）——
+协调器全部 `use_durable_queue=True`；隔离命名空间预建 D-1/D/D+1 三日
+work 日索引（任务文档落位面）；断言面增任务文档族（work 索引内
+business_date/arrival_seq/expires_at 复用首值——钉 6.1 全钉第三项）。
+物化驱动=materialize_prefix（T3 起 durable 侧=claim 驱动循环）。
+
 执行条件：环境边界 P07 §10：仅连 TEST_ES_* UAT 集群；fail-fast 检查通过；每个 run-id
 使用独立 p08-crossday-* prefix 隔离，不影响其它测试与集群。
 
@@ -88,6 +94,7 @@ def isolated_namespace(uat_client):
     ]
     from news_flash_dedup.es_admission_schema import (
         audit_mapping, control_mapping, item_mapping, request_mapping,
+        work_mapping,
     )
     mappings = {
         f"{prefix}news-dedup-control-v1": control_mapping(),
@@ -98,6 +105,11 @@ def isolated_namespace(uat_client):
         f"{prefix}news-dedup-audits-v1-2026.09.25": audit_mapping(),
         f"{prefix}news-dedup-items-v1-2026.09.23": item_mapping(),
         f"{prefix}news-dedup-audits-v1-2026.09.23": audit_mapping(),
+        # P1a-T5：任务文档落位面（D-1/D/D+1 三日 work 日索引——durable
+        # 队列 enqueue 点名写入，预建同 N31 滚动口径）。
+        f"{prefix}news-dedup-work-v1-2026.09.24": work_mapping(),
+        f"{prefix}news-dedup-work-v1-2026.09.25": work_mapping(),
+        f"{prefix}news-dedup-work-v1-2026.09.23": work_mapping(),
     }
     for name, schema in mappings.items():
         uat_client.indices.create(index=name, body=schema)
@@ -119,25 +131,28 @@ def isolated_namespace(uat_client):
 
 def test_cross_day_retry_keeps_first_business_date_and_arrival_seq(
         uat_client, isolated_namespace):
-    """真实 UAT ES 跨日重提：
+    """真实 UAT ES 跨日重提（P1a-T5 任务文档形态）：
 
     1. D 日 23:59:30（Asia/Shanghai）首次受理，模拟时钟精确控制；
-    2. D+1 00:00:30 同身份同文重提；
+    2. D+1 00:00:30 同身份同文重提（重试日时钟注入——按重试日重算
+       身份=禁止，钉 6.1 负形态）；
     3. receipt.business_date 必须 = D（不切换为 D+1）；
     4. receipt.arrival_seq 必须 = 首次序号（不重新分配）；
-    5. 主记录物理位置仍在 D 日索引（`items-v1-YYYY.MM.DD` of D）。
+    5. 任务文档驻 D 日 work 索引（business_date/arrival_seq/expires_at
+       复用首值——D+1 work 索引零落位）。
     """
-    from news_flash_dedup.admission import BUSINESS_ZONE
     from news_flash_dedup.batch_admission import (
         BatchAdmissionCoordinator, BatchLimits,
     )
     from news_flash_dedup.batch_collector import BatchAdmissionCollector
+    from news_flash_dedup.work_queue import work_index, work_item_id
 
     prefix = isolated_namespace["prefix"]
     store = _build_store(uat_client, prefix)
     service = BatchAdmissionCoordinator(
         store, owner_id="p08-crossday-owner", owner_isolated=lambda: True,
         limits=BatchLimits(), clock=lambda: _first_clock(),
+        use_durable_queue=True,
     )
     collector = BatchAdmissionCollector(service, max_wait_seconds=0.01,
                                        max_queue_items=8, request_timeout_seconds=2)
@@ -154,13 +169,24 @@ def test_cross_day_retry_keeps_first_business_date_and_arrival_seq(
     first_arrival_seq = first.arrival_seq
     first_record_id = first.record_id
     first_accepted_at = first.accepted_at
+    first_expires_at = first.expires_at
     collector.close()
+
+    # 任务文档驻 D 日 work 索引（P1a-T5：复用读回的物理证据面）。
+    work_key = work_item_id("default", "2026-09-24", first_arrival_seq)
+    work_doc = _get(uat_client, f"{prefix}{work_index('2026-09-24')}", work_key)
+    assert work_doc is not None and work_doc.get("found") is True
+    work_source = work_doc["_source"]
+    assert work_source["business_date"] == "2026-09-24"
+    assert work_source["arrival_seq"] == first_arrival_seq
+    assert work_source["expires_at"] == first_expires_at
 
     # D+1 00:00:30（SHA）同身份同文重提
     accepted_at_d1 = _sha(2026, 9, 25, 0, 0, 30)
     service_d1 = BatchAdmissionCoordinator(
         store, owner_id="p08-crossday-owner", owner_isolated=lambda: True,
         limits=BatchLimits(), clock=lambda: accepted_at_d1,
+        use_durable_queue=True,
     )
     collector_d1 = BatchAdmissionCollector(service_d1, max_wait_seconds=0.01,
                                           max_queue_items=8, request_timeout_seconds=2)
@@ -179,7 +205,12 @@ def test_cross_day_retry_keeps_first_business_date_and_arrival_seq(
         f"retry must reuse record_id; got {retry.record_id}, want {first_record_id}"
     assert retry.accepted_at == first_accepted_at, \
         f"retry must reuse first accepted_at; got {retry.accepted_at}"
+    assert retry.expires_at == first_expires_at, \
+        f"retry must reuse first expires_at; got {retry.expires_at}"
     assert retry.reused is True
+    # 跨日不重算落位：D+1 work 索引零任务文档。
+    assert _get(uat_client, f"{prefix}{work_index('2026-09-25')}",
+                work_key) is None
 
 
 def _get(uat_client, index, doc_id):
@@ -193,7 +224,8 @@ def _get(uat_client, index, doc_id):
 
 def test_cross_day_retry_lands_physical_record_in_D_index_not_D1(
         uat_client, isolated_namespace):
-    """T017 子断言：主记录物理位置在 D 日索引，不在 D+1 索引。"""
+    """T017 子断言：主记录物理位置在 D 日索引，不在 D+1 索引（P1a-T5
+    durable：物化=claim 驱动循环——materialize_prefix 同面）。"""
     from news_flash_dedup.batch_admission import (
         BatchAdmissionCoordinator, BatchLimits,
     )
@@ -205,6 +237,7 @@ def test_cross_day_retry_lands_physical_record_in_D_index_not_D1(
     service = BatchAdmissionCoordinator(
         store, owner_id="p08-crossday-owner", owner_isolated=lambda: True,
         limits=BatchLimits(), clock=lambda: _sha(2026, 9, 24, 23, 59, 30),
+        use_durable_queue=True,
     )
     collector = BatchAdmissionCollector(service, max_wait_seconds=0.01)
     first = collector.accept(_build_request("default", "2001-1", "2001-1", "正文",
@@ -226,7 +259,8 @@ def test_cross_day_retry_lands_physical_record_in_D_index_not_D1(
 def test_d_plus_one_new_id_same_text_does_not_recall_d_index(
         uat_client, isolated_namespace):
     """T018：D 日旧文已物化；D+1 新身份同文（不同 record_id）召回时只查 D+1 索引，
-    不召回 D 索引。
+    不召回 D 索引（P1a-T5 durable 形态——召回窗口仍限任务首次
+    business_date 单分区，钉 6.4"7 天≠跨日召回"）。
 
     模拟召回过滤：filter 强制 `business_date == '2026-09-25'`（D+1），scope 相同。
     """
@@ -241,6 +275,7 @@ def test_d_plus_one_new_id_same_text_does_not_recall_d_index(
     service = BatchAdmissionCoordinator(
         store, owner_id="p08-crossday-owner", owner_isolated=lambda: True,
         limits=BatchLimits(), clock=lambda: _sha(2026, 9, 24, 23, 0, 0),
+        use_durable_queue=True,
     )
     collector = BatchAdmissionCollector(service, max_wait_seconds=0.01)
     old_request_id = "3001-1"
@@ -272,6 +307,7 @@ def test_d_plus_one_new_id_same_text_does_not_recall_d_index(
     service_d1 = BatchAdmissionCoordinator(
         store, owner_id="p08-crossday-owner", owner_isolated=lambda: True,
         limits=BatchLimits(), clock=lambda: _sha(2026, 9, 25, 12, 0, 0),
+        use_durable_queue=True,
     )
     collector_d1 = BatchAdmissionCollector(service_d1, max_wait_seconds=0.01)
     new_receipt = collector_d1.accept(_build_request("default", new_request_id,

@@ -18,6 +18,8 @@
      所有权，不因读侧外国证明扣除）；
    - ``still_processing`` = head pending 条目数 + 隔离批序号区间长度
      （两个独立读面：pending 受理日志 + checkpoint.batch_quarantine）；
+      P1a-T2 游标形头（pending 恒空壳）在途账目=调用方注入 work 索引
+      ACTIVE 计数（``active_work_items``——纯函数不持检索端口）；
    - 恒等式**不是**构造恒真：四计数来自三个存储面（受理日志/墓簿/
      checkpoint），静息态（无 in-flight 批次收口）失衡=数据不一致需
      人工；迁移期（墓碑已落、批未收缩）失衡可见即中间态信号。
@@ -35,28 +37,43 @@ from typing import Iterable
 from .materialize_terminal import MaterializationTombstoneV1
 
 
-def _head_counters(head_source: dict) -> tuple[int, int, int, int]:
-    """head 受理日志三面提取（allocated/materialized/pending/quarantined）。
+def _head_counters(head_source: dict) -> tuple[int, int, int, int, bool]:
+    """head 受理日志面提取（allocated/materialized/pending/quarantined/
+    cursor_form 标记）。
 
     形态不识别 → ValueError（fail-closed——受理日志残缺时指标无意义）。
+    P1a-T2 兼容读：游标形头（``last_terminal`` 在案）以游标为物化水位
+    读源（过渡别名 ``last_materialized_seq`` 仅 legacy 头消费）；pending
+    恒空壳 → pending_items=0（在途账目由调用方以 work 索引 ACTIVE 计数
+    注入 ``active_work_items``——纯函数不持检索端口）。
     """
     if not isinstance(head_source, dict):
         raise ValueError("head source must be a dict")
     allocated = head_source.get("last_allocated_seq")
-    materialized = head_source.get("last_materialized_seq")
-    if (type(allocated) is not int or allocated < 0 or
-            type(materialized) is not int or materialized < 0):
+    if (type(allocated) is not int or allocated < 0):
+        raise ValueError("head watermarks must be nonnegative ints")
+    cursor_form = "last_terminal" in head_source
+    if cursor_form:
+        materialized = head_source.get("last_terminal")
+    else:
+        materialized = head_source.get("last_materialized_seq")
+    if type(materialized) is not int or materialized < 0:
         raise ValueError("head watermarks must be nonnegative ints")
     pending = head_source.get("pending")
-    if not isinstance(pending, dict) or not isinstance(
-            pending.get("batches"), list):
-        raise ValueError("head pending log is malformed")
-    pending_items = 0
-    for batch in pending["batches"]:
-        entries = batch.get("entries") if isinstance(batch, dict) else None
-        if not isinstance(entries, list):
-            raise ValueError("head pending batch is malformed")
-        pending_items += len(entries)
+    if pending is None and cursor_form:
+        # P1a-T4：新形游标头不落 pending（过渡空壳已摘）；在途账目由
+        # active_work_items 注入（同旧形游标头口径）。
+        pending_items = 0
+    else:
+        if not isinstance(pending, dict) or not isinstance(
+                pending.get("batches"), list):
+            raise ValueError("head pending log is malformed")
+        pending_items = 0
+        for batch in pending["batches"]:
+            entries = batch.get("entries") if isinstance(batch, dict) else None
+            if not isinstance(entries, list):
+                raise ValueError("head pending batch is malformed")
+            pending_items += len(entries)
     checkpoint = head_source.get("checkpoint", {})
     if not isinstance(checkpoint, dict):
         raise ValueError("head checkpoint is malformed")
@@ -71,7 +88,7 @@ def _head_counters(head_source: dict) -> tuple[int, int, int, int]:
         if first < 1 or last < first:
             raise ValueError("head quarantine sequence range is malformed")
         quarantined_items = last - first + 1
-    return allocated, materialized, pending_items, quarantined_items
+    return allocated, materialized, pending_items, quarantined_items, cursor_form
 
 
 def recovery_metrics(
@@ -80,6 +97,7 @@ def recovery_metrics(
     *,
     foreign_seqs: Iterable[int] = (),
     breaker_opens: int = 0,
+    active_work_items: int | None = None,
 ) -> dict:
     """P0-T7 恢复指标聚合（纯函数；详见模块 docstring 五项口径）。
 
@@ -88,12 +106,22 @@ def recovery_metrics(
       满足）；
     - ``foreign_seqs``：登记证明的他域/日序号（读侧前沿跳洞凭据之二；
       默认空=单窗口）；
-    - ``breaker_opens``：T2 熔断开启计数（无 runtime 传 0）。
+    - ``breaker_opens``：T2 熔断开启计数（无 runtime 传 0）；
+    - ``active_work_items``：P1a-T2 游标形头专用——work 索引 ACTIVE 任务
+      计数（调用方检索注入；缺省且头为游标形 → ValueError：在途账目无
+      读源，fail-closed 不猜）。legacy 头忽略本参数（pending 日志在案）。
     """
     if type(breaker_opens) is not int or breaker_opens < 0:
         raise ValueError("breaker_opens must be a nonnegative int")
-    accepted, materialized, pending_items, quarantined_items = \
+    accepted, materialized, pending_items, quarantined_items, cursor_form = \
         _head_counters(head_source)
+    if cursor_form:
+        if active_work_items is None:
+            raise ValueError(
+                "cursor-form head requires active_work_items "
+                "(work-index ACTIVE task count) for still_processing")
+        if (type(active_work_items) is not int or active_work_items < 0):
+            raise ValueError("active_work_items must be a nonnegative int")
     window: list[MaterializationTombstoneV1] = []
     seen_seqs: set[int] = set()
     for tombstone in tombstones:
@@ -111,7 +139,8 @@ def recovery_metrics(
                       if type(seq) is int and 1 <= seq <= accepted})
     foreign_below = [seq for seq in foreign if seq <= materialized]
     ready = materialized - len(terminal_below)
-    still_processing = pending_items + quarantined_items
+    still_processing = ((active_work_items if cursor_form else pending_items)
+                        + quarantined_items)
     return {
         # 五项主口径（主窗令）：
         "tombstone_count": len(window),
