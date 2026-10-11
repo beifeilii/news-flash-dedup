@@ -97,6 +97,25 @@ class FakeESClient:
             "_seq_no": doc["_seq_no"], "_primary_term": doc["_primary_term"],
         }
 
+    def mget(self, *, docs: list, realtime: bool = True):
+        # P0-T7：mget 面（batch_admission accept/逐条收口读回路径消费；
+        # 真 ES 鸭子形态——found False=未命中，无 per-doc _shards）。
+        self.calls.append(("mget", len(docs)))
+        results = []
+        for doc in docs:
+            index, doc_id = doc["_index"], doc["_id"]
+            existing = self.docs.get((index, doc_id))
+            if existing is None:
+                results.append({"_index": index, "_id": doc_id, "found": False})
+            else:
+                results.append({
+                    "_index": index, "_id": doc_id, "found": True,
+                    "_source": copy.deepcopy(existing["_source"]),
+                    "_seq_no": existing["_seq_no"],
+                    "_primary_term": existing["_primary_term"],
+                })
+        return {"docs": results}
+
     def index(self, *, index: str, id: str, document: dict,
               op_type: str | None = None, if_seq_no=None,
               if_primary_term=None, refresh=False):

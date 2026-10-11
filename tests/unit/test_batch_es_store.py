@@ -95,6 +95,115 @@ def test_bulk_request_level_permanent_error_has_no_document_position():
     assert caught.value.failed_document_positions == ()
 
 
+# ---------- P0-T4：bulk_create_classified 逐条结果解析 ----------
+
+def _classified_documents():
+    return [
+        ("idx", "first", {"x": 1}),
+        ("idx", "second", {"x": 2}),
+        ("idx", "third", {"x": 3}),
+    ]
+
+
+def test_bulk_classified_returns_per_document_outcomes_in_input_order():
+    from news_flash_dedup.materialize_failure import FailureClass
+
+    client = FakeClient()
+    store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
+    client.bulk_result = {"errors": True, "items": [
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "first", "status": 201}},
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 400,
+                    "error": {"type": "mapper_parsing_exception",
+                              "reason": "failed to parse field [text]"}}},
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 409}},
+    ]}
+    outcomes = store.bulk_create_classified(_classified_documents())
+    assert [outcome.position for outcome in outcomes] == [0, 1, 2]
+    assert outcomes[0].succeeded and outcomes[0].failure_class is None
+    assert outcomes[1].failure_class is FailureClass.ITEM_PERMANENT
+    assert outcomes[1].error_code == "http_400"
+    assert "mapper_parsing_exception" in outcomes[1].detail
+    assert outcomes[2].failure_class is FailureClass.UNKNOWN_WRITE
+    assert outcomes[2].status == 409
+
+
+@pytest.mark.parametrize("status, expected", [
+    (408, "TRANSIENT_INFRA"), (429, "TRANSIENT_INFRA"), (503, "TRANSIENT_INFRA"),
+    (404, "UNKNOWN_WRITE"), (409, "UNKNOWN_WRITE"),
+    (400, "ITEM_PERMANENT"), (412, "ITEM_PERMANENT"),
+])
+def test_bulk_classified_status_classification_matrix(status, expected):
+    from news_flash_dedup.materialize_failure import FailureClass
+
+    client = FakeClient()
+    store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
+    client.bulk_result = {"errors": True, "items": [
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "first", "status": status}},
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 201}},
+        {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 201}},
+    ]}
+    outcomes = store.bulk_create_classified(_classified_documents())
+    assert outcomes[0].failure_class is FailureClass[expected]
+
+
+def test_bulk_classified_empty_documents_return_empty_tuple():
+    client = FakeClient()
+    store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
+    assert store.bulk_create_classified([]) == ()
+    assert client.calls == []
+
+
+def test_bulk_classified_request_level_errors_raise_same_as_bulk_create():
+    class PermanentRequestError(Exception):
+        status_code = 413
+
+    class TransportError(Exception):
+        pass
+
+    client = FakeClient()
+    store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
+    client.bulk = lambda **kwargs: (_ for _ in ()).throw(PermanentRequestError())
+    with pytest.raises(PermanentBulkError) as caught:
+        store.bulk_create_classified(_classified_documents())
+    assert caught.value.failed_document_positions == ()
+    client.bulk = lambda **kwargs: (_ for _ in ()).throw(TransportError())
+    with pytest.raises(RuntimeError):
+        store.bulk_create_classified(_classified_documents())
+
+
+@pytest.mark.parametrize("fault", ["wrong_count", "wrong_id", "two_keys", "status_not_int",
+                                   "created_with_error"])
+def test_bulk_classified_rejects_unparseable_responses(fault):
+    client = FakeClient()
+    store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
+    identity = {"_index": "p01-batch-test42-idx", "_id": "first"}
+    if fault == "wrong_count":
+        client.bulk_result = {"errors": True, "items": [
+            {"create": {**identity, "status": 201}}]}
+    elif fault == "wrong_id":
+        client.bulk_result = {"errors": True, "items": [
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "other", "status": 201}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 201}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 201}}]}
+    elif fault == "two_keys":
+        client.bulk_result = {"errors": True, "items": [
+            {"create": {**identity, "status": 201}, "update": {}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 201}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 201}}]}
+    elif fault == "status_not_int":
+        client.bulk_result = {"errors": True, "items": [
+            {"create": {**identity, "status": "201"}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 201}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 201}}]}
+    else:                   # created_with_error
+        client.bulk_result = {"errors": True, "items": [
+            {"create": {**identity, "status": 201, "error": {"type": "x"}}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "second", "status": 201}},
+            {"create": {"_index": "p01-batch-test42-idx", "_id": "third", "status": 201}}]}
+    with pytest.raises(RuntimeError):
+        store.bulk_create_classified(_classified_documents())
+
+
 def test_mget_item_error_is_not_interpreted_as_absent_identity():
     client = FakeClient()
     client.mget = lambda **kwargs: {"docs": [
@@ -275,32 +384,42 @@ def test_adapter_bad_identity_read_blocks_coordinator_cas(fault):
     assert sum(name == "index" for name, _ in client.calls) == writes
 
 
-@pytest.mark.parametrize("status,quarantined", [(400, True), (403, True), (413, True),
-                                                (429, False), (503, False)])
-def test_bulk_status_distinguishes_persistent_quarantine_from_unknown(status, quarantined):
-    from news_flash_dedup.admission import AdmissionConflict, AdmissionUnknown
+@pytest.mark.parametrize("status,permanent", [(400, True), (403, True), (413, True),
+                                             (429, False), (503, False)])
+def test_bulk_status_distinguishes_permanent_tombstone_from_transient_retry(status, permanent):
+    """P0-T4（真实 store 逐条解析面）：单条永久错误→条目入墓，批照常完成
+    （1 坏件不杀批，水位跨 READY+TOMBSTONE 推进）；瞬态→可重试未收口。"""
+    from news_flash_dedup.admission import AdmissionUnknown
+    from news_flash_dedup.materialize_terminal import tombstone_exists_confirmed
     from test_batch_admission import coordinator, request
 
     client = StatefulClient()
     store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
     service = coordinator(store)
-    service.accept_batch([request()])
+    receipt = service.accept_batch([request()])[0]
+    main_index = "news-dedup-items-v1-" + receipt.business_date.replace("-", ".")
     client.bulk_status = status
-    with pytest.raises(AdmissionConflict if quarantined else AdmissionUnknown):
-        service.materialize_oldest()
-    head = store.get("news-dedup-control-v1", "batch_admission_head")["source"]
-    assert bool(head["checkpoint"].get("batch_quarantine")) is quarantined
-    assert head["last_materialized_seq"] == 0 and head["last_allocated_seq"] == 1
-    assert len(head["pending"]["batches"]) == 1
-    if quarantined:
-        restarted = coordinator(store)
-        calls = len(client.calls)
-        with pytest.raises(AdmissionConflict):
-            restarted.accept_batch([request(request_id="new", item_id="new")])
-        with pytest.raises(AdmissionConflict):
-            restarted.materialize_oldest()
-        assert all(name != "bulk" for name, _ in client.calls[calls:])
+    if permanent:
+        assert service.materialize_oldest() == 1
+        head = store.get("news-dedup-control-v1", "batch_admission_head")["source"]
+        assert head["last_materialized_seq"] == 1
+        assert head["pending"]["batches"] == []
+        assert not head["checkpoint"].get("batch_quarantine")
+        assert tombstone_exists_confirmed(
+            store, receipt.scope_id, receipt.business_date, receipt.arrival_seq)
+        assert store.get(main_index, receipt.record_id) is None
+        # 受理照常（无隔离旗阻断新件）。
+        assert service.accept_batch([
+            request(request_id="new", item_id="new")])[0].arrival_seq == 2
     else:
+        with pytest.raises(AdmissionUnknown):
+            service.materialize_oldest()
+        head = store.get("news-dedup-control-v1", "batch_admission_head")["source"]
+        assert head["last_materialized_seq"] == 0 and head["last_allocated_seq"] == 1
+        assert len(head["pending"]["batches"]) == 1
+        assert not head["checkpoint"].get("batch_quarantine")
+        assert not tombstone_exists_confirmed(
+            store, receipt.scope_id, receipt.business_date, receipt.arrival_seq)
         client.bulk_status = 201
         assert service.recover() == 1
 
@@ -386,20 +505,26 @@ def test_get_backend_error_cannot_reuse_materialized_identity_or_allocate(part, 
     assert store.get("news-dedup-control-v1", "batch_admission_head") == before
 
 
-def test_partial_bulk_permanent_item_preserves_successes_and_original_pending():
-    from copy import deepcopy
-    from news_flash_dedup.admission import AdmissionConflict
+def test_partial_bulk_permanent_item_isolates_entry_and_completes_batch():
+    """P0-T4（真实 store 逐条解析面）：批内混合结果——永久(400)压倒瞬态(503)，
+    条目单条隔离入墓；成功文档保留；主记录翻 tombstoned；批一次收缩完成。"""
+    from news_flash_dedup.materialize_terminal import tombstone_exists_confirmed
     from test_batch_admission import coordinator, request
+
     client = StatefulClient()
     store = ElasticsearchBatchStore(client, index_prefix="p01-batch-test42-")
     service = coordinator(store)
-    service.accept_batch([request()])
-    before = deepcopy(store.get("news-dedup-control-v1", "batch_admission_head")["source"])
+    receipt = service.accept_batch([request()])[0]
     client.bulk_status = [201, 201, 400, 503]
-    with pytest.raises(AdmissionConflict):
-        service.materialize_oldest()
+    assert service.materialize_oldest() == 1
     after = store.get("news-dedup-control-v1", "batch_admission_head")["source"]
-    assert after["pending"] == before["pending"]
-    assert after["checkpoint"]["batch_quarantine"]["reason"] == "permanent_bulk_error"
-    assert after["last_materialized_seq"] == 0 and after["last_allocated_seq"] == 1
-    assert len(client.memory.docs) == 3
+    assert after["pending"]["batches"] == []
+    assert after["last_materialized_seq"] == 1
+    assert not after["checkpoint"].get("batch_quarantine")
+    assert len(client.memory.docs) == 4          # head + 主记录 + request 映射 + 墓碑
+    assert tombstone_exists_confirmed(
+        store, receipt.scope_id, receipt.business_date, receipt.arrival_seq)
+    main_index = "news-dedup-items-v1-" + receipt.business_date.replace("-", ".")
+    main = store.get(main_index, receipt.record_id)
+    assert main["source"]["task_state"] == "tombstoned"   # 场景 C 补正规则
+    assert store.get("news-dedup-requests-v1", "seq:1") is None  # 503 文档未落

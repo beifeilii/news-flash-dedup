@@ -56,6 +56,9 @@ class CollectorSnapshot:
     # W-A 族③(b)-2（A1-005）：reset 重建次数（additive 尾字段，审计连续
     # 性口径延伸——重建可见；默认 0 现役构造点零回归）。
     resets: int = 0
+    # P0-T6 队列告警层越层计数（additive 尾字段；越层一次计一，回落复位
+    # 不清零——审计连续口径，默认 0 既有观察者零回归）。
+    depth_warnings: int = 0
 
 
 @dataclass(eq=False)
@@ -88,20 +91,32 @@ def _request_size(request: AdmissionRequest) -> int:
 class BatchAdmissionCollector:
     def __init__(
         self, coordinator: BatchAdmissionCoordinator, *,
-        max_wait_seconds: float = 0.1,
+        max_wait_seconds: float = 0.02,
         max_batch_bytes: int | None = None,
-        max_queue_items: int = 64,
+        max_queue_items: int = 512,
         max_queue_bytes: int = 4 * 1024 * 1024,
+        warning_depth: int = 400,
         request_timeout_seconds: float = 5,
         close_timeout_seconds: float = 5,
     ) -> None:
+        # P0-T6 参数分层（域层默认值，主窗令）：
+        # - max_wait_seconds 0.1→0.02（更快合批节奏——短等待摊薄单条时延）；
+        # - 队列两梯：warning_depth=400（告警层，越层告警一次）+
+        #   max_queue_items=512（硬层，queue_full 拒收）——与 durable log
+        #   硬容量（BatchLimits.max_log_items=512）同梯，内存缓冲与持久
+        #   缓冲对齐；
+        # - 告警层高于硬层时惰性（永不触达，不视为配置错误——fail-soft，
+        #   既有小容量构造点零回归）。
         if not 0 < max_wait_seconds <= 0.1:
             raise ValueError("batch wait must be in (0, 100ms]")
         if any(not isfinite(value) or not 0 < value <= TIMEOUT_MAX
                for value in (request_timeout_seconds, close_timeout_seconds)):
             raise ValueError("collector timeouts must be positive and within platform bounds")
+        if warning_depth < 1:
+            raise ValueError("warning depth must be positive")
         self.coordinator = coordinator
         self.max_wait_seconds = max_wait_seconds
+        self.warning_depth = warning_depth
         self.max_batch_bytes = min(
             coordinator.limits.max_batch_bytes if max_batch_bytes is None else max_batch_bytes,
             coordinator.limits.max_batch_bytes,
@@ -133,6 +148,10 @@ class BatchAdmissionCollector:
         self._failed = False
         # W-A 族③(b)-1（A1-005）：reset 重建计数（审计连续——不清零）。
         self._resets = 0
+        # P0-T6 队列告警层（warning_depth）越层计量：_note_depth_warning
+        # 越层告警一次并置位；回落（下一 accept 观察到低于告警层）复位。
+        self._depth_warned = False
+        self._depth_warnings = 0
         # 异步物化器订阅：每个成功 flush（202 已确认）的批次触发一次，
         # 物化器无需再以固定间隔轮询；仍未消除的事件由后续兜底短超时捕获。
         self.batch_flushed = Event()
@@ -157,6 +176,26 @@ class BatchAdmissionCollector:
         self._queue_wait_count += 1
         self._queue_wait_seconds_total += elapsed
         self._queue_wait_seconds_max = max(self._queue_wait_seconds_max, elapsed)
+
+    def _note_depth_warning(self) -> None:
+        """P0-T6 队列告警层（越层一次；回落复位——须持 condition 锁调用）。
+
+        深度=waiting+inflight（与 queue_full 硬层同一口径）。越层告警一次
+        （深度回落后再次越层重新告警）；计量入 snapshot.depth_warnings
+        （有界审计位，回落复位**不**清零）。告警层高于硬层时惰性（永不
+        触达——fail-soft，小容量构造点零回归）。
+        """
+        depth = len(self._waiting) + len(self._inflight)
+        if depth >= self.warning_depth:
+            if not self._depth_warned:
+                self._depth_warned = True
+                self._depth_warnings += 1
+                _log.warning(
+                    "collector queue depth %d reached warning tier "
+                    "(warning_depth=%d, hard capacity=%d)",
+                    depth, self.warning_depth, self.max_queue_items)
+        else:
+            self._depth_warned = False
 
     def _finish(self, item: _Waiting, *, receipt: AdmissionReceipt | None = None,
                 error: Exception | None = None) -> None:
@@ -189,6 +228,7 @@ class BatchAdmissionCollector:
             self._waiting.append(waiting)
             self._waiting_bytes += size
             self._peaks()
+            self._note_depth_warning()
             self._condition.notify_all()
         waiting.ready.wait(max(0.0, deadline - monotonic()))
         with self._condition:
@@ -337,6 +377,7 @@ class BatchAdmissionCollector:
                 queue_wait_seconds_max=self._queue_wait_seconds_max,
                 closed=self._closed, failed=self._failed, worker_alive=self._thread.is_alive(),
                 flushed_signal=self._flushed_signal, resets=self._resets,
+                depth_warnings=self._depth_warnings,
             )
 
     def close(self) -> None:

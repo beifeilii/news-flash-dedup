@@ -52,6 +52,27 @@ def audit_mapping() -> dict:
     return {"mappings": {"dynamic": "strict", "properties": fields}}
 
 
+def tombstone_mapping() -> dict:
+    """P0-T3 单条墓碑索引映射（news-dedup-tombstones-v1-*，按业务日）。
+
+    纪律（设计稿 §5.3）：正文不进墓碑——只存 raw_hash 与身份/证据字段；
+    error_summary 为有界人读摘要（不索引）。命名复用 ``day_index`` 的
+    kind 形态（``day_index(business_date, "tombstones")``）；**不进
+    required_indices**（fresh-namespace 闸形态不动——按需 ensure）。
+    """
+    properties = _fields(
+        "scope_id business_date item_id record_id failed_stage error_class "
+        "error_code raw_hash pipeline_version",
+        "keyword",
+    )
+    properties.update(_fields("arrival_seq attempt_count", "long"))
+    properties.update(_fields(
+        "first_failed_at last_failed_at recorded_at late_success_at", "date"))
+    properties.update(_fields("retryable", "boolean"))
+    properties["error_summary"] = {"type": "text", "index": False}
+    return {"mappings": {"dynamic": "strict", "properties": properties}}
+
+
 def item_mapping() -> dict:
     properties = _fields(
         "scope_id request_id item_id record_id schema_version pipeline_version embedding_space_id "

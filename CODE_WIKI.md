@@ -261,7 +261,7 @@ class AdmissionCoordinator:
 ```python
 # batch_admission.py
 class AdmissionCapacityExceeded(AdmissionConflict): reason: str  # log_item_limit/batch_byte_limit/log_byte_limit
-class BatchLimits: max_batch_items=8, max_batch_bytes=512KB, max_log_items=64, max_log_bytes=4MB
+class BatchLimits: max_batch_items=8, max_batch_bytes=512KB, max_log_items=512(P0-T6), max_log_bytes=4MB
 class BatchAdmissionCoordinator:
     def accept_batch(self, requests) -> list[AdmissionReceipt]
     def materialize_oldest(self) -> int

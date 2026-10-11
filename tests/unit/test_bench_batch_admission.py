@@ -569,9 +569,11 @@ def test_slow_materializer_can_drain_and_report_latency(monkeypatch):
 
 
 def test_defaults_keep_frozen_limits():
+    """P0-T6：域层默认镜像（max_log_items 512 / collector_wait 0.02 /
+    队列硬层 512——与 batch_admission/batch_collector 域层默认同梯）。"""
     args = bench.arguments(["--rate=10", "--duration=1800", "--confirm-uat"])
-    assert (args.max_batch_items, args.max_batch_bytes, args.max_log_items, args.max_log_bytes) == (8, 524288, 64, 4194304)
-    assert (args.collector_wait, args.queue_items, args.queue_bytes, args.max_drain, args.reconcile_timeout) == (0.1, 64, 4194304, 60, 120)
+    assert (args.max_batch_items, args.max_batch_bytes, args.max_log_items, args.max_log_bytes) == (8, 524288, 512, 4194304)
+    assert (args.collector_wait, args.queue_items, args.queue_bytes, args.max_drain, args.reconcile_timeout) == (0.02, 512, 4194304, 60, 120)
     assert args.entry_mode == "http"
 
 

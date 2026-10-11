@@ -238,6 +238,10 @@ class FaultStore:
 
     def __init__(self, base, scenario, emit, exit_process):
         self.base, self.scenario, self.emit, self.exit_process = base, scenario, emit, exit_process
+        # P0-T4：协调器优先走逐条解析面——仅当 base 暴露该面时才保活
+        # PARTIAL 注入（base 无该面=legacy 路径，注入仍走 bulk_create）。
+        if callable(getattr(base, "bulk_create_classified", None)):
+            self.bulk_create_classified = self._fault_bulk_classified
 
     def __getattr__(self, name):
         return getattr(self.base, name)
@@ -274,6 +278,17 @@ class FaultStore:
         stop = PARTIAL.get(self.scenario)
         if stop is None:
             return self.base.bulk_create(documents)
+        for position, (index, key, body) in enumerate(documents, 1):
+            self.base.create(index, key, body)
+            if position == stop:
+                self.halt(self.scenario, ack_lost=True)
+        raise RuntimeError("partial materialization hook was not reached")
+
+    def _fault_bulk_classified(self, documents):
+        # PARTIAL 注入在逐条解析面保活（挂点语义与 bulk_create 面零 diff）。
+        stop = PARTIAL.get(self.scenario)
+        if stop is None:
+            return self.base.bulk_create_classified(documents)
         for position, (index, key, body) in enumerate(documents, 1):
             self.base.create(index, key, body)
             if position == stop:
@@ -435,6 +450,9 @@ def checked_originals(service, scenario, day):
 class BusinessIOCounter:
     def __init__(self, store):
         self.base, self.business_io = store, 0
+        # P0-T4：仅当 base 暴露逐条解析面时才同受业务 IO 禁令约束。
+        if callable(getattr(store, "bulk_create_classified", None)):
+            self.bulk_create_classified = self._gated_bulk_classified
 
     def __getattr__(self, name):
         return getattr(self.base, name)
@@ -465,6 +483,12 @@ class BusinessIOCounter:
         for index, _, _ in documents:
             self._check(index)
         return self.base.bulk_create(documents)
+
+    def _gated_bulk_classified(self, documents):
+        # P0-T4：逐条解析面同受过期件业务 IO 禁令约束（probe 语义零 diff）。
+        for index, _, _ in documents:
+            self._check(index)
+        return self.base.bulk_create_classified(documents)
 
 
 def expired_resume(store, run_id, scenario, day, handoff):

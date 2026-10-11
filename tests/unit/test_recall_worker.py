@@ -9,6 +9,9 @@
        （get_watermark/write_main_record/advance_watermark 无一被调）、零 callback/零投递意图；
        影子决策工件五字段+签发码全形，且与生效腿同输入同语义源
        （coordinator.py:144-160/:161-198 同型对拍——同 current 同候选集两路决策全等）
+- P0-T8a STALE 重算回归钉：同批 seq 1/2，2 先召回（1 未落地），提交闸
+        STALE→重读水位→重驱准备（1 落地）→重建计划重算召回 1→完整事实
+        EXACT_TEXT_MATCH 判"重复"→落锤+水位推进（STALE 链语义零改动，只加钉）
 """
 
 from __future__ import annotations
@@ -465,3 +468,87 @@ def test_r11_shadow_zero_candidate_branch_matches_commit_one_shape():
     assert shadow_outcome["internal_code"] == effective.decide_outcome.internal_code
     assert shadow_outcome["reason"] == effective.decide_outcome.reason
     assert store.protocol_calls["write_main_record"] == 0
+
+
+# ---------- P0-T8a：STALE 重算回归钉（同批 1/2，2 先召回，1 后落地） ----------
+
+def _t8a_complete_fact(record_id: str, text: str) -> dict:
+    """T8a 完整事实供给（test_w2_h4 同族）：全文覆盖完整单 fact + 时间槽
+    verified_missing 注入——同文对经 P15 证书路径签 EXACT_TEXT_MATCH。"""
+    from test_e_h04_facts_projection import _complete_fact
+
+    fact = _complete_fact(record_id, text)
+    fact["time"]["expression"] = {
+        "status": "missing", "raw_value": None, "evidence": [],
+        "verified_missing": True}
+    return fact
+
+
+def test_t8a_stale_recompute_recalls_landed_predecessor_judges_duplicate():
+    """P0-T8a：同批受理 seq 1/2——物化/准备先行（prepared=2）而 1 的判定
+    落地滞后（lexical=0）→ 该轮扫描面只见 2 → 2 先召回（无先例可对）→
+    提交闸 STALE → 重驱准备（1 落地：lexical→1 且召回可见 1）→ 以新水位
+    重建计划重算召回 1 → 完整事实闭环 EXACT_TEXT_MATCH 判"重复" →
+    落锤+水位推进至 2。
+
+    STALE 链语义零改动（T8 只加钉）：全程走现役 _live_one 有界重试状态机
+    （重算=重读水位+重驱准备+重建计划，非重扫非新驱动轮），单飞升序不变。
+    """
+    text = "美国能源信息署公布原油库存增加。"
+    doc1, doc2 = _doc(1, text), _doc(2, text)
+    candidate = RecallCandidate(
+        record_id=doc1["record_id"], item_id=doc1["item_id"], arrival_seq=1,
+        text=text, subpaths=("raw",), score=1.0, query_version="hash_v1")
+    landed = {"one": False}
+    recalled: list[tuple] = []                    # 逐次召回候选集（探针）
+
+    watermark = _MutableWatermark(visible=0, prepared=2)
+
+    def land_one_on_reprepare(call_no: int) -> None:
+        if call_no == 2:                          # STALE 后重驱准备 → 1 落地
+            watermark.visible = 1
+            landed["one"] = True
+
+    def hash_fn(request):
+        candidates = (candidate,) if landed["one"] else ()
+        recalled.append(candidates)
+        return _complete("hash", "hash_v1", request, candidates=candidates)
+
+    channels = {
+        "hash": _FakeChannel(hash_fn),
+        "near": _FakeChannel(lambda r: _complete("near", "near_v1", r)),
+        "bm25": _FakeChannel(lambda r: _complete("bm25", "bm25_v1", r)),
+        "entity": _FakeChannel(lambda r: _complete("entity", "entity_v1", r)),
+    }
+    service = RecallService(
+        None, PREFIX, channels=channels,
+        vector_searcher=_FakeChannel(
+            lambda r: _complete("embedding", "embedding_v1", r)),
+        fact_supply=lambda rid, txt: [_t8a_complete_fact(rid, txt)])
+    prepare = _FakePrepare(hook=land_one_on_reprepare)
+    store = _CountingStore()
+    worker, parts = _worker("live", docs=[doc2], store=store,
+                            watermark=watermark, prepare=prepare,
+                            service=service)
+    report = worker.drive_once(SCOPE, DAY)
+
+    # ① 2 先召回：首轮候选集为空（1 未落地不可见）；重算召回见 1
+    assert recalled == [(), (candidate,)]
+    # 重算以新水位重建计划：第二次召回请求带落地后水位（visible 0→1）
+    assert [request.visible_seq for request in channels["hash"].calls] == [0, 1]
+    # ② STALE→有界重试→成：单飞链不破
+    assert report.committed == (doc2["record_id"],)
+    assert report.stale == report.failed == report.awaiting == ()
+    assert report.shadowed == report.budget_exhausted == ()
+    assert len(prepare.calls) == 2                # 初驱+STALE 后重驱准备
+    # 重算非重扫：扫描面只扫一轮（重建计划不重建扫描/不开新驱动轮）
+    assert parts["scanner"].calls == [0]
+    # ③ 完整事实闭环：同文对 → EXACT_TEXT_MATCH → "重复"（先例 item 入册）
+    record = store.main_records[doc2["record_id"]]
+    assert record.decision == "重复"
+    assert record.internal_code == "EXACT_TEXT_MATCH"
+    assert record.duplicate_ids == (doc1["item_id"],)
+    # ④ 落锤+水位推进：STALE 首轮零写（不半写），终态写一次、推一次、水位 2
+    assert store.protocol_calls["write_main_record"] == 1
+    assert store.protocol_calls["advance_watermark"] == 1
+    assert store.get_watermark(SCOPE, DAY) == 2
