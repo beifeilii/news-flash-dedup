@@ -74,7 +74,13 @@ _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 KNOWN_SWITCHES: tuple[str, ...] = (
     "DEDUP_CERT_DECOUPLE",              # text/__init__.py（证书解耦，默认关）
     "DEDUP_COVERAGE_FRONTIER",          # recall/service.py（覆盖闸 frontier）
+    # 2026-10-11（P1c 运行时装配窗，api/assemble.py）：Embedding 写径微批
+    # 网关三开关（DEDUP_EMBEDDING_MICRO_BATCH 缺省关=写径逐字节现役；批
+    # 大小窗 1..10/窗口 20..50ms 沿 embedding_batch.py 钉值窗）。
+    "DEDUP_EMBEDDING_BATCH_MAX_WAIT_MS",  # api/assemble.py（微批窗口，默认 30）
+    "DEDUP_EMBEDDING_BATCH_SIZE",       # api/assemble.py（微批批大小，默认 8）
     "DEDUP_EMBEDDING_DAILY_TOKEN_BUDGET",  # vector/embedding_client.py（预算闸）
+    "DEDUP_EMBEDDING_MICRO_BATCH",      # api/assemble.py（写径微批开关，默认关）
     "DEDUP_EXACT_MIN_LEN",              # text/__init__.py（最小正文长度闸）
     # 2026-10-11（主窗令·判定优先级修复）：剥信源壳开关补登记（既有开关
     # p15_integration.py DEDUP_EXACT_SHELL_STRIP 默认关——此前漏册，审计
@@ -94,6 +100,12 @@ KNOWN_SWITCHES: tuple[str, ...] = (
     # 提交三（§5.3）补登记：判官裁决口径灰度开关（默认 legacy_proof_gate）
     "DEDUP_JUDGE_DECISION_MODE",        # decide/judge_pair.py（灰度，默认 legacy）
     "DEDUP_JUDGE_IN_CHAIN",             # decide/judge_pair.py（判官进主链，默认关）
+    # 2026-10-11（P1c 运行时装配窗，api/assemble.py）：判官并发执行器装配
+    # 三开关（DEDUP_JUDGE_PAIR_EXECUTOR 缺省关=不装配——点头 B 口径"接线
+    # 但默认不启用"；对池窗 1..24 缺省 20 沿 judge_pair_executor.py 钉值）。
+    "DEDUP_JUDGE_PAIR_CONCURRENCY",     # api/assemble.py（对池大小，默认 20）
+    "DEDUP_JUDGE_PAIR_EXECUTOR",        # api/assemble.py（执行器装配开关，默认关）
+    "DEDUP_JUDGE_PAIR_TIMEOUT_S",       # api/assemble.py（单对硬超时，缺省 None）
     "DEDUP_JUDGE_PROOF",                # decide/judge_proof.py（证明路，默认关）
     "DEDUP_RECALL_MODE",                # recall/service.py（召回/判重模式闸）
 )
