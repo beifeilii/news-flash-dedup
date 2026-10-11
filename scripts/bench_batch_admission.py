@@ -71,14 +71,16 @@ def arguments(argv=None) -> argparse.Namespace:
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--entry-mode", choices=("http", "function"), default="http")
     parser.add_argument("--output", type=Path)
+    # P0-T6：域层默认镜像（BatchLimits.max_log_items 512 / collector
+    # max_wait 0.02 / 队列硬层 512——域层同梯，bench 代表默认工作点）。
     for name, default in (("max-batch-items", 8), ("max-batch-bytes", 512 * 1024),
-                          ("max-log-items", 64), ("max-log-bytes", 4 * 1024 * 1024),
-                          ("queue-items", 64), ("queue-bytes", 4 * 1024 * 1024),
+                          ("max-log-items", 512), ("max-log-bytes", 4 * 1024 * 1024),
+                          ("queue-items", 512), ("queue-bytes", 4 * 1024 * 1024),
                           ("entry-workers", 64), ("mget-batch-size", 128),
                           ("max-http-bytes", 256 * 1024), ("max-text-codepoints", 20000)):
         parser.add_argument("--" + name, type=int, default=default)
     for name, default in (("max-drain", 60), ("reconcile-timeout", 120),
-                          ("collector-wait", 0.1), ("request-timeout", 5),
+                          ("collector-wait", 0.02), ("request-timeout", 5),
                           ("http-timeout", 6), ("close-timeout", 5),
                           ("startup-timeout", 15), ("sample-interval", 0.1)):
         parser.add_argument("--" + name, type=float, default=default)

@@ -12,10 +12,15 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
-ROOT = "C:/Users/ASUS/Desktop/文本去重/workspace-dedup/news-flash-dedup"
+# P0-T6 卫生修正：原硬编码主产品树路径（绝对路径）在收集期把外来 src 插到
+# sys.path[0]，使本仓（worktree）后续首次导入的 news_flash_dedup 子模块
+# 解析到外来副本（本测试默认整体 skip，插入仍生效——隐性毒化）。
+# 回锚仓相对（同目录 test_cross_day_uat.py 同型）：本文件所在仓即目标仓。
+ROOT = str(Path(__file__).resolve().parents[2])
 sys.path.insert(0, ROOT + "/src")
 
 

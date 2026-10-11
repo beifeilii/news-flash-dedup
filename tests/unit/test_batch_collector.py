@@ -564,8 +564,12 @@ def test_unknown_mid_split_preserves_earlier_confirmed_receipt(harness):
 
 
 def test_withdrawn_head_does_not_leave_stale_selection(harness):
+    # P0-T6：域层默认 max_wait 0.1→0.02 后，本钉（撤队/陈旧选取语义）
+    # 以显式 max_wait_seconds=0.1 保留原前提（单件滞留>30ms 才撤队）——
+    # 既有小容量/旧行为构造点同型纪律。
     recording = RecordingCoordinator(_service(CountingStore()))
-    collector = harness.collector(recording, request_timeout_seconds=0.03)
+    collector = harness.collector(recording, max_wait_seconds=0.1,
+                                  request_timeout_seconds=0.03)
     first = harness.call(collector)
     with collector._condition:
         assert collector._condition.wait_for(lambda: len(collector._waiting) == 1, timeout=0.5)
@@ -596,8 +600,10 @@ def _assert_capacity(result, reason):
     ("items", "log_item_limit"), ("bytes", "log_byte_limit"),
 ])
 def test_full_durable_log_recovers_on_same_collector(harness, quota, reason):
+    # P0-T6：域层默认 max_log_items 64→512 后，本钉（满日志边界+恢复）
+    # 以显式 limits=64 保留原边界语义（既有小容量构造点同型纪律）。
     store = CountingStore()
-    service = _service(store)
+    service = _service(store, limits=BatchLimits(max_log_items=64))
     values = [request(request_id=f"{n:03}", item_id=f"{n:03}") for n in range(65)]
     count = 64 if quota == "items" else 8
     originals = []
@@ -865,3 +871,119 @@ def test_event_signal_is_safe_under_sustained_throughput(harness):
     signal = collector.snapshot().flushed_signal
     assert signal == 2
     assert collector.batch_flushed.is_set()
+
+
+# ---------- P0-T6 参数分层（域层默认值+行为钉，主窗令） ----------
+
+def test_t6_module_resolution_stays_within_this_repo():
+    """P0-T6 解析钉：news_flash_dedup 模块必须解析到本仓（收集期曾有
+    集成测试模块把外来主产品树 src 插到 sys.path[0]，本仓首次导入的
+    batch_collector 解析到外来旧副本——T6 改动首次暴露该隐性毒化；
+    test_text_normalize_uat.py 已回锚仓相对）。全套跑（integration 先
+    于 unit 收集/执行）下此钉保持红/绿敏感。"""
+    from pathlib import Path
+
+    import news_flash_dedup.batch_collector as module
+
+    repo_root = Path(__file__).resolve().parents[2]
+    resolved = Path(module.__file__).resolve()
+    assert repo_root == resolved.parents[2]
+
+
+def test_t6_collector_domain_defaults():
+    """P0-T6：collector 域层默认——max_wait 0.02（原 0.1）/队列硬层 512
+    （原 64）/告警层 400；与 durable log 硬容量（BatchLimits.max_log_
+    items=512）同梯（内存缓冲与持久缓冲对齐）。"""
+    import inspect
+
+    parameters = inspect.signature(BatchAdmissionCollector.__init__).parameters
+    assert parameters["max_wait_seconds"].default == 0.02
+    assert parameters["max_queue_items"].default == 512
+    assert parameters["warning_depth"].default == 400
+    assert parameters["max_queue_bytes"].default == 4 * 1024 * 1024
+
+
+def test_t6_queue_warning_tier_crosses_once(harness, caplog):
+    """P0-T6 告警层行为钉：深度达 warning_depth 越层告警一次；层上继续
+    入队不重复告警（深度未回落）；计量入 snapshot.depth_warnings。"""
+    import logging
+
+    store = CountingStore()
+    collector = harness.collector(
+        _service(store), paused=True, configured=False,
+        max_queue_items=10, warning_depth=3, max_wait_seconds=0.05)
+    with caplog.at_level(logging.WARNING,
+                         logger="news_flash_dedup.batch_collector"):
+        for n in range(3):
+            harness.call(collector,
+                         request(request_id=f"w{n}-1", item_id=f"w{n}-1"))
+        with collector._condition:
+            assert collector._condition.wait_for(
+                lambda: len(collector._waiting) == 3, timeout=1.0)
+        crossing = [r for r in caplog.records if "warning tier" in r.getMessage()]
+        assert len(crossing) == 1                     # 越层恰一次
+        assert collector.snapshot().depth_warnings == 1
+        harness.call(collector, request(request_id="w3-1", item_id="w3-1"))
+        with collector._condition:
+            assert collector._condition.wait_for(
+                lambda: len(collector._waiting) == 4, timeout=1.0)
+        assert len([r for r in caplog.records
+                    if "warning tier" in r.getMessage()]) == 1   # 层上不重复
+        assert collector.snapshot().depth_warnings == 1
+
+
+def test_t6_depth_warning_gauge_reset_and_recross(harness, caplog):
+    """P0-T6 gauge 语义钉（锁内直驱，harness 同款内部探针纪律）：回落
+    复位——再次越层重新告警；depth_warnings 计数回落不清零（审计连续）。"""
+    import logging
+
+    from news_flash_dedup.batch_collector import _Waiting
+
+    store = CountingStore()
+    collector = harness.collector(
+        _service(store), paused=True, configured=False,
+        max_queue_items=10, warning_depth=3, max_wait_seconds=0.05)
+
+    def _fill(count):
+        for _ in range(count):
+            collector._waiting.append(
+                _Waiting(request=request(), size=100, queued_at=monotonic()))
+
+    with caplog.at_level(logging.WARNING,
+                         logger="news_flash_dedup.batch_collector"):
+        with collector._condition:
+            _fill(3)
+            collector._note_depth_warning()          # 越层 → 告警 1
+            collector._note_depth_warning()          # 层上重复评估：不重复
+            collector._waiting.clear()
+            collector._note_depth_warning()          # 回落：复位（零告警）
+            _fill(3)
+            collector._note_depth_warning()          # 再越层 → 告警 2
+        warnings = [r for r in caplog.records if "warning tier" in r.getMessage()]
+        assert len(warnings) == 2
+        assert collector.snapshot().depth_warnings == 2
+
+
+def test_t6_warning_tier_above_hard_cap_is_inert(harness, caplog):
+    """P0-T6 fail-soft 钉：告警层高于硬层（既有小容量构造点形态）→ 惰性
+    （永不告警、不配置报错）；硬层 queue_full 拒收照旧。"""
+    import logging
+
+    store = CountingStore()
+    collector = harness.collector(
+        _service(store), paused=True, configured=False,
+        max_queue_items=2, warning_depth=400, max_wait_seconds=0.005)
+    with caplog.at_level(logging.WARNING,
+                         logger="news_flash_dedup.batch_collector"):
+        calls = [harness.call(collector,
+                              request(request_id=f"i{n}-1", item_id=f"i{n}-1"))
+                 for n in range(2)]
+        with collector._condition:
+            assert collector._condition.wait_for(
+                lambda: len(collector._waiting) == 2, timeout=1.0)
+        overflow = harness.call(collector,
+                                request(request_id="i2-1", item_id="i2-1"))
+        _assert_rejected(overflow.get(), "queue_full")   # 硬层先于告警层
+        assert collector.snapshot().depth_warnings == 0  # 告警层惰性
+        assert not [r for r in caplog.records
+                    if "warning tier" in r.getMessage()]

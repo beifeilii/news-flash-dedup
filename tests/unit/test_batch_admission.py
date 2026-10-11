@@ -9,6 +9,9 @@ import pytest
 from news_flash_dedup import batch_admission
 from news_flash_dedup.admission import AdmissionConflict, AdmissionUnknown, IdentityConflict
 from news_flash_dedup.batch_admission import BatchAdmissionCoordinator, BatchLimits
+from news_flash_dedup.materialize_runtime import MaterializeRetryRuntime
+from news_flash_dedup.materialize_terminal import (
+    load_tombstone, tombstone_exists_confirmed, tombstone_index)
 from test_admission import MemoryStore, request
 
 
@@ -40,6 +43,49 @@ class BatchMemoryStore(MemoryStore):
         if self.fail_bulk_after == -1:
             self.fail_bulk_after = None
             raise OSError("bulk acknowledgement lost after all writes")
+
+
+class ClassifiedBatchMemoryStore(BatchMemoryStore):
+    """P0-T4：带 ``bulk_create_classified`` 逐条解析面的内存 store（真实 ES 形态）。
+
+    - ``item_statuses``：按文档位置注入 bulk item 状态码（400/503 等）；
+      未注入位置走真实 create（撞已存在→409）。
+    - ``request_error``：请求级异常一次性注入（PermanentBulkError/OSError）。
+    - ``mget_missing``：读回未命中注入（409→读回 None=未确认形态）。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.item_statuses = {}
+        self.request_error = None
+        self.mget_missing = set()
+
+    def mget(self, keys):
+        self.mget_calls += 1
+        return [None if (index, key) in self.mget_missing
+                else self.get(index, key) for index, key in keys]
+
+    def bulk_create_classified(self, documents):
+        from news_flash_dedup.materialize_failure import bulk_document_outcome
+
+        self.bulk_calls += 1
+        if self.request_error is not None:
+            error, self.request_error = self.request_error, None
+            raise error
+        outcomes = []
+        for position, (index, key, body) in enumerate(documents):
+            status = self.item_statuses.get(position)
+            if status is None:
+                try:
+                    self.create(index, key, body)
+                    status = 201
+                except Exception as error:
+                    if not self.is_conflict(error):
+                        raise
+                    status = 409
+            outcomes.append(bulk_document_outcome(
+                position, index, key, status))
+        return tuple(outcomes)
 
 
 def coordinator(store, owner="writer-1", limits=None, when=NOW, isolated=True):
@@ -961,7 +1007,47 @@ def test_materialize_prefix_is_bounded_and_preserves_suffix():
     assert store.bulk_calls == 2
 
 
-def test_materialize_prefix_permanent_item_error_quarantines_verified_later_batch():
+def test_materialize_prefix_permanent_item_error_tombstones_entry_and_completes_batch():
+    """P0-T4：定位到的单条永久错误→条目入墓（1 坏件不杀 3 批前缀）。
+
+    原 pin（整批隔离）已按逐条解析面新世界改写：序 2 条目 request 映射
+    文档 400（item_permanent）→ 单条隔离入墓+同批已落主记录补正翻
+    tombstoned；序 1/3 照常物化；一次 CAS 收缩水位跨 READY+TOMBSTONE
+    推进到 3；零隔离。
+    """
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service)
+    store.item_statuses = {5: 400}    # 序 2 条目的 request 映射文档
+    assert service.materialize_prefix() == 3
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 3
+    assert source["pending"]["batches"] == []
+    assert "batch_quarantine" not in source["checkpoint"]
+    dead = accepted[1]
+    scope, day, seq = dead.scope_id, dead.business_date, dead.arrival_seq
+    assert tombstone_exists_confirmed(store, scope, day, seq) is True
+    tombstone = load_tombstone(store, scope, day, seq)
+    assert tombstone.error_class == "item_permanent"
+    assert tombstone.failed_stage == "materialize_bulk"
+    assert tombstone.error_code == "http_400"
+    assert tombstone.arrival_seq == 2 and tombstone.item_id == dead.item_id
+    assert tombstone.retryable is False and tombstone.attempt_count >= 1
+    main_index = "news-dedup-items-v1-" + day.replace("-", ".")
+    # 混合形态：序 2 主记录本批已落（201）→ 场景 C 补正翻 tombstoned。
+    main = store.get(main_index, dead.record_id)
+    assert main["source"]["task_state"] == "tombstoned"
+    # 序 1/3 主记录照常物化（accepted=READY 面，未被他件死亡牵连）。
+    for receipt in (accepted[0], accepted[2]):
+        alive = store.get(main_index, receipt.record_id)
+        assert alive["source"]["task_state"] == "accepted"
+        assert tombstone_exists_confirmed(
+            store, receipt.scope_id, receipt.business_date,
+            receipt.arrival_seq) is False
+
+
+def test_materialize_prefix_permanent_item_error_quarantines_verified_later_batch_legacy_store():
+    """legacy 面（store 无逐条解析）：既有整批隔离纪律零 diff 保留。"""
     from news_flash_dedup.batch_es_store import PermanentBulkError
 
     store = BatchMemoryStore()
@@ -979,7 +1065,55 @@ def test_materialize_prefix_permanent_item_error_quarantines_verified_later_batc
         coordinator(store).materialize_prefix()
 
 
+def test_materialize_restart_after_tombstone_validates_log_and_continues():
+    """P0-T5 ⑥（物化面）：墓碑收缩后重启——takeover 全量校验 pending 日志
+    （_validate_log 连续性：墓碑条目已出 pending，序号边界=水位），跨墓位
+    继续分配物化；墓证幂等零重放。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service)
+    store.item_statuses = {5: 400}    # 序 2 条目 request 映射文档（item_permanent）
+    assert service.materialize_prefix() == 3
+    # 重启=全新协调器实例（同 owner）：takeover → _validate_log 执法连续性。
+    resumed = coordinator(store)
+    assert resumed.takeover() == 3
+    assert head_source(store)["pending"]["batches"] == []
+    # 跨墓位继续：序 4 新受理物化（全局序号域跨墓推进，无 hole 停摆）。
+    receipt = resumed.accept_batch([
+        request(request_id="post-4", item_id="post-4", text="重启后续件。")])[0]
+    assert receipt.arrival_seq == 4
+    assert resumed.materialize_prefix() == 4
+    assert head_source(store)["last_materialized_seq"] == 4
+    # 墓证幂等：序 2 墓碑仍在且唯一（重放零二次物化/零新墓）。
+    dead = accepted[1]
+    assert tombstone_exists_confirmed(
+        store, dead.scope_id, dead.business_date, dead.arrival_seq) is True
+    main_index = "news-dedup-items-v1-" + dead.business_date.replace("-", ".")
+    assert store.get(main_index, dead.record_id)["source"][
+        "task_state"] == "tombstoned"
+
+
 def test_materialize_prefix_unlocated_permanent_error_quarantines_first_batch():
+    """P0-T4：请求级 PermanentBulkError（不可定位）→ 既有 unlocated 隔离。"""
+    from news_flash_dedup.batch_es_store import PermanentBulkError
+
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    _accept_separate_batches(service)
+    store.request_error = PermanentBulkError("request-level")
+    with pytest.raises(AdmissionConflict):
+        service.materialize_prefix()
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 0
+    assert len(source["pending"]["batches"]) == 3
+    assert source["checkpoint"]["batch_quarantine"]["first_seq"] == 1
+    assert source["checkpoint"]["batch_quarantine"]["reason"] == "unattributed_permanent_bulk_error"
+    with pytest.raises(AdmissionConflict, match="quarantined"):
+        coordinator(store).recover()
+    assert head_source(store)["last_materialized_seq"] == 0
+
+
+def test_materialize_prefix_unlocated_permanent_error_quarantines_first_batch_legacy_store():
     from news_flash_dedup.batch_es_store import PermanentBulkError
 
     store = BatchMemoryStore()
@@ -996,6 +1130,164 @@ def test_materialize_prefix_unlocated_permanent_error_quarantines_first_batch():
     with pytest.raises(AdmissionConflict, match="quarantined"):
         coordinator(store).recover()
     assert head_source(store)["last_materialized_seq"] == 0
+
+
+def test_materialize_prefix_tombstone_replay_after_shrink_failure_is_idempotent():
+    """P0-T4：墓碑持久化后收缩失败（崩溃恢复形态）→ 重放幂等不重复死亡件。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service)
+    store.item_statuses = {5: 400}
+    original_replace = store.replace
+
+    def failing_replace(index, key, body, seq_no, primary_term):
+        if key == "batch_admission_head" and body.get("last_materialized_seq"):
+            raise OSError("head CAS transport lost")
+        return original_replace(index, key, body, seq_no, primary_term)
+
+    store.replace = failing_replace
+    with pytest.raises(AdmissionUnknown):
+        service.materialize_prefix()
+    store.replace = original_replace
+    # 墓碑已确认在库（持久化+读回确认先于收缩）。
+    dead = accepted[1]
+    assert tombstone_exists_confirmed(
+        store, dead.scope_id, dead.business_date, dead.arrival_seq) is True
+    # 重放：已落文档 409→读回对拍自愈；坏件重撞 400→墓碑幂等重放。
+    assert service.materialize_prefix() == 3
+    index = tombstone_index(dead.business_date)
+    tombstones = [key for (doc_index, key) in store.docs if doc_index == index]
+    assert len(tombstones) == 1
+    source = head_source(store)
+    assert source["pending"]["batches"] == []
+    assert source["last_materialized_seq"] == 3
+
+
+def test_materialize_prefix_transient_item_failure_is_retryable_no_tombstone():
+    """P0-T4：单条瞬态失败=可重试暂态——零墓碑、零隔离、批完整保留。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service)
+    store.item_statuses = {4: 503}    # 序 2 条目主记录文档
+    with pytest.raises(AdmissionUnknown):
+        service.materialize_prefix()
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 0
+    assert len(source["pending"]["batches"]) == 3
+    assert "batch_quarantine" not in source["checkpoint"]
+    for receipt in accepted:
+        assert tombstone_exists_confirmed(
+            store, receipt.scope_id, receipt.business_date,
+            receipt.arrival_seq) is False
+    # 瞬态消除后重试：全部完成（409→读回对拍自愈）。
+    store.item_statuses = {}
+    assert service.materialize_prefix() == 3
+    assert head_source(store)["pending"]["batches"] == []
+
+
+def test_materialize_prefix_unknown_readback_missing_is_retryable():
+    """P0-T4：409 但读回未命中=未确认（重试收敛，不定永久不隔离）。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service)
+    original_replace = store.replace
+
+    def failing_replace(index, key, body, seq_no, primary_term):
+        if key == "batch_admission_head" and body.get("last_materialized_seq"):
+            raise OSError("head CAS transport lost")
+        return original_replace(index, key, body, seq_no, primary_term)
+
+    store.replace = failing_replace
+    with pytest.raises(AdmissionUnknown):
+        service.materialize_prefix()          # 全部落库，收缩传输失败
+    store.replace = original_replace
+    main_index = "news-dedup-items-v1-" + accepted[0].business_date.replace("-", ".")
+    store.mget_missing = {(main_index, accepted[0].record_id)}
+    with pytest.raises(AdmissionUnknown):
+        service.materialize_prefix()          # 409→读回未命中=未确认
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 0
+    assert len(source["pending"]["batches"]) == 3
+    assert "batch_quarantine" not in source["checkpoint"]
+    store.mget_missing = set()
+    assert service.materialize_prefix() == 3
+    assert head_source(store)["pending"]["batches"] == []
+
+
+def test_materialize_prefix_unknown_readback_divergence_quarantines():
+    """P0-T4：读回身份分歧=既有整批隔离（deterministic_content_conflict）。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    _accept_separate_batches(service)
+    _, request_key, _ = batch_admission._keys("default", "prefix-2", "prefix-2")
+    store.docs[("news-dedup-requests-v1", request_key)] = {
+        "source": {"kind": "request", "scope_id": "default",
+                   "request_id": "prefix-2", "item_id": "alien-content",
+                   "record_id": "b" * 64, "business_fingerprint": "c" * 64,
+                   "business_date": "2026-09-24", "arrival_seq": 2,
+                   "expires_at": "2026-10-01T00:00:00.000000Z",
+                   "target_index": "x"},
+        "seq_no": 0, "primary_term": 1,
+    }
+    with pytest.raises(AdmissionConflict):
+        service.materialize_prefix()
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 0
+    assert len(source["pending"]["batches"]) == 3
+    assert source["checkpoint"]["batch_quarantine"]["first_seq"] == 2
+    assert source["checkpoint"]["batch_quarantine"]["reason"] == \
+        "deterministic_content_conflict"
+
+
+def test_materialize_prefix_item_failures_record_entry_retry_state():
+    """P0-T4：单条失败入条目重试账（attempt_count/first_failed_at 入墓）。"""
+    runtime = MaterializeRetryRuntime(clock=lambda: 1000.0,
+                                      random_source=lambda: 0.5)
+    store = ClassifiedBatchMemoryStore()
+    service = BatchAdmissionCoordinator(
+        store, owner_id="writer-1", owner_isolated=lambda: True,
+        limits=BatchLimits(), clock=lambda: NOW,
+        retry_runtime=runtime)
+    accepted = _accept_separate_batches(service)
+    store.item_statuses = {5: 503}    # 序 2 条目瞬态失败一次
+    with pytest.raises(AdmissionUnknown):
+        service.materialize_prefix()
+    state = runtime.entry_state(2)
+    assert state is not None and state.active_attempts == 1
+    assert state.first_failed_at == 1000.0
+    store.item_statuses = {5: 400}    # 同条目转永久
+    assert service.materialize_prefix() == 3
+    dead = accepted[1]
+    tombstone = load_tombstone(
+        store, dead.scope_id, dead.business_date, dead.arrival_seq)
+    assert tombstone.attempt_count == 2              # 首次瞬态+本次永久
+    assert tombstone.first_failed_at < tombstone.last_failed_at
+    assert runtime.entry_state(2) is None            # 条目已出账（终态）
+
+
+def test_materialize_oldest_classified_permanent_item_tombstones_and_shrinks():
+    """P0-T4：materialize_oldest 逐条解析面——单条主记录 4xx 入墓收缩。"""
+    store = ClassifiedBatchMemoryStore()
+    service = coordinator(store)
+    accepted = _accept_separate_batches(service, count=2)
+    store.item_statuses = {0: 400}    # 序 1 条目主记录文档
+    assert service.materialize_oldest() == 1
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 1
+    assert [batch["entries"][0]["arrival_seq"]
+            for batch in source["pending"]["batches"]] == [2]
+    dead = accepted[0]
+    assert tombstone_exists_confirmed(
+        store, dead.scope_id, dead.business_date, dead.arrival_seq) is True
+    main_index = "news-dedup-items-v1-" + dead.business_date.replace("-", ".")
+    # 主记录 4xx 未落（absent 补正）→ 无主记录残留、无重复死亡件。
+    assert store.get(main_index, dead.record_id) is None
+    store.item_statuses = {}          # 注入只针对首批（序 1 主记录文档）
+    assert service.materialize_oldest() == 2
+    assert head_source(store)["pending"]["batches"] == []
+    assert head_source(store)["last_materialized_seq"] == 2
+    assert sum(1 for (index, key) in store.docs
+               if index == tombstone_index(dead.business_date)) == 1
 
 
 def test_materialize_prefix_partial_bulk_unknown_keeps_all_pending_and_recovers():
@@ -1129,3 +1421,70 @@ def test_materialize_prefix_later_batch_content_conflict_quarantines_without_shr
     source = head_source(store)
     assert source["last_materialized_seq"] == 0 and len(source["pending"]["batches"]) == 2
     assert source["checkpoint"]["batch_quarantine"]["first_seq"] == 2
+
+
+# ---------- P0-T6 参数分层（域层默认值+行为钉，主窗令） ----------
+
+def test_t6_domain_default_limits_and_prefix_constants():
+    """P0-T6：域层默认梯次——log 硬 512（原 64）/批 8/prefix 32+4 批；
+    collector 面默认钉在 test_batch_collector.py（wait 0.02/队列硬 512/
+    告警层 400）。"""
+    from news_flash_dedup.batch_admission import (
+        MATERIALIZE_PREFIX_BATCHES, MATERIALIZE_PREFIX_ITEMS,
+    )
+
+    limits = BatchLimits()
+    assert limits.max_batch_items == 8
+    assert limits.max_log_items == 512
+    assert (MATERIALIZE_PREFIX_BATCHES, MATERIALIZE_PREFIX_ITEMS) == (4, 32)
+
+
+def test_t6_durable_log_hard_capacity_boundary_at_512():
+    """P0-T6 硬层行为钉：512 件满日志边界——恰 512 受理（64 批×8），
+    第 513 件 AdmissionCapacityExceeded("log_item_limit")（CAS 零改写）。"""
+    store = BatchMemoryStore()
+    service = coordinator(store)
+    for batch in range(64):
+        service.accept_batch([
+            request(request_id=f"t6-{batch}-{n}", item_id=f"t6-{batch}-{n}")
+            for n in range(8)])
+    assert head_source(store)["last_allocated_seq"] == 512
+    before = deepcopy(head_source(store))
+    with pytest.raises(batch_admission.AdmissionCapacityExceeded) as caught:
+        service.accept_batch([request(request_id="t6-overflow", item_id="t6-overflow")])
+    assert caught.value.reason == "log_item_limit"
+    assert head_source(store) == before          # 拒收零改写（不否认已受理）
+
+
+def test_t6_materialize_prefix_bounded_at_32_items():
+    """P0-T6 prefix 行为钉：9 批×8 条（72 件）→ item_limit=32（4 批）一次
+    CAS 收缩；后缀 5 批原序保留，续推收敛。"""
+    store = BatchMemoryStore()
+    service = coordinator(store)
+    for batch in range(9):
+        service.accept_batch([
+            request(request_id=f"t6p-{batch}-{n}", item_id=f"t6p-{batch}-{n}")
+            for n in range(8)])
+    assert service.materialize_prefix() == 32
+    source = head_source(store)
+    assert source["last_materialized_seq"] == 32
+    # 后缀 5 批原序保留（每批 8 条，首条序号 33/41/49/57/65）。
+    remaining = [batch["entries"][0]["arrival_seq"]
+                 for batch in source["pending"]["batches"]]
+    assert remaining == [33, 41, 49, 57, 65]
+    assert all(len(batch["entries"]) == 8
+               for batch in source["pending"]["batches"])
+    assert service.materialize_prefix() == 64
+    assert service.materialize_prefix() == 72
+
+
+def test_t6_batch_item_limit_8():
+    """P0-T6 批容量行为钉：单批 >8 条拒绝（AdmissionConflict，零分配）。"""
+    store = BatchMemoryStore()
+    service = coordinator(store)
+    service.accept_batch([request(request_id="t6b-0", item_id="t6b-0")])
+    with pytest.raises(AdmissionConflict):
+        service.accept_batch([
+            request(request_id=f"t6b-{n}", item_id=f"t6b-{n}")
+            for n in range(1, 10)])
+    assert head_source(store)["last_allocated_seq"] == 1   # 拒收零分配

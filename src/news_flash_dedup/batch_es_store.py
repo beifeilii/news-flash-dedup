@@ -157,3 +157,64 @@ class ElasticsearchBatchStore:
         from elasticsearch import ConflictError
 
         return isinstance(error, ConflictError)
+
+    def bulk_create_classified(self, documents: list[tuple[str, str, dict]]):
+        """P0-T4 逐条结果解析 bulk（新方法——``bulk_create`` 与既有调用方零 diff）。
+
+        返回逐文档 ``BulkDocumentOutcome`` 元组（位置=输入序，身份/状态已核验）：
+        - 201 → 成功（若响应仍带 error 字段=不一致结构，按不可解析抛出，
+          调用方以全量读回对拍兜底）；
+        - 409 → UNKNOWN_WRITE（可能已存在：读回身份对拍收口）；
+        - 408/429/≥500 → TRANSIENT_INFRA（确定失败：重执收敛——若实际
+          已落，重执撞 409 走读回对拍自愈）；
+        - 其余 4xx → ITEM_PERMANENT（确定性单条拒绝——唯一墓簿入口）；
+        - 请求级异常（传输/请求级 4xx）与 ``bulk_create`` 同形抛出
+          （RuntimeError 未知 / PermanentBulkError 请求级拒绝）——调用方
+          走既有全量读回/结构性隔离路径。
+
+        注：``bulk_document_outcome`` 为函数内延迟导入（materialize_failure
+        顶层反向引用本模块的 PermanentBulkError——顶层互导成环，函数内
+        收口即无环）。
+        """
+        from .materialize_failure import bulk_document_outcome
+
+        if not documents:
+            return ()
+        operations: list[dict] = []
+        for index, key, body in documents:
+            operations.extend((
+                {"create": {"_index": self._physical(index), "_id": key}},
+                body,
+            ))
+        try:
+            result = self.client.bulk(operations=operations, refresh=False)
+        except Exception as error:
+            status = getattr(error, "status_code", None)
+            if type(status) is int and 400 <= status < 500 and status not in (408, 409, 429):
+                # 窗口Z2（P 批保链纪律）：from None → from error
+                raise PermanentBulkError("bulk request permanently rejected") from error
+            raise RuntimeError("bulk confirmation is unknown") from error
+        result = getattr(result, "body", result)
+        items = result.get("items") if isinstance(result, Mapping) else None
+        if not isinstance(items, list) or len(items) != len(documents):
+            raise RuntimeError("bulk item count is incomplete")
+        outcomes: list = []
+        for item, (index, key, _) in zip(items, documents):
+            created = item.get("create") if isinstance(item, Mapping) and len(item) == 1 else None
+            if (not isinstance(created, Mapping) or
+                    created.get("_index") != self._physical(index) or created.get("_id") != key or
+                    type(created.get("status")) is not int):
+                raise RuntimeError("bulk item identity or status is incomplete")
+            status = created["status"]
+            if status == 201 and "error" in created:
+                raise RuntimeError("bulk item outcome is inconsistent")
+            error_field = created.get("error")
+            error_type = ""
+            error_reason = ""
+            if isinstance(error_field, Mapping):
+                error_type = str(error_field.get("type", ""))
+                error_reason = str(error_field.get("reason", ""))
+            outcomes.append(bulk_document_outcome(
+                position=len(outcomes), index=index, key=key, status=status,
+                error_type=error_type, error_reason=error_reason))
+        return tuple(outcomes)

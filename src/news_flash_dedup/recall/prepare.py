@@ -15,7 +15,10 @@
    arrival_seq 为全局序号域，分区证据集是其稀疏子集；前沿遇全局序号孔洞时
    向 admission 域查证登记归属（seq 登记映射/pending 受理日志），登记证明
    属他域/日 → 凭证明跳过续推，无法证明（登记缺席/属本分区未就绪）→
-   维持停摆 fail-closed，「缺号未知须恢复，不能猜不存在」）；
+   维持停摆 fail-closed，「缺号未知须恢复，不能猜不存在」；
+   P0-T5 全前沿令②（主窗口扩充令）：孔洞另查**墓簿**——本域本日
+   item_permanent 终态序号（物化域确定性已处理）与外国证明同为跳洞
+   凭据，两源分立、账务分计，未证序号仍停摆）；
 ⑥ 空体/不可索引文本按 hash_channel.py:38-39 None 路径记 not_applicable 不硬拦
    （终态准备证据，前沿可越过——否则空文档恒成孔洞、链路恒 STALE）。
 
@@ -34,6 +37,7 @@ from news_flash_dedup.admission import CONTROL_INDEX, REQUEST_INDEX
 from news_flash_dedup.batch_admission import HEAD_ID, pending_registration
 from news_flash_dedup.batch_es_store import ElasticsearchBatchStore
 from news_flash_dedup.es_admission_schema import day_index
+from news_flash_dedup.materialize_terminal import scan_terminal_tombstone_seqs
 
 from .entities import extract_body_entities
 from .hash_channel import prepare_recall_fields
@@ -49,26 +53,31 @@ class PrepareConflict(RuntimeError):
 
 
 def advance_prepared_frontier(stored: int, ready_seqs: Iterable[int],
-                              foreign: Iterable[int] | None = None) -> int:
+                              foreign: Iterable[int] | None = None,
+                              terminal: Iterable[int] | None = None) -> int:
     """孔洞纪律（09 §3.2 L175 + §3.4 跳过凭证明语义）：从已存前沿起，逐文档
     ready 证据连续推进；遇全局序号孔洞时，仅当该序号凭登记证明属他域/日
-    （foreign=已证外国全局序号集合，由 admission 域登记查证供给）才可跳过
-    续推；无证明（foreign 缺席/未涵盖）→ 缺号不越过（fail-closed 不猜）；
-    单调不回退（已覆盖序号跳过，不回撤已认证前沿）。
+    （foreign=已证外国全局序号集合，由 admission 域登记查证供给）**或**凭
+    墓簿证明为本域本日终态（terminal=已证墓碑序号集合，P0-T5 全前沿令②：
+    物化域 item_permanent 入墓=确定性已处理，墓证与外国证明同为跳洞凭据，
+    两源分立账务分计）才可跳过续推；无证明（两集合均缺席/未涵盖）→
+    缺号不越过（fail-closed 不猜）；单调不回退（已覆盖序号跳过，不回撤
+    已认证前沿）。
 
-    foreign=None（无凭证明输入）与 foreign=空集 行为一致：退化为 L175 原
-    口径「缺号不越过」——首域占有全局前缀或无证明场景行为逐字节不变
-    （既有钉 test_recall_prepare.py::test_r7_frontier_never_skips_holes
+    foreign=None 且 terminal=None（无凭证明输入）与空集行为一致：退化为
+    L175 原口径「缺号不越过」——首域占有全局前缀或无证明场景行为逐字节
+    不变（既有钉 test_recall_prepare.py::test_r7_frontier_never_skips_holes
     钉的正是该无凭证明场景，语义兼容零改动）。
     """
     if type(stored) is not int or stored < 0:
         raise ValueError("stored frontier must be a nonnegative int")
     proven = None if foreign is None else {int(s) for s in foreign}
+    terminal_proven = None if terminal is None else {int(s) for s in terminal}
     frontier = stored
     for seq in sorted({int(s) for s in ready_seqs}):
         if seq <= frontier:
             continue
-        if proven is None:
+        if proven is None and terminal_proven is None:
             if seq == frontier + 1:
                 frontier = seq
             else:
@@ -76,10 +85,12 @@ def advance_prepared_frontier(stored: int, ready_seqs: Iterable[int],
             continue
         blocked = False
         for gap in range(frontier + 1, seq):
-            if gap not in proven:
-                blocked = True       # 首个未证序号：停于其前，不猜不越过
-                break
-            frontier = gap           # 凭证明跳过他域/日序号
+            if ((terminal_proven is not None and gap in terminal_proven)
+                    or (proven is not None and gap in proven)):
+                frontier = gap   # 凭证明跳过他域/日或墓碑终态序号
+                continue
+            blocked = True       # 首个未证序号：停于其前，不猜不越过
+            break
         if blocked:
             break
         frontier = seq
@@ -351,7 +362,12 @@ class PrepareWorker:
         # 证据集是其稀疏子集；推进区间内的孔洞逐序号向 admission 域查证登记
         # 归属，登记证明属他域/日才可跳过。证明枚举一次完成：前沿单调不回退，
         # CAS 重试见到的 stored 只会 ≥ 首读提示值，孔洞集合恒为已证集子集。
+        # P0-T5 全前沿令②（主窗口扩充令）：孔洞另查**墓簿**（本域本日
+        # item_permanent 终态——物化域确定性已处理，非外国序号）：墓证与
+        # 外国证明两源分立、账务分计（tombstone_proof_count 审计位）；
+        # 未墓未证序号仍停摆（fail-closed 不猜——「缺号未知须恢复」）。
         foreign: set[int] = set()
+        terminal: set[int] | None = None
         if ready_seqs:
             max_ready = max(ready_seqs)
             hint = self._store.get(CONTROL_INDEX, day_key)
@@ -374,6 +390,14 @@ class PrepareWorker:
                             # 证明预算耗尽：预算外序号不证（推进停于首个未证
                             # 孔洞——fail-closed，工作量有界）
                             break
+                if holes:
+                    # 墓簿共读面（⑧同一终态证据源）：物理前缀经端口包装，
+                    # ready_scan_size 为单页枚举上界（超出保守不证）。
+                    terminal = scan_terminal_tombstone_seqs(
+                        lambda index, body: self.client.search(
+                            index=self.index_prefix + index, body=body),
+                        scope_id, business_date,
+                        scan_size=self.ready_scan_size)
                 foreign = self._scan_foreign_proofs(
                     scope_id, business_date, holes,
                     head["source"] if head is not None else None)
@@ -396,7 +420,8 @@ class PrepareWorker:
             stored = (int(snapshot.get("prepared_seq", 0))
                       if isinstance(snapshot, dict) else 0)
             frontier = advance_prepared_frontier(stored, ready_seqs,
-                                                 foreign=foreign)
+                                                 foreign=foreign,
+                                                 terminal=terminal)
             lexical_stored = source.get("lexical_watermark", 0)
             lexical_stored = (lexical_stored
                               if type(lexical_stored) is int and lexical_stored > 0
@@ -412,6 +437,11 @@ class PrepareWorker:
                     # 证明本体可由 seq 登记映射/pending 日志确定性重导）
                     "foreign_proof_count": sum(
                         1 for seq in foreign if stored < seq <= frontier),
+                    # P0-T5 全前沿令②：凭墓簿跳过的本域日终态序号计数
+                    # （有界审计位；证明本体=墓簿索引，确定性重导）。
+                    "tombstone_proof_count": sum(
+                        1 for seq in (terminal or ())
+                        if stored < seq <= frontier),
                 },
             }
             if (frontier == stored and lexical == lexical_stored

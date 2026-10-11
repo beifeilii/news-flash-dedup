@@ -22,6 +22,15 @@
 §②）：首个消费点落地——vector/milvus_store.py upsert_chunks 写确认尾段
 经 COVERAGE_FRONTIER_ENV 开关（默认关）驱动本模块推进器；读侧
 fail-closed 求值语义（vector_store.py:430-447）不变。
+
+P0-T5 全前沿令（主窗口墓碑全前沿链扩充⑤⑧）：推进器/对账器各增设
+terminal_evidence 墓簿端口（None=未注入，行为逐字节不变）——注入后
+advance 自取本域日墓证（缺向量序号=确定性终态，vector 前沿不因缺向量
+永久停滞；墓碑不要求 embedding 生成）；对账区间墓证序号跳过且**不
+record_hole**（缺向量≠孤儿语义分立），tombstone_proofs 分计不算外国；
+端口契约=materialize_terminal.scan_terminal_tombstone_seqs 同源读面
+（materialize/prepare/vector 各前沿共读同一终态证据源，不伪装成新闻
+记录）。
 """
 from __future__ import annotations
 
@@ -88,17 +97,21 @@ class VectorFrontierAdvanceReport:
     max_ready_seen: int
     generation: int
     advanced: bool
+    # P0-T5 全前沿令⑤：本轮凭墓簿跳过的终态序号计数（观测/对账面）。
+    tombstone_proofs: int = 0
 
 
 @dataclass(frozen=True)
 class VectorReconcileReport:
-    """一轮对账报告（孔洞/外国证明计数显式记账，不静默）。"""
+    """一轮对账报告（孔洞/外国证明/墓证计数显式记账，不静默）。"""
     scope_id: str
     business_date: str
     space_id: str
     reconciled_through: int
     holes_opened: int
     foreign_proofs: int
+    # P0-T5 全前沿令⑤：区间内墓簿终态序号计数（跳过不孔洞、不算外国）。
+    tombstone_proofs: int = 0
 
 
 class VectorFrontierAdvancer:
@@ -108,12 +121,20 @@ class VectorFrontierAdvancer:
     """
 
     def __init__(self, store: Any, *, max_cas_attempts: int = 8,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None,
+                 terminal_evidence: Callable[[str, str], Iterable[int]]
+                 | None = None) -> None:
         if max_cas_attempts < 1:
             raise ValueError("max_cas_attempts must be positive")
         self._store = store
         self.max_cas_attempts = max_cas_attempts
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        # P0-T5 全前沿令⑤⑧（主窗口扩充令）：墓簿终态证据端口——注入后
+        # 每次 advance 自取本域日墓证（vector 前沿不因缺向量永久停滞；
+        # 墓碑不要求 embedding 生成）；None=未注入（现役行为逐字节不变，
+        # additive 纪律）。端口契约=materialize_terminal.scan_terminal_
+        # tombstone_seqs 同源读面（各前沿共读同一终态证据源）。
+        self.terminal_evidence = terminal_evidence
 
     def _day_body(self, scope_id: str, business_date: str, space_id: str,
                   now: str) -> dict:
@@ -126,7 +147,8 @@ class VectorFrontierAdvancer:
                 "space_id": space_id,
                 "vector_frontier": 0, "max_ready_seen": 0,
                 "reconciled_through": 0, "hole_count": 0,
-                "foreign_proof_count": 0, "generation": 0,
+                "foreign_proof_count": 0, "tombstone_proof_count": 0,
+                "generation": 0,
                 "advanced_at": now,
             }},
         }
@@ -134,15 +156,25 @@ class VectorFrontierAdvancer:
     def advance(self, scope_id: str, business_date: str, space_id: str,
                 ready_seqs: Iterable[int], *,
                 foreign_proofs: Iterable[int] | None = None,
-                hole_count: int | None = None) -> VectorFrontierAdvanceReport:
+                hole_count: int | None = None,
+                terminal_proofs: Iterable[int] | None = None) -> VectorFrontierAdvanceReport:
         """推进 vector_frontier（无证明不跳洞、单调不回退）。
 
         ready_seqs=本批写确认已证 arrival_seq 集（调用方代次过滤后供给）；
         foreign_proofs=已证他域/日序号（跳过凭证明，W-R4 同语义）；
-        hole_count=L3 对账开孔洞计数透传（None=沿用已存快照值）。
+        hole_count=L3 对账开孔洞计数透传（None=沿用已存快照值）；
+        terminal_proofs=已证墓碑终态序号（P0-T5 全前沿令⑤：本域本日
+        item_permanent 确定性已处理——缺向量序号的合法跳洞凭据；
+        None=无显式墓证输入；注入 terminal_evidence 端口时另自取合并）。
         """
         ready = {int(seq) for seq in ready_seqs}
         foreign = None if foreign_proofs is None else {int(s) for s in foreign_proofs}
+        terminal = (None if terminal_proofs is None
+                    else {int(s) for s in terminal_proofs})
+        if self.terminal_evidence is not None:
+            evidence = {int(s) for s in self.terminal_evidence(
+                scope_id, business_date)}
+            terminal = evidence if terminal is None else terminal | evidence
         day_key = VectorFrontierProvider.day_key(scope_id, business_date)
         now = _utc_iso(self.clock())
         for _attempt in range(self.max_cas_attempts):
@@ -167,7 +199,8 @@ class VectorFrontierAdvancer:
                 raise VectorFrontierConflict(
                     "vector frontier snapshot belongs to another space")
             stored = _int_field(snapshot, "vector_frontier")
-            frontier = advance_prepared_frontier(stored, ready, foreign=foreign)
+            frontier = advance_prepared_frontier(stored, ready, foreign=foreign,
+                                                  terminal=terminal)
             max_ready_seen = max(
                 [_int_field(snapshot, "max_ready_seen"), *ready] or [0])
             holes = (_int_field(snapshot, "hole_count")
@@ -187,6 +220,12 @@ class VectorFrontierAdvancer:
                     "hole_count": holes,
                     "foreign_proof_count": _int_field(snapshot,
                                                       "foreign_proof_count"),
+                    # 墓证累计（有界审计位；快照谱系 hole_count/foreign 同
+                    # 款累计口径，调用方 journal 重导确定性可复核）。
+                    "tombstone_proof_count": (
+                        _int_field(snapshot, "tombstone_proof_count")
+                        + sum(1 for seq in (terminal or ())
+                              if stored < seq <= frontier)),
                     "generation": generation,
                     "advanced_at": now,
                 },
@@ -203,7 +242,9 @@ class VectorFrontierAdvancer:
                 scope_id=scope_id, business_date=business_date,
                 space_id=space_id, vector_frontier=frontier,
                 max_ready_seen=max_ready_seen, generation=generation,
-                advanced=frontier != stored)
+                advanced=frontier != stored,
+                tombstone_proofs=sum(1 for seq in (terminal or ())
+                                     if stored < seq <= frontier))
         raise VectorFrontierConflict(
             "vector frontier snapshot CAS contention exceeded")
 
@@ -218,22 +259,34 @@ class VectorReconciler:
     """
 
     def __init__(self, store: Any, *, max_cas_attempts: int = 8,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None,
+                 terminal_evidence: Callable[[str, str], Iterable[int]]
+                 | None = None) -> None:
         if max_cas_attempts < 1:
             raise ValueError("max_cas_attempts must be positive")
         self._store = store
         self.max_cas_attempts = max_cas_attempts
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        # P0-T5 全前沿令⑤⑧：墓簿终态证据端口（None=未注入，现役行为
+        # 逐字节不变）。注入后区间内墓证序号跳过——**不 record_hole**
+        # （缺向量=确定性终态而非孤儿），tombstone_proofs 分计不算外国。
+        self.terminal_evidence = terminal_evidence
 
     def reconcile(self, scope_id: str, business_date: str, space_id: str, *,
                   row_for_seq: Callable[[int], tuple[Any, Any]],
                   journal_confirmed: Callable[[int, Any, Any], bool],
                   record_hole: Callable[[int], None]) -> VectorReconcileReport:
-        """区间查证：无行且无权威→foreign+1；有行无现行代次日志→孔洞+1。"""
+        """区间查证：墓证序号跳过（不孔洞）；无行且无权威→foreign+1；
+        有行无现行代次日志→孔洞+1。"""
         day_key = VectorFrontierProvider.day_key(scope_id, business_date)
         now = _utc_iso(self.clock())
         holes_opened = 0
         foreign_proofs = 0
+        tombstone_proofs = 0
+        terminal = None
+        if self.terminal_evidence is not None:
+            terminal = {int(s) for s in self.terminal_evidence(
+                scope_id, business_date)}
         for _attempt in range(self.max_cas_attempts):
             day = self._store.get(CONTROL_INDEX, day_key)
             if day is None:
@@ -253,6 +306,13 @@ class VectorReconciler:
                 # 区间查证只在首轮执行（CAS 重试见到的前沿单调不回退，
                 # 已查序号不重复查证——与 prepare.py:352-353 提示语义同向）。
                 for seq in range(start + 1, frontier + 1):
+                    if terminal is not None and seq in terminal:
+                        # P0-T5 全前沿令⑤：墓证序号=确定性终态（item_
+                        # permanent 入墓，向量结构性缺席）——跳过且**不落
+                        # 孔洞**（孤儿=应有向量而行不在场；墓证=本就不该
+                        # 有向量，两语义分立），tombstone_proofs 分计。
+                        tombstone_proofs += 1
+                        continue
                     row, authority = row_for_seq(seq)
                     if row is None and authority is None:
                         foreign_proofs += 1      # 外国证明加护场景
@@ -270,6 +330,9 @@ class VectorReconciler:
                     "foreign_proof_count": (
                         _int_field(snapshot, "foreign_proof_count")
                         + foreign_proofs),
+                    "tombstone_proof_count": (
+                        _int_field(snapshot, "tombstone_proof_count")
+                        + tombstone_proofs),
                     "advanced_at": snapshot.get("advanced_at", now),
                 },
             }
@@ -284,7 +347,8 @@ class VectorReconciler:
             return VectorReconcileReport(
                 scope_id=scope_id, business_date=business_date,
                 space_id=space_id, reconciled_through=frontier,
-                holes_opened=holes_opened, foreign_proofs=foreign_proofs)
+                holes_opened=holes_opened, foreign_proofs=foreign_proofs,
+                tombstone_proofs=tombstone_proofs)
         raise VectorFrontierConflict(
             "vector reconcile snapshot CAS contention exceeded")
 
