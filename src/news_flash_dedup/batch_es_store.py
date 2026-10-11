@@ -158,6 +158,17 @@ class ElasticsearchBatchStore:
 
         return isinstance(error, ConflictError)
 
+    def search(self, index: str, body: dict):
+        """P1a-T2 只读检索面（蓝图 4.1-4 追加面；既有方法签名零触碰）。
+
+        消费面=任务文档族检索（受理复用/容量深度/孤儿探针/claim 扫描）。
+        物理前缀同 ``_physical`` 拼接；``index`` 可为逻辑名或尾星通配
+        形态（``work`` 族跨日——前缀+通配由 ES 原生展开）。返回体不
+        二次包装（调用方按 hits 形态解析；elasticsearch-py 响应为
+        Mapping 形——prepare.py ``client.search`` 同先例直读）。
+        """
+        return self.client.search(index=self._physical(index), body=body)
+
     def bulk_create_classified(self, documents: list[tuple[str, str, dict]]):
         """P0-T4 逐条结果解析 bulk（新方法——``bulk_create`` 与既有调用方零 diff）。
 

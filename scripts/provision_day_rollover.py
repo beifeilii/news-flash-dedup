@@ -6,10 +6,14 @@
   `news-dedup-audits-v1-YYYY.MM.DD`，按 business_date 建索引）；映射复用
   `es_admission_schema`（10 §4.2 模板：shards=1、refresh_interval=1s、
   dedup_cjk 分析器）；副本按 UAT 惯例 0——10 §2 L32 明载实际副本由压测决定；
+- P1a-T5（卡3.6 新发现同步）：滚动集扩 `news-dedup-work-v1-YYYY.MM.DD`
+  （work_queue T1 单源 `work_index` 同名；任务文档世界 D+2 起同样无创建者
+  ——与本脚本同源缺口）；tombstones 维持 T3 按需 ensure 口径**不进滚动**
+  （墓碑=异常路径，`persist_tombstone` 写前 ensure）；
 - 前缀口径与 W2Fδ2 四位一体裁定一致：缺省 "" = 10 §2 canonical 生产形；
   非空必须全匹配 `p01-batch-[A-Za-z0-9-]+-`（UAT 隔离运行形，fail-closed）；
-- 硬正则校验：每个目标名构造期即过 lifecycle 日索引硬正则闸（双兼容形），
-  不过即拒，永不创建异形名；
+- 硬正则校验：每个目标名构造期即过 lifecycle 日索引硬正则闸（双兼容形，
+  P1a-T5 起 kind 含 work），不过即拒，永不创建异形名；
 - 幂等：已存在跳过（HEAD 点验，不重建不报错），重复执行安全；
 - 默认 dry-run（只报计划零写）；`--execute` 才实际创建；
 - 环境闸：仅 UAT（DEPLOY_ENV=test，经 es_client.assert_test_environment，
@@ -31,17 +35,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from news_flash_dedup.es_admission_index import ProvisionError  # noqa: E402
-from news_flash_dedup.es_admission_schema import audit_mapping, day_index, item_mapping  # noqa: E402
+from news_flash_dedup.es_admission_schema import (  # noqa: E402
+    audit_mapping, day_index, item_mapping, work_mapping,
+)
 from news_flash_dedup.lifecycle import is_valid_cleanup_target  # noqa: E402
 
 _PREFIX_PATTERN = re.compile(r"p01-batch-[A-Za-z0-9-]+-")
 
 
 def rollover_indices(business_date: date, index_prefix: str = "") -> dict[str, dict]:
-    """指定业务日的 items/audits 日索引名 → mapping（复用 schema + 10 §4.2 settings）。
+    """指定业务日的 items/audits/work 日索引名 → mapping（复用 schema + 10 §4.2 settings）。
 
     前缀口径与 W2Fδ2 四位一体裁定一致；每个生成名过硬正则闸（fail-closed，
-    永不产异形名）。
+    永不产异形名）。P1a-T5：work 三件套同滚（tombstones 按需 ensure 不滚）。
     """
     if type(business_date) is not date:
         raise ValueError("business_date must be a datetime.date")
@@ -51,6 +57,7 @@ def rollover_indices(business_date: date, index_prefix: str = "") -> dict[str, d
     mappings = {
         index_prefix + day_index(iso): item_mapping(),
         index_prefix + day_index(iso, "audits"): audit_mapping(),
+        index_prefix + day_index(iso, "work"): work_mapping(),
     }
     for mapping in mappings.values():
         # 与 es_admission_index.required_indices 同口径：shards=1、replicas=0

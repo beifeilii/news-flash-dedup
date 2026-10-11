@@ -115,9 +115,15 @@ def test_dry_run_lists_only_d_minus_seven_targets_not_invaders(uat_client, clean
     assert ns["target_d7_audits"] in report["would_delete"]
     assert ns["keep_d6"] not in report["would_delete"]
     assert ns["keep_d6_audits"] not in report["would_delete"]
-    # 没有宽通配符列举：只 2 次 HEAD（target_d7 + target_d7_audits）
-    # 不检查调用次数精确等于 2（u1901a1 其他索引也会被列举），但确认索引名清单严格匹配
-    assert sorted(report["all_targets"]) == sorted([ns["target_d7"], ns["target_d7_audits"]])
+    # 没有宽通配符列举：只 HEAD 点验目标（u1901a1 其他索引也会被列举），
+    # 但确认索引名清单严格匹配。P1a-T5：kind 全集四件（work/tombstones
+    # 本命名空间未创建 → 只进 absent）。
+    expected_targets = sorted(
+        [ns["target_d7"], ns["target_d7_audits"],
+         f"{ns['prefix']}news-dedup-work-v1-2026.09.18",
+         f"{ns['prefix']}news-dedup-tombstones-v1-2026.09.18"])
+    assert sorted(report["all_targets"]) == expected_targets
+    assert report["deferred"] == []
 
 
 def _exists(uat_client, index):
@@ -232,17 +238,24 @@ def test_audit_log_records_operator_today_and_index_names(uat_client, cleanup_na
                 body=item_mapping() if "items" in name else audit_mapping())
     audit = CleanupAuditLog(operator="admin-cleanup-uat")
     report = execute_cleanup(uat_client, ns["today"], audit, index_prefix=ns["prefix"])
-    # 真删实证：两目标入 deleted 而非 skipped_absent
+    # 真删实证：两目标入 deleted 而非 skipped_absent。P1a-T5：kind 全集
+    # 四件——work/tombstones 本命名空间未创建 → absent 伪删（ok=True
+    # error="absent"，lifecycle 既有语义），deletion_runs 4 条。
     assert sorted(report["deleted"]) == sorted([ns["target_d7"], ns["target_d7_audits"]])
-    assert report["skipped_absent"] == []
-    assert len(audit.deletion_runs) == 2
+    assert sorted(report["skipped_absent"]) == sorted(
+        [f"{ns['prefix']}news-dedup-work-v1-2026.09.18",
+         f"{ns['prefix']}news-dedup-tombstones-v1-2026.09.18"])
+    assert len(audit.deletion_runs) == 4
     for entry in audit.deletion_runs:
         assert entry["operator"] == "admin-cleanup-uat"
         assert entry["today"] == ns["today"].isoformat()
         assert entry["business_date"] == "2026-09-18"
-        assert entry["kind"] in {"items", "audits"}
+        assert entry["kind"] in {"items", "audits", "work", "tombstones"}
         # 真删 vs absent 伪删区分（旧断言只钉 ok=True，伪删亦 ok=True）
         assert entry["ok"] is True
-        assert entry["error"] is None, (
-            f"absent 伪删冒充真删：{entry['index_name']} error={entry['error']!r}"
-        )
+        if entry["kind"] in {"items", "audits"}:
+            assert entry["error"] is None, (
+                f"absent 伪删冒充真删：{entry['index_name']} error={entry['error']!r}"
+            )
+        else:
+            assert entry["error"] == "absent"

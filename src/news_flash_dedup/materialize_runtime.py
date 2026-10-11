@@ -276,6 +276,12 @@ class MaterializeRetryRuntime:
 
     # ---- 条目级（重试账） ----
 
+    def next_delay(self, attempt: int) -> float:
+        """P1a-T3：任务文档退避取值面（条目账迁入 work 文档后，defer
+        写侧的公共延迟计算——policy/随机源单源注入，域外不触私有态）。"""
+        return retry_delay_seconds(
+            attempt, policy=self.policy, random_value=self._random())
+
     def record_entry_failure(self, arrival_seq: int,
                              failure: MaterializeFailure) -> RetryState:
         """条目失败入账：确定失败计数+全抖动退避；未知写入零计数即时读回。"""

@@ -36,9 +36,16 @@ class FakeIndices:
 
 
 class FakeClient:
-    def __init__(self, present=None):
+    def __init__(self, present=None, count_value=0):
         self.indices = FakeIndices(present)
         self.calls = []
+        self._count_value = count_value
+
+    def count(self, *, index, body):
+        # P1a-T5：work 索引非终态在位检查的 count 面（缺省零活任务）。
+        self.calls.append(("count", index))
+        return {"count": self._count_value,
+                "_shards": {"total": 1, "successful": 1, "failed": 0}}
 
 
 # ===== 硬正则闸门 =====
@@ -81,14 +88,19 @@ def test_invalid_cleanup_target_names_rejected(name, reason):
 
 
 def test_candidate_indices_uses_today_minus_7_in_business_zone():
+    # P1a-T5：kind 全集 items/audits/work/tombstones（钉 6.4——任务文档/
+    # 墓碑日索引进 7 天保留清理清单）。
     today = date(2026, 9, 25)
     candidates = candidate_indices_for_cleanup(today)
-    assert len(candidates) == 2  # items + audits
+    assert [c.kind for c in candidates] == [
+        "items", "audits", "work", "tombstones"]
     target_date = date(2026, 9, 18)
     assert candidates[0].index_name == "news-dedup-items-v1-2026.09.18"
     assert candidates[0].business_date == target_date
     assert candidates[0].kind == "items"
     assert candidates[1].kind == "audits"
+    assert candidates[2].index_name == "news-dedup-work-v1-2026.09.18"
+    assert candidates[3].index_name == "news-dedup-tombstones-v1-2026.09.18"
 
 
 def test_candidate_indices_rejects_invalid_retention_days():
@@ -123,12 +135,12 @@ def test_probe_targets_present_only_checks_named_indices():
     client = FakeClient(present=present)
     candidates = candidate_indices_for_cleanup(date(2026, 9, 25))
     probed = probe_targets_present(client, candidates)
-    # 只检查 candidates 列表里的两个（按今天-7 推算的）
-    assert len(probed) == 2
-    assert all(t.index_name in present for t in probed)
-    # 不应枚举其他索引（call 计数：2 次 exists，没有索引列举）
+    # 只检查 candidates 列表里的四个（P1a-T5 kind 全集），按今天-7 推算的
+    assert len(probed) == 4
+    assert all(t.index_name in present for t in probed[:2])
+    # 不应枚举其他索引（call 计数：4 次 exists，没有索引列举）
     exists_calls = [c for c in client.indices.calls if c[0] == "exists"]
-    assert len(exists_calls) == 2
+    assert len(exists_calls) == 4
     assert all(c[0] == "exists" for c in client.indices.calls)
 
 
@@ -145,7 +157,12 @@ def test_dry_run_records_audit_and_lists_candidates():
         "news-dedup-items-v1-2026.09.18",
         "news-dedup-audits-v1-2026.09.18",
     ]
-    assert report["absent"] == []
+    # P1a-T5：work/tombstones 缺场入 absent（kind 全集四件）
+    assert report["deferred"] == []
+    assert report["absent"] == [
+        "news-dedup-work-v1-2026.09.18",
+        "news-dedup-tombstones-v1-2026.09.18",
+    ]
     assert len(audit.dry_run_runs) == 1
     assert audit.dry_run_runs[0]["operator"] == "admin-test"
 
@@ -156,9 +173,12 @@ def test_dry_run_marks_absent_indices_separately():
     audit = CleanupAuditLog(operator="admin-test")
     report = dry_run_cleanup(client, today, audit)
     assert report["would_delete"] == []
+    assert report["deferred"] == []
     assert sorted(report["absent"]) == [
         "news-dedup-audits-v1-2026.09.18",
         "news-dedup-items-v1-2026.09.18",
+        "news-dedup-tombstones-v1-2026.09.18",
+        "news-dedup-work-v1-2026.09.18",
     ]
 
 
@@ -177,13 +197,24 @@ def test_execute_cleanup_dry_run_does_not_delete():
     # 09-29 条 32 F-8③ 修复后语义（W2Fδ/WA5-L11，旧钉所钉为误导语义）：
     # dry_run 将删清单入 report["would_delete"]（未真删不得冒充 deleted），
     # report["deleted"] 恒空；execute 真删路径维持 deleted 记账（见下一用例）。
+    # P1a-T5：work/tombstones 缺场入 skipped_absent（kind 全集四件）。
     assert sorted(report["would_delete"]) == [
         "news-dedup-audits-v1-2026.09.18",
         "news-dedup-items-v1-2026.09.18",
     ]
     assert report["deleted"] == []
+    assert report["deferred"] == []
+    assert sorted(report["skipped_absent"]) == [
+        "news-dedup-tombstones-v1-2026.09.18",
+        "news-dedup-work-v1-2026.09.18",
+    ]
     assert client.indices.deleted == []  # dry-run 不真删（零真删守卫保留）
-    assert len(audit.deletion_runs) == 2
+    assert len(audit.deletion_runs) == 4
+    errors = {run["index_name"]: run["error"] for run in audit.deletion_runs}
+    assert errors["news-dedup-items-v1-2026.09.18"] == "dry_run"
+    assert errors["news-dedup-audits-v1-2026.09.18"] == "dry_run"
+    assert errors["news-dedup-work-v1-2026.09.18"] == "absent"
+    assert errors["news-dedup-tombstones-v1-2026.09.18"] == "absent"
     for run in audit.deletion_runs:
         assert run["ok"] is True
 
@@ -200,12 +231,18 @@ def test_execute_cleanup_deletes_present_indices_and_records_audit():
         "news-dedup-audits-v1-2026.09.18",
         "news-dedup-items-v1-2026.09.18",
     ]
-    assert report["skipped_absent"] == []
+    # P1a-T5：work/tombstones 缺场（kind 全集四件；work 非终态检查只对
+    # 在场 work 索引执行——缺场短路不触 count）。
+    assert sorted(report["skipped_absent"]) == [
+        "news-dedup-tombstones-v1-2026.09.18",
+        "news-dedup-work-v1-2026.09.18",
+    ]
     assert sorted(client.indices.deleted) == [
         "news-dedup-audits-v1-2026.09.18",
         "news-dedup-items-v1-2026.09.18",
     ]
-    assert len(audit.deletion_runs) == 2
+    assert ("count", "news-dedup-work-v1-2026.09.18") not in client.calls
+    assert len(audit.deletion_runs) == 4
     assert all(r["operator"] == "admin-1" and r["ok"] is True for r in audit.deletion_runs)
 
 
@@ -225,8 +262,12 @@ def test_execute_cleanup_distinguishes_real_delete_from_absent_pseudo():
     audit = CleanupAuditLog(operator="admin-test")
     report = execute_cleanup(client, today, audit)
     assert report["deleted"] == ["news-dedup-items-v1-2026.09.18"]
-    assert report["skipped_absent"] == ["news-dedup-audits-v1-2026.09.18"]
-    assert len(audit.deletion_runs) == 2
+    assert sorted(report["skipped_absent"]) == [
+        "news-dedup-audits-v1-2026.09.18",
+        "news-dedup-tombstones-v1-2026.09.18",
+        "news-dedup-work-v1-2026.09.18",
+    ]
+    assert len(audit.deletion_runs) == 4
     by_name = {r["index_name"]: r for r in audit.deletion_runs}
     real = by_name["news-dedup-items-v1-2026.09.18"]
     pseudo = by_name["news-dedup-audits-v1-2026.09.18"]
@@ -276,7 +317,12 @@ def test_execute_cleanup_accepts_isolated_batch_prefix():
         "p01-batch-r1-news-dedup-audits-v1-2026.09.18",
         "p01-batch-r1-news-dedup-items-v1-2026.09.18",
     ]
-    assert len(audit.deletion_runs) == 2
+    # P1a-T5：work/tombstones 前缀同推（缺场 → skipped_absent）
+    assert sorted(report["skipped_absent"]) == [
+        "p01-batch-r1-news-dedup-tombstones-v1-2026.09.18",
+        "p01-batch-r1-news-dedup-work-v1-2026.09.18",
+    ]
+    assert len(audit.deletion_runs) == 4
     assert all(r["ok"] is True for r in audit.deletion_runs)
 
 

@@ -184,6 +184,15 @@ def commit_batch(
         advanced_to = target
     deferred_ids = tuple(
         item.record_id for item in items if item.arrival_seq > target)
+    # P1a-T3（冻结路径例外接触点——提交说明点名；蓝图 1.2.1/七-3
+    # 裁定）：段 4 尾头文档 ``last_decision_seq`` 镜像写入。commit 域
+    # 控制文档（decision_watermark_seq 权威面）现役不动；头文档镜像
+    # 幂等单调追加（重放 target==prev → no-op）、滞后容忍（面全路径
+    # 不抛）、不新增任何读判路径。store 未装配该 duck 可选面（P17/
+    # P18 现役仓储）→ 零调用零语义；段 1~3 任何语义零触碰。
+    mirror = getattr(store, "mirror_admission_decision_seq", None)
+    if callable(mirror):
+        mirror(scope_id, business_date, target)
     return BatchCommitOutcome(
         flipped_ids=tuple(flipped_ids),
         idempotent_ids=tuple(idempotent_ids),

@@ -238,8 +238,8 @@ def test_residue_listing_is_scoped_to_day_index_namespace():
     indices = _DocIndices(listing={})
     client = _DocClient(indices)
     enumerate_overdue_residue(client, date(2026, 10, 8), index_prefix="p01-batch-r1-")
-    # fake get 记录的查询串必须只含 items/audits 两支且带前缀
-    # （_DocIndices.get 的入参即通配串）
+    # fake get 记录的查询串必须只含 items/audits/work/tombstones 四支且带前缀
+    # （_DocIndices.get 的入参即通配串；P1a-T5：超期残留枚举=清理域全集）
     queried = []
     # 重新调用并捕获
     class _Cap(_DocIndices):
@@ -249,7 +249,9 @@ def test_residue_listing_is_scoped_to_day_index_namespace():
     client = _DocClient(_Cap())
     enumerate_overdue_residue(client, date(2026, 10, 8), index_prefix="p01-batch-r1-")
     assert queried == ["p01-batch-r1-news-dedup-items-v1-*,"
-                       "p01-batch-r1-news-dedup-audits-v1-*"]
+                       "p01-batch-r1-news-dedup-audits-v1-*,"
+                       "p01-batch-r1-news-dedup-work-v1-*,"
+                       "p01-batch-r1-news-dedup-tombstones-v1-*"]
 
 
 def test_residue_rejects_bad_retention():
@@ -282,7 +284,11 @@ class _DayClient:
 
 
 def test_execute_cleanup_dry_run_reports_would_delete_not_deleted():
-    """条32：dry_run 分支写 report["would_delete"]（未真删不得冒充 deleted）。"""
+    """条32：dry_run 分支写 report["would_delete"]（未真删不得冒充 deleted）。
+
+    P1a-T5：kind 全集四件——在场 items/audits 入 dry_run 留痕；work/
+    tombstones 缺场入 absent（旧"全 dry_run"钉随 kind 全集更新）。
+    """
     from news_flash_dedup.lifecycle import CleanupAuditLog, execute_cleanup
     client = _DayClient(present={
         "news-dedup-items-v1-2026.09.18", "news-dedup-audits-v1-2026.09.18"})
@@ -293,7 +299,11 @@ def test_execute_cleanup_dry_run_reports_would_delete_not_deleted():
         "news-dedup-audits-v1-2026.09.18", "news-dedup-items-v1-2026.09.18"]
     assert report["deleted"] == []  # 未真删：deleted 恒空
     assert client.indices.deleted == []
-    assert all(run["error"] == "dry_run" for run in audit.deletion_runs)
+    by_name = {run["index_name"]: run["error"] for run in audit.deletion_runs}
+    assert by_name["news-dedup-items-v1-2026.09.18"] == "dry_run"
+    assert by_name["news-dedup-audits-v1-2026.09.18"] == "dry_run"
+    assert by_name["news-dedup-work-v1-2026.09.18"] == "absent"
+    assert by_name["news-dedup-tombstones-v1-2026.09.18"] == "absent"
 
 
 def test_execute_cleanup_real_run_keeps_deleted_and_empty_would_delete():

@@ -342,3 +342,89 @@ def test_empty_batch_zero_calls(env):
     assert outcome.deferred_ids == ()
     assert client.calls == []
     assert client.indices.refreshed == []
+
+
+# ---------- ⑨ P1a-T3：段 4 尾头文档 last_decision_seq 镜像写入 ----------
+# （蓝图 1.2.1/七-3 裁定——冻结例外接触点的装配面钉：duck 可选面
+# 在场即调用（target=连续前缀）；缺席 store（P17/P18 现役）零调用。）
+
+class _AdmissionMirrorStore:
+    """段 4 尾镜像 duck 面包装（透传 commit 域；镜像写受理头文档）。"""
+
+    def __init__(self, inner, admission_store, clock) -> None:
+        self._inner = inner
+        self._admission = admission_store
+        self._clock = clock
+        self.mirror_calls: list[tuple[str, str, int]] = []
+
+    def mirror_admission_decision_seq(self, scope_id, business_date,
+                                      arrival_seq):
+        from news_flash_dedup.batch_admission import (
+            HEAD_ID, CONTROL_INDEX, mirror_decision_seq)
+
+        self.mirror_calls.append((scope_id, business_date, arrival_seq))
+        return mirror_decision_seq(
+            self._admission, scope_id, business_date, arrival_seq,
+            clock=self._clock)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _durable_admission_head(admission_store):
+    """装配一个游标形受理头（durable 模式受理一件即建头）。"""
+    from datetime import datetime, timezone
+
+    from news_flash_dedup.admission import AdmissionRequest
+    from news_flash_dedup.batch_admission import (
+        BatchAdmissionCoordinator, BatchLimits)
+
+    now = datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc)
+    service = BatchAdmissionCoordinator(
+        admission_store, owner_id="writer-1", owner_isolated=lambda: True,
+        limits=BatchLimits(), clock=lambda: now, use_durable_queue=True)
+    service.accept_batch([AdmissionRequest(
+        scope_id="default", request_id="m-1", item_id="m-1", text="镜像锚",
+        received_at=now, schema_version="1", pipeline_version="v1",
+        embedding_space_id="v3", delivery_route_ref="audit-route-v1",
+        trace_id="trace-mirror")])
+    return service
+
+
+def test_segment4_tail_mirrors_last_decision_seq_into_admission_head(env):
+    from test_batch_admission import BatchMemoryStore
+
+    client, store, config = env
+    admission = BatchMemoryStore()
+    _durable_admission_head(admission)
+    when = {"now": None}
+
+    def clock():
+        from datetime import datetime, timezone
+        return when["now"] or datetime(2026, 10, 8, 1, 0,
+                                       tzinfo=timezone.utc)
+
+    wrapped = _AdmissionMirrorStore(store, admission, clock)
+    items = [_item("r0", 1), _item("r1", 2)]
+    outcome = commit_batch(items, wrapped, scope_id="default",
+                           business_date="2026-10-08")
+    assert outcome.watermark_advanced_to == 2
+    # 段 4 尾调用镜像面：target=连续前缀 2（非批内最大）
+    assert wrapped.mirror_calls == [("default", "2026-10-08", 2)]
+    head = admission.get("news-dedup-control-v1", "batch_admission_head")
+    assert head["source"]["last_decision_seq"] == 2
+    # 重放整批：commit 域幂等 + 镜像幂等（no-op，值不漂）
+    replay = commit_batch(items, wrapped, scope_id="default",
+                          business_date="2026-10-08")
+    assert replay.watermark_advanced_to is None
+    assert wrapped.mirror_calls[-1] == ("default", "2026-10-08", 2)
+    assert admission.get("news-dedup-control-v1", "batch_admission_head")[
+        "source"]["last_decision_seq"] == 2
+
+
+def test_segment4_tail_skips_mirror_when_face_absent(env):
+    client, store, config = env
+    items = [_item("r0", 1)]
+    outcome = commit_batch(items, store, scope_id=SCOPE,
+                           business_date=DATE_STR)
+    assert outcome.watermark_advanced_to == 1    # 现役仓储零镜像零语义

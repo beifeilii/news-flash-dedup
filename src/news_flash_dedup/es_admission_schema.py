@@ -21,7 +21,6 @@ def day_index(business_date: str, kind: str = "items") -> str:
         raise ValueError("invalid business date") from error
     return f"news-dedup-{kind}-v1-" + business_date.replace("-", ".")
 
-
 def request_mapping() -> dict:
     properties = _fields(
         "kind scope_id request_id item_id record_id business_fingerprint target_index business_date",
@@ -33,9 +32,15 @@ def request_mapping() -> dict:
 
 
 def control_mapping() -> dict:
+    # P1a-T2：头文档游标化——+last_terminal/last_decision_seq/config_version
+    # 三长字段（蓝图 1.2）。last_materialized_seq/pending 保留映射槽位：
+    # 前者=过渡别名（P1a-T2 起与 last_terminal 同值平移，P1a-T4 摘除）
+    # 兼容现役读面（prepare/probe/recovery_metrics），后者=G0 单槽形态
+    # （admission.py 域共用本映射——strict 映射删槽即 G0 写 400，禁删）。
     properties = _fields("kind scope_id business_date pipeline_version owner_id", "keyword")
     properties.update(_fields(
-        "last_allocated_seq last_materialized_seq lexical_watermark decision_watermark", "long"
+        "last_allocated_seq last_materialized_seq last_terminal "
+        "last_decision_seq config_version lexical_watermark decision_watermark", "long"
     ))
     properties.update(_fields("updated_at expires_at", "date"))
     properties.update(_disabled("pending checkpoint"))
@@ -70,6 +75,40 @@ def tombstone_mapping() -> dict:
         "first_failed_at last_failed_at recorded_at late_success_at", "date"))
     properties.update(_fields("retryable", "boolean"))
     properties["error_summary"] = {"type": "text", "index": False}
+    return {"mappings": {"dynamic": "strict", "properties": properties}}
+
+
+def work_mapping() -> dict:
+    """P1a-T1 任务文档索引映射（news-dedup-work-v1-*，按业务日）。
+
+    蓝图=log\\P1a-预备设计-2026-10-11.md §1.1（33 字段逐位镜像
+    ``work_queue/schema.WorkItemV1``——字段增删必须两处同步+
+    ``test_work_queue`` 形状钉）。纪律：
+    - ``text`` 为队列载荷正本（**不入检索面**：index=False，无
+      analyzer——work 索引是任务队列不是召回目标；物化成功后 items
+      主记录持检索正本）；
+    - ``result`` 终态快照=对账面（enabled=False：按 doc ID 读取，
+      不进查询）；
+    - ``last_error_summary`` 有界人读摘要（不索引，T3 同款）；
+    - 裁定（蓝图 §七-2，施工窗定）：work **进 required_indices**（受理
+      主路径索引必须在场）；tombstones 维持 T3 按需 ensure 口径。
+    """
+    properties = _fields(
+        "scope_id request_id item_id record_id business_fingerprint "
+        "schema_version pipeline_version embedding_space_id business_date "
+        "delivery_route_ref trace_id raw_hash task_state materialize_state "
+        "terminal_reason lease_owner last_failure_class last_error_code",
+        "keyword",
+    )
+    properties.update(_fields(
+        "arrival_seq retry_count lease_generation", "long"))
+    properties.update(_fields(
+        "expires_at received_at accepted_at enqueued_at updated_at "
+        "next_retry_at lease_expires_at first_failed_at last_failed_at",
+        "date"))
+    properties["text"] = {"type": "text", "index": False}
+    properties["last_error_summary"] = {"type": "text", "index": False}
+    properties["result"] = {"type": "object", "enabled": False}
     return {"mappings": {"dynamic": "strict", "properties": properties}}
 
 
