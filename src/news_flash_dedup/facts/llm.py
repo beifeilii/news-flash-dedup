@@ -12,8 +12,10 @@ DashScope 兼容端点 chat completions 承担。诚实标注：
 - **预算（N3 原型口径）**：单次 30s 超时、瞬时错误重试 2 次（线性退避
   1.5s×(attempt+1)；M-12/L 窗口P 订正：原误书"指数退避"）；
   全量故障 → LlmExtractionError（回放按 INV-4 记 failures，不冒充边界）。
-- **磁盘缓存**：cache_dir/<text_sha256>.json，键含 model+prompt_version——
-  复跑零调用零费用；缓存即证据（每文的原始 LLM JSON 留痕）。
+- **磁盘缓存**：cache_dir/<text_sha256>.json，键四元（①b 令2：
+  raw_text_hash+model+prompt_version+extractor_schema_version）——
+  复跑零调用零费用；缓存即证据（每文的原始 LLM JSON 留痕）；
+  schema 升版不错误复用旧 Fact（遗产条目键门失配→miss 重抽）。
   **零保护（R3-M2，W-R3b）**：零可定位事实的抽取结果（全幻觉 raw / 诚实空
   facts）**不落缓存**——幻觉 raw 钉入缓存即永久复用、再无重审机会；拒写
   随行告警计数（zero_facts_cache_skip_count）+ logging + 侧车 issue 登记。
@@ -42,6 +44,12 @@ from .rule import (_RECORD_ID_RE, _decimal_text, _ev, _missing, _present)
 _log = logging.getLogger(__name__)
 
 LLM_PROMPT_VERSION = "p14_llm_prompt_v2"
+# ①b（用户令 2026-10-11 双轨改造令2）：抽取器 facts schema 身份——缓存键
+# 四元之四（raw_text_hash+extractor_model+extractor_prompt_version+
+# extractor_schema_version）。标识 facts 重建投影（_facts_from_llm_payload
+# 的产物形状）：投影/槽形变更时升版→旧缓存条目键门失配→miss 重抽（
+# schema 升版不错误复用旧 Fact）。
+EXTRACTOR_SCHEMA_VERSION = "p14_facts_schema_v1"
 DEFAULT_MODEL = "qwen-plus"  # 2026-10-10 用户令：qwen-turbo 下架，直换 qwen-plus（同上豁免）
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
@@ -83,6 +91,41 @@ _SYSTEM_PROMPT = (
 
 class LlmExtractionError(ValueError):
     """LLM 抽取不可恢复失败（调用失败/JSON 非法/evidence 自检失败）。"""
+
+
+def _cache_entry_gate_ok(cached: Mapping, *, model: str) -> bool:
+    """①b 令2 缓存键四元键门单源：model+prompt_version+extractor_
+    schema_version（text_sha 由文件名承载）——extract_facts_llm 命中
+    判据与 cache_entry_usable 探针共用；改键门须同步两处消费语义。"""
+    return (cached.get("model") == model
+            and cached.get("prompt_version") == LLM_PROMPT_VERSION
+            and cached.get("extractor_schema_version")
+            == EXTRACTOR_SCHEMA_VERSION)
+
+
+def cache_entry_usable(cache_dir, text, *, model: str = DEFAULT_MODEL) -> bool:
+    """①b 令3 缓存命中探针（只读）：命中→不新增 LLM 调用（已有缓存继续
+    用——预算耗尽合同的前置判据）；未命中/损坏/键门失配（含遗产条目无
+    schema_version 维）→False。与 extract_facts_llm 内命中判据同源
+    （_cache_entry_gate_ok 单源；读校验同形：坏 JSON/非对象/坏 raw/
+    坏 issues→miss）。"""
+    if cache_dir is None:
+        return False
+    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cache_path = Path(cache_dir) / f"{text_hash}.json"
+    if not cache_path.exists():
+        return False
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(cached, dict):
+            return False
+        if not isinstance(cached.get("raw_llm_content"), str):
+            return False
+        if not isinstance(cached.get("issues", []), list):
+            return False
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    return _cache_entry_gate_ok(cached, model=model)
 
 
 def _default_call_fn(*, model: str, base_url: str, api_key: str,
@@ -541,8 +584,7 @@ def extract_facts_llm(
                              "%s (%s)", cache_path, type(error).__name__)
                 cached = None
             if (cached is not None
-                    and cached.get("model") == model
-                    and cached.get("prompt_version") == LLM_PROMPT_VERSION):
+                    and _cache_entry_gate_ok(cached, model=model)):
                 # 缓存只存 record_id 无关的原始 LLM 输出；facts 按请求方
                 # record_id 确定性重建——金标集存在同行文不同 row 的文本复用，
                 # 直接缓存 facts 会把他人 record_id 带进 evidence（R2 84 条
@@ -591,6 +633,8 @@ def extract_facts_llm(
             tmp_path = cache_path.with_name(cache_path.name + ".tmp")
             tmp_path.write_text(json.dumps({
                 "model": model, "prompt_version": LLM_PROMPT_VERSION,
+                # ①b 令2：缓存键四元（text_sha 承载于文件名+三内容维键门）
+                "extractor_schema_version": EXTRACTOR_SCHEMA_VERSION,
                 "text_sha256": text_hash, "raw_llm_content": content,
                 "issues": issues,
             }, ensure_ascii=False, indent=2), encoding="utf-8")

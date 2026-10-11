@@ -214,6 +214,7 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                      judge_timeout_s: float | None = None,
                      judge_decision_mode: str | None = None,
                      judge_version_config=None,
+                     llm_facts=None,
                      allow_prompt_direct: bool = False) -> DecideOutcome:
     """集合级决策（P17 03:57 修订 §6.1）：当前条 vs 全部 `required` 候选。
 
@@ -333,6 +334,26 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     默认模式仍
     legacy_proof_gate——机器证据零装配、零计数，端到端行为与基线
     2d0d418 全等。
+
+    开工令①b（2026-10-11，LLM 抽取按需化·双轨改造）：``llm_facts``
+    注入（缺省 None=双轨关，一切现役语义逐字节——判径/R7 闸/公共
+    输出零触碰）时启用 track 2 按需面——
+    - 触发域（令1）：仅判径对（规则未决且硬冲突未拦，semantic 模式
+      机证面）双文抽取；只抽被判文本（history 侧被judged记录+current
+      ）；同任务同 (record_id, text) 记忆化；无候选（聚合已定）/规则
+      已定对/legacy 模式零调用零消耗（deterministic 规则段继续吃文档
+      facts——build_commit_inputs 缺省供给不变）；
+    - 证据面（令1）：判径对机器证据 facts 源=LLM facts（available）
+      ，否则文档 facts（rule 回落只补证据——令4）；
+    - 失败闭门（令4）：both_missing 域+判官判"重复"+闸放行（rule
+      回落证据四要素证成）但 LLM facts 不可得（预算耗尽无缓存/抽取
+      失败/零事实被拒）→撤签强制存疑转边界（不降级签重复），
+      counter judge.backfill.gate.llm_facts_unavailable；
+    - 协议（接口冻结）：``llm_facts.extract(record_id, text) ->
+    LlmFactsOutcome(facts/available/source/reason)``——参考实现=
+    recall.fact_supply.OnDemandLlmFacts（缓存键四元+日 token 闸
+    +台账；预算耗尽合同：停新增/已有缓存继续用/告警计数）。判官
+    输入零机器证据纪律不变（抽取只喂机证面，不进 pair_context）。
     """
     if current is None:
         # F4-4（四轮 D 轮，窗口J 守卫）：current=None 退化路径原先以
@@ -665,6 +686,14 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
     #   各带 .no_time 后缀孪生计数（judge.backfill.triggered.no_time/
     #   signed.no_time/vetoed.no_time，标签带时间态；基础三计数仍聚合，
     #   供跨期撞稿防线灰度观测）。
+    # 开工令①b（2026-10-11 双轨改造）增量：
+    #   judge.llm_facts.pairs——判径对触发按需抽取的对数（llm_facts 注入
+    #     且机证面开——semantic 模式专属）；
+    #   judge.llm_facts.sides_unavailable——抽取侧不可得次数（预算耗尽
+    #     无缓存/抽取失败/零事实被拒；判径对双文分侧计）；
+    #   judge.backfill.gate.llm_facts_unavailable——失败闭门撤签对数
+    #     （both_missing 域判官判"重复"+闸放行但 LLM facts 不可得→
+    #     不降级，强制存疑转边界——令4）。
     judge_diagnostics: dict[str, int] = {}
 
     def _jcount(key: str, n: int = 1) -> None:
@@ -725,6 +754,134 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
             for _cand in candidate_list:
                 records_by_id[_cand["record_id"]] = _cand
 
+            # 开工令①b（2026-10-11 双轨改造）：track 2 按需 LLM 事实抽取
+            # 记忆化——同任务同 (record_id, text) 只抽一次（判径对共享
+            # current 侧零重复调用；磁盘缓存之外的任务内第二层去重）。
+            _llm_facts_memo: dict = {}
+
+            def _llm_facts_for_side(record_id: str, text: str):
+                key = (record_id, text)
+                if key not in _llm_facts_memo:
+                    _llm_facts_memo[key] = llm_facts.extract(record_id, text)
+                return _llm_facts_memo[key]
+
+            # ------------------------------------------------------------------
+            # 最终接线（点2，判官并发执行器消费——P1c 装配工厂
+            # api/assemble.py build_judge_pair_executor 的消费点，
+            # judge_pair_executor.py:33-34 接线合同）：
+            # - ``DEDUP_JUDGE_PAIR_EXECUTOR`` 缺省 OFF（缺席/空/非真值
+            #   一律关，assemble 开关族 fail-closed 默认关）——本块零动作，
+            #   下方逐对循环 ``adjudicate_pair`` 走现役逐对路径**逐字节**
+            #   （_pair_judge_callable 即 judge_callable 同一对象）；
+            # - ON → 判径对集合（未决+硬冲突未拦——纯读预测，与逐对循环
+            #   同一序同一谓词）批量预执行：双序每序=现役 judge_callable
+            #   同一顺序调用（render=judge_pair._order_context 同一展开
+            #   函数单对单序；call_fn 位置参数壳=adjudicate_pair 同一调用
+            #   形态），经执行器对池+HTTP 信号量并发（双序同实例纪律=
+            #   工厂捆扎面结构执法）；逐对循环 ``adjudicate_pair`` 改由
+            #   服务闭包供给预执行结果——**adjudicate_pair 本体/判官
+            #   prompt/核验/合并逻辑一字不动**（并发=纯管道）；
+            # - 语义对账：预执行捕获的异常在服务闭包内**原样重放**——
+            #   adjudicate_pair 的 _call_with_timeout 同一映射（Judge_
+            #   BudgetExceeded→BUDGET_EXCEEDED；其余→JUDGE_EXCEPTION）；
+            #   执行器层超时/拒新（status≠ok）→RuntimeError→JUDGE_
+            #   EXCEPTION 未决 fail-closed（不冒签）；预读 miss（防御性
+            #   缺位）同路。ON 态 judge_timeout_s 的单顺序等待闸自然
+            #   让位执行器合同（pair_timeout_s 释对级槽位+传输层自带
+            #   超时，语义分立见 assemble.py 开关注记）；
+            # - 预扫描说明：硬冲突预测与逐对循环同一确定性检测（纯函数
+            #   重放，静默钩子零计数零日志——真实拦截/计数/变异仍由逐对
+            #   循环唯一执法；CPU 双跑 ON 态成本，无 LLM 调用）。
+            _pair_judge_callable = judge_callable
+            if judge_callable is not None:
+                # 惰性导入（环导规避——api/assemble 模块级依赖
+                # decide.judge_pair_executor，decide.service 模块级反向
+                # 依赖 api.assemble 即成环；运行时导入时全模块已就绪。
+                # 且仅判官在场才触达：无判官路径（judge=None fail-closed
+                # 未决）零导入零开销，OFF 态只做开关单查）。
+                from news_flash_dedup.api.assemble import (
+                    JudgePairRequest as _JudgePairRequest,
+                    build_judge_pair_executor as _build_judge_pair_executor,
+                    judge_executor_spec_from_env as _judge_spec_from_env,
+                    judge_pair_executor_enabled_from_env as _jx_enabled,
+                )
+                # 开关单查先行（OFF=零旋钮执法——judge_executor_spec_
+                # from_env 的旋钮 ValueError 只在 ON 面解析，OFF 态判定
+                # 路径对执行器旋钮 env 完全无感=现役行为逐字节）。
+                if _jx_enabled():
+                    _jx_spec = _judge_spec_from_env()
+                    if _jx_spec.enabled:
+                        _jx_pair_ctx: dict[str, dict] = {}
+                        _jx_requests: list = []
+                        for _pair in pair_results:
+                            if _pair.outcome != "unresolved":
+                                continue
+                            if core_conflict_enabled:
+                                _jx_hard = core_conflict_module.detect_core_conflict(
+                                    re_freeze_required[_pair.history_record_id]["text"],
+                                    current_text,
+                                    history_record_id=_pair.history_record_id,
+                                    current_record_id=_pair.current_record_id,
+                                    on_detector_error=lambda _name, _exc: None)
+                                if _jx_hard.has_conflict:
+                                    continue
+                            _jx_pc = judge_pair_module.build_pair_context(
+                                _pair,
+                                history_text=re_freeze_required[
+                                    _pair.history_record_id]["text"],
+                                current_text=current_text)
+                            _jx_pair_ctx[_pair.pair_id] = _jx_pc
+                            _jx_requests.append(_JudgePairRequest(
+                                pair_id=_pair.pair_id,
+                                text_history=re_freeze_required[
+                                    _pair.history_record_id]["text"],
+                                text_current=current_text))
+                        if _jx_requests:
+                            def _jx_render(_request, _order):
+                                # 单对单序展开（组装权=业务侧：order
+                                # context 展开=adjudicate_pair 同一函数
+                                # judge_pair._order_context——语义零漂；
+                                # 执行器结构保证 render 只见单个请求=
+                                # 禁拼对）。
+                                return {"pair_context": judge_pair_module._order_context(
+                                    _jx_pair_ctx[_request.pair_id], _order)}
+
+                            def _jx_call(pair_context):
+                                # 位置参数壳（参数名=render 关键字面
+                                # pair_context）：adjudicate_pair 同一调用
+                                # 形态 judge_callable(order_ctx)（任意注入
+                                # 件签名可容）。
+                                return judge_callable(pair_context)
+
+                            _jx_wired = _build_judge_pair_executor(
+                                _jx_spec, call_fn=_jx_call, render=_jx_render)
+                            _jx_served: dict[str, Any] = {}
+                            for _jx_req, _jx_res in zip(
+                                    _jx_requests, _jx_wired.execute(_jx_requests)):
+                                _jx_served[_jx_req.pair_id] = _jx_res
+
+                            def _jx_serve(_ctx):
+                                # 服务闭包：adjudicate_pair 逐序调用改查
+                                # 预执行结果——捕获异常原样重放（同一失败
+                                # 码映射）；执行器层未完成（超时/拒新/
+                                # 防御性缺位）→RuntimeError→JUDGE_
+                                # EXCEPTION 未决 fail-closed。
+                                _result = _jx_served.get(_ctx.get("pair_id"))
+                                _status = getattr(_result, "status", None)
+                                if (_status != "ok" or _result.value is None):
+                                    raise RuntimeError(
+                                        f"判官并发执行器单对结果不可用（pair_id="
+                                        f"{_ctx.get('pair_id')!r} status={_status!r}"
+                                        "）——执行器层超时/异常/拒新即未决 "
+                                        "fail-closed 不冒签")
+                                _order_outcome = getattr(
+                                    _result.value, _ctx.get("order"))
+                                if _order_outcome.error is not None:
+                                    raise _order_outcome.error
+                                return _order_outcome.value
+
+                            _pair_judge_callable = _jx_serve
+
             for index, pair in enumerate(pair_results):
                 if pair.outcome != "unresolved":
                     continue
@@ -777,14 +934,42 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                 # 输入**（build_pair_context 零机器证据，判官上下文键集
                 # 与基线全等），只供确定性签发闸与 shadow/审计消费。
                 machine_evidence = None
+                llm_hist_outcome = None
+                llm_cur_outcome = None
                 if machine_evidence_enabled:
+                    # 开工令①b（双轨改造，令1）：track2 按需 LLM facts——
+                    # 判径对双文（被判文本：history 侧被judged记录+current
+                    # ）；LLM facts available 即作机器证据 facts 源（质量线
+                    # ），不可得→文档 facts（rule 回落只补证据——失败闭门
+                    # 见下方 llm_facts_kill）。无候选（上方聚合已定不进本
+                    # 段）/规则已定对（unresolved 过滤+硬冲突 continue）
+                    # /legacy 模式（machine_evidence_enabled=False）零调用。
+                    history_facts_source = (records_by_id.get(
+                        pair.history_record_id, {}).get("facts") or ())
+                    current_facts_source = current.get("facts") or ()
+                    if llm_facts is not None:
+                        llm_hist_outcome = _llm_facts_for_side(
+                            pair.history_record_id,
+                            re_freeze_required[pair.history_record_id]["text"])
+                        llm_cur_outcome = _llm_facts_for_side(
+                            current_record_id, current_text)
+                        if llm_hist_outcome.available:
+                            history_facts_source = list(
+                                llm_hist_outcome.facts)
+                        if llm_cur_outcome.available:
+                            current_facts_source = list(
+                                llm_cur_outcome.facts)
+                        _jcount("judge.llm_facts.pairs")
+                        for _side_outcome in (llm_hist_outcome,
+                                              llm_cur_outcome):
+                            if not _side_outcome.available:
+                                _jcount("judge.llm_facts.sides_unavailable")
                     machine_evidence = (
                         judge_machine_evidence_module.build_machine_evidence(
                             re_freeze_required[pair.history_record_id]["text"],
                             current_text,
-                            history_facts=records_by_id.get(
-                                pair.history_record_id, {}).get("facts") or (),
-                            current_facts=current.get("facts") or ()))
+                            history_facts=history_facts_source,
+                            current_facts=current_facts_source))
                 pair_context = judge_pair_module.build_pair_context(
                     pair,
                     history_text=re_freeze_required[pair.history_record_id]["text"],
@@ -806,8 +991,11 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                     if backfill_no_time:
                         _jcount("judge.backfill.triggered.no_time")
                 judged = judge_pair_module.adjudicate_pair(
-                    judge_callable, pair_context, timeout_s=judge_timeout_s,
+                    _pair_judge_callable, pair_context, timeout_s=judge_timeout_s,
                     decision_mode=active_decision_mode)
+                # （最终接线点2：_pair_judge_callable——OFF=judge_callable
+                # 同一对象（现役逐对路径逐字节）；ON=执行器服务闭包
+                # （预执行结果供给，adjudicate_pair 本体零改动）。）
                 # 提交一（§5.1 文件 D-3）：证据告警/机检发现只进内部
                 # 诊断日志——绝不进公共五字段、绝不再改判。
                 if judged.evidence_warnings or judged.machine_findings:
@@ -884,6 +1072,25 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         _jcount("judge.backfill.vetoed")
                         if backfill_no_time:
                             _jcount("judge.backfill.vetoed.no_time")
+                # 开工令①b 失败闭门（令4）：both_missing 域判官判"重复"且
+                # 闸放行（rule 回落证据四要素证成）但 LLM facts 不可得
+                # （预算耗尽无缓存/抽取失败/零事实被拒）——不降级签重复：
+                # 撤签强制存疑转边界（rule 回落只补证据，不构成 R7 四要素
+                # 核证的签发质量线——用户令质量线=LLM 供给面）。
+                _llm_sides_ready = bool(
+                    llm_hist_outcome is not None
+                    and llm_hist_outcome.available
+                    and llm_cur_outcome is not None
+                    and llm_cur_outcome.available)
+                llm_facts_kill = bool(
+                    llm_facts is not None
+                    and machine_evidence is not None
+                    and machine_evidence["subject_backfill"]["both_missing"]
+                    and sem_outcome == "equivalent"
+                    and not gate_block
+                    and not _llm_sides_ready)
+                if llm_facts_kill:
+                    _jcount("judge.backfill.gate.llm_facts_unavailable")
                 if sem_failure == judge_pair_module.ORDER_DISAGREE:
                     _jcount("judge.order_disagree")
                 if judged.evidence_warnings or judged.machine_findings:
@@ -954,6 +1161,26 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         detail=("主体单方缺失回填规则已被独立开关关闭"
                                 "（DEDUP_JUDGE_BACKFILL），强制存疑转边界。"),
                         **judged_diagnostics)
+                elif llm_facts_kill:
+                    # 开工令①b 终局（失败闭门）：LLM 事实不可得撤签——对级
+                    # 终态强制存疑转边界（JUDGE_UNCERTAIN 白名单码）；detail
+                    # 即公共 reason 源（可溯不可得成因：预算耗尽无缓存/抽取
+                    # 失败/零事实被拒）；判官实际双序结论经 proofs 审计件在
+                    # 案（机器不判语义，只执行质量线：R7 四要素核证据不得
+                    # 降级——rule 回落只补证据）。
+                    _unavail_reasons = [
+                        _outcome.reason
+                        for _outcome in (llm_hist_outcome, llm_cur_outcome)
+                        if _outcome is not None and not _outcome.available
+                        and _outcome.reason]
+                    pair_results[index] = replace(
+                        pair, outcome="unresolved", code="JUDGE_UNCERTAIN",
+                        detail=("R7 四要素核证据不可降级：LLM 事实抽取不可得"
+                                f"（{'；'.join(_unavail_reasons) or '未知原因'}），"
+                                "rule 回落证据只补证据不构成签发质量线，判官"
+                                "原判'重复'不得签发，强制存疑转边界。"),
+                        used_evidence=tuple(judged.used_evidence),
+                        **judged_diagnostics)
                 elif judged.outcome == "unresolved":
                     # 仍未决：只换终态码/detail（detail 携合同 §三枚举），
                     # 原对级证据字段不动。
@@ -973,7 +1200,8 @@ def decide_for_task(history: Mapping, candidates: Iterable[Mapping], *,
                         verified_conflicts=tuple(judged.verified_conflicts),
                         **judged_diagnostics)
                 pair_codes[pair.history_record_id] = (
-                    "JUDGE_UNCERTAIN" if (gate_block or backfill_kill)
+                    "JUDGE_UNCERTAIN" if (gate_block or backfill_kill
+                                          or llm_facts_kill)
                     else judged.code)
         # ③ 件级最终聚合（合同 §五 strict 口径）：本结果才是 decide_for_task
         # 的返回、才进 commit_one 写入计划；上方初聚合仅用于定位未决对，
@@ -1049,6 +1277,11 @@ def _run_single_pair(history_record_id, history_text, history_report,
     )
     p15_report = p15_integration.extract_p15_results(
         history_report, current_report, history_text, current_text, alignment,
+        # 2026-10-11（主窗令·判定优先级修复 ③）：真实双侧 business_date
+        # 转发入 p15——C14 同日同文放行门（同日+原文完全一致不撤证）消费；
+        # 跨日本身仍由 pair_compare._check_binding fail-closed（禁签）。
+        history_business_date=history_business_date,
+        current_business_date=current_business_date,
     )
     history_ctx = {
         "record_id": history_record_id, "item_id": history_item_id,

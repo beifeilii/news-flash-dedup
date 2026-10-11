@@ -141,9 +141,11 @@ def test_shell_strip_switch_parsing_strict_default_off():
 
 # ---------- 规则版本化与剥壳原语（v2 §4.1 版本化+能回指原文） ----------
 
-def test_rule_version_pinned_v1():
-    """v1 版本串钉死：扩员/变形必升版本（闭表纪律的可执行钉）。"""
-    assert SHELL_STRIP_RULE_VERSION == "source-shell-v1-2026-10-09"
+def test_rule_version_pinned():
+    """版本串钉死：扩员/变形必升版本（闭表纪律的可执行钉）。
+    2026-10-11（主窗令·判定优先级修复 ①）升 v2：闭表扩员（界面新闻快
+    讯，T 冻结 31 对表 #7 实测同正文异尾注）+迭代剥变形双触发。"""
+    assert SHELL_STRIP_RULE_VERSION == "source-shell-v2-2026-10-11"
     assert (SHELL_STRIP_RESIDUAL_MIN, SHELL_STRIP_BARE_MIN) == (15, 20)
 
 

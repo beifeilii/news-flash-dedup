@@ -45,6 +45,7 @@ from news_flash_dedup.persist.es_store import build_commit_one_store
 from news_flash_dedup.runtime_budget import ProcessingBudget, RuntimeBudgetConfig
 
 from .es_gateway import response_body
+from .fact_supply import build_llm_facts_from_env
 from .fusion import RecallPlan
 from .models import RecallRequest
 from .service import RECALL_MODES, mode_from_environment
@@ -75,7 +76,8 @@ def shadow_decide(current: Mapping, candidates: tuple[Mapping, ...], *,
                   dictionary=None,
                   dictionary_version: str = "dict_v1",
                   judge_callable=None,
-                  judge_version_config=None) -> DecideOutcome:
+                  judge_version_config=None,
+                  llm_facts=None) -> DecideOutcome:
     """影子腿决策：与生效腿 commit_one 决策段同型镜像（零副作用纯函数）。
 
     候选非空：decide_for_task(history=candidates[-1], candidates=candidates[:-1],
@@ -90,11 +92,21 @@ def shadow_decide(current: Mapping, candidates: tuple[Mapping, ...], *,
     预装配（judge_callable 未注入时）与 decide_for_task 同一配置一路
     传入（禁止各读环境变量）；缺省维持原 env 分发口径（与生效腿
     commit_one 缺省行为同型镜像）。
+
+    llm_facts（最终接线窗，P1c 装配注入设计单 §二 A+B）：显式注入优先
+    （注入位 A——组合根/工装罐装）；None=按 env 预装配（注入位 B——
+    build_llm_facts_from_env：DEDUP_LLM_FACTS_ONDEMAND 缺省关→None=
+    decide_for_task 缺省双轨关，现役语义逐字节；与 judge_callable
+    预装配完全同型）。影子腿与生效腿（commit_one）同闸同件。
     """
     if candidates:
         if judge_callable is None:
             judge_callable = judge_adapter_module.build_judge_callable(
                 version_config=judge_version_config)
+        if llm_facts is None:
+            # 注入位 B 预装配（设计单 §二-B：judge_callable=None→
+            # build_judge_callable 同型；开关关→None=缺省双轨关零 diff）。
+            llm_facts = build_llm_facts_from_env()
         return decide_service.decide_for_task(
             history=candidates[-1],
             candidates=candidates[:-1],
@@ -107,6 +119,7 @@ def shadow_decide(current: Mapping, candidates: tuple[Mapping, ...], *,
             dictionary_version=dictionary_version,
             judge_callable=judge_callable,
             judge_version_config=judge_version_config,
+            llm_facts=llm_facts,
         )
     if coverage_complete:
         return DecideOutcome(
@@ -355,7 +368,8 @@ class DedupWorker:
                  budget_config: RuntimeBudgetConfig | None = None,
                  clock_mono: Callable[[], float] | None = None,
                  parallel_driver: Any = None,
-                 judge_version_config: Any = None) -> None:
+                 judge_version_config: Any = None,
+                 llm_facts: Any = None) -> None:
         if mode not in RECALL_MODES:
             raise ValueError(f"unknown recall mode: {mode!r}")
         if max_stale_retries < 1:
@@ -391,6 +405,12 @@ class DedupWorker:
         # decide_for_task）同一配置一路传入，禁止各读环境变量；None=
         # 现役 env 分发口径逐字节（缺省零 diff）。
         self.judge_version_config = judge_version_config
+        # 最终接线窗（P1c 装配注入设计单 §二 A）：按需 LLM facts 单源注入
+        # ——在场时影子腿（shadow_decide）与生效腿（commit_one→
+        # decide_for_task）同一件一路传递（显式注入优先；None=两腿各自按
+        # env 预装配注入位 B——build_llm_facts_from_env 缺省关→None=
+        # decide_for_task 缺省双轨关，现役语义逐字节零 diff）。
+        self.llm_facts = llm_facts
         self.dictionary_version = dictionary_version
         # W2 ⑩①-2（N43 挂账清偿）：预算件——budget_config 在场→逐条按
         # accepted_at 派生 ProcessingBudget（T082 排队不重置）；None=现役
@@ -538,7 +558,8 @@ class DedupWorker:
             pipeline_version=self.pipeline_version,
             dictionary=self.dictionary,
             dictionary_version=self.dictionary_version,
-            judge_version_config=self.judge_version_config)
+            judge_version_config=self.judge_version_config,
+            llm_facts=self.llm_facts)
         generated_at = _aware_iso(self.clock())
         self.artifact_sink.emit(_PLAN_ARTIFACT_KIND,
                                 plan_artifact(plan, request))
@@ -575,6 +596,7 @@ class DedupWorker:
                     dictionary=self.dictionary,
                     dictionary_version=self.dictionary_version,
                     judge_version_config=self.judge_version_config,
+                    llm_facts=self.llm_facts,
                     **budget_kw)
             except CommitOneError:
                 return "failed"            # 终态未确认：不推进不投递

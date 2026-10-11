@@ -24,6 +24,7 @@ from news_flash_dedup.decide import service as decide_service
 from news_flash_dedup.decide.audit import AuditBatch
 from news_flash_dedup.decide.types import DecideOutcome
 from news_flash_dedup.persist.fake_store import FakeCASConflictError
+from news_flash_dedup.recall.fact_supply import build_llm_facts_from_env
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,7 @@ def commit_one(
     budget=None,                            # W2 ⑩①-4（N43 挂账清偿）：ProcessingBudget|None；None=现役逐字节
     judge_callable=None,                    # P1 联调（2026-10-09 P1-a）：None=按 env 装配真件（DEDUP_JUDGE_PROOF 关→None=未注入 fail-closed 未决）
     judge_version_config=None,              # 终审复审补丁：判官版本单源（None=装配/服务各自按 env 分发）
+    llm_facts=None,                         # 最终接线窗（P1c 注入设计 §二 A+B）：按需 LLM facts——显式注入优先；None=按 env 预装配（DEDUP_LLM_FACTS_ONDEMAND 缺省关→None=decide_for_task 缺省双轨关，现役语义逐字节）
 ) -> CommitOutcome:
     """commit_one 编排（fake 仓储注测）。
 
@@ -246,6 +248,11 @@ def commit_one(
         if judge_callable is None:
             judge_callable = judge_adapter_module.build_judge_callable(
                 budget=budget, version_config=judge_version_config)
+        if llm_facts is None:
+            # 注入位 B 预装配（P1c 装配注入设计单 §二-B：judge_callable
+            # =None→build_judge_callable 同型；DEDUP_LLM_FACTS_ONDEMAND
+            # 缺省关→None=decide_for_task 缺省双轨关，现役语义零 diff）。
+            llm_facts = build_llm_facts_from_env()
         decide = decide_service.decide_for_task(
             history=history,
             candidates=remaining_candidates,
@@ -259,6 +266,7 @@ def commit_one(
             budget=budget,  # W2 ⑩①-4：T011 归因面透传（None=零 diff）
             judge_callable=judge_callable,  # P1 联调：真件/None（未注入 fail-closed）
             judge_version_config=judge_version_config,  # 终审复审：单源一路传递
+            llm_facts=llm_facts,  # 最终接线窗：按需 LLM facts 单源传递（None=双轨关）
         )
     else:
         # R9 外部审核 F3 修复（主窗口 06:5x）：分区首条（零候选）——无历史

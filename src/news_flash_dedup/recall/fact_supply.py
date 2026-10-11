@@ -36,6 +36,20 @@ T 接线预留（令 5）：工装装配点=组合根构造 RecallService(fact_s
 或直接 LlmFactSupply(...)。本模块不动 create_host 默认（缺省恒
 IdentityFactSupply——21:4x 主窗口裁定形态零翻转）；api/host.py 组合根
 的 fact_supply 注入位不变（显式注入单源）。
+
+开工令①b（2026-10-11，LLM 抽取按需化·双轨改造，基于 9e0bb4d）：
+本模块新增 **track 2 按需面**——``OnDemandLlmFacts``（decide 层注入
+协议实现：extract(record_id, text) -> LlmFactsOutcome）+缓存键四元
+（facts/llm.py EXTRACTOR_SCHEMA_VERSION 升维）+日 token 耗尽合同
+（停新增+已有缓存继续用+告警计数 budget_exhausted_events）。与 F3
+ unconditional 面（LlmFactSupply——①令产物，整批文档供给）并存：
+双轨生产装配=build_commit_inputs 缺省 rule 供给（deterministic 段）
++decide 判径对按需 OnDemandLlmFacts（LLM 段）。回落纪律差异（令4）
+：F3 面失败回落 rule 供给结果；按需面失败**不替换**——如实报
+unavailable，由 decide 层执行失败闭门（rule 回落只补证据，both_
+missing 域不降级签重复）。接口冻结清单见 decide/service.py
+decide_for_task(llm_facts=...) docstring 与本模块 OnDemandLlmFacts
+docstring（P0 运行时装配对接面）。
 """
 
 from __future__ import annotations
@@ -47,7 +61,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NamedTuple
 
 from news_flash_dedup.facts import llm as _facts_llm
 from news_flash_dedup.facts.llm import LlmExtractionError
@@ -68,6 +82,13 @@ DEFAULT_FACT_TIMEOUT_S = 30.0
 #: D 项：日 token 闸（EMB 部署配置档值族同构，主窗确认 20M）。
 FACT_DAILY_TOKEN_BUDGET_ENV = "DEDUP_FACT_DAILY_TOKEN_BUDGET"
 DEFAULT_FACT_DAILY_TOKEN_BUDGET = 20_000_000
+
+#: 按需 LLM facts 注入开关（最终接线窗，P1c 装配注入设计单 §二-B 注入
+#: 位 B：shadow_decide/commit_one 预装配 None=env 装配；judge 开关族
+#: 真值集同款——缺席/空/非真值一律关（fail-closed 默认关=影子态）。
+#: 已登记 lib/run_manifest.py KNOWN_SWITCHES。
+LLM_FACTS_ONDEMAND_ENV = "DEDUP_LLM_FACTS_ONDEMAND"
+_LLM_FACTS_ONDEMAND_ON = frozenset({"1", "true", "yes", "on"})
 
 #: F 项：零事实被拒标记（facts/llm.py 兜底路径稳定标记）。
 ZERO_FACTS_MARKER = "llm_empty_facts_fallback"
@@ -191,6 +212,9 @@ class FactExtractionLedger:
             "tokens_in": 0,
             "tokens_out": 0,
             "llm_latency_s": 0.0,
+            # ①b 令3（日 token 耗尽合同）预算告警计数：
+            "budget_exhausted_events": 0,   # 预算闸拒绝启动新抽取的次数
+            "budget_charge_failures": 0,    # charge 落盘失败（fail-closed 降级）
         }
         self.entries: list[dict] = []      # 内存台账（审计/断言面）
 
@@ -240,6 +264,16 @@ class FactExtractionLedger:
                 self._counters["llm_successes"] += 1
             else:
                 self._counters["llm_failures"] += 1
+
+    def count_budget_exhausted(self) -> None:
+        """①b 令3 预算告警计数：日 token 闸拒绝启动新抽取（每次+1）。"""
+        with self._lock:
+            self._counters["budget_exhausted_events"] += 1
+
+    def count_budget_charge_failure(self) -> None:
+        """①b：charge 落盘失败（结果保留、后续调用拒）降级计数。"""
+        with self._lock:
+            self._counters["budget_charge_failures"] += 1
 
 
 # ---------- D 项：日 token 闸（EMB R14 族同构） ----------
@@ -489,6 +523,9 @@ class LlmFactSupply:
             if self.budget is not None:
                 self.budget.check_open()
         except FactsBudgetExceeded as error:
+            # ①b 令3 预算告警计数（两供给面对称：F3 面同样"拒绝启动新
+            # 抽取"即+1——单点口径=count_budget_exhausted 语义注释）。
+            self.ledger.count_budget_exhausted()
             return self._fall_back(
                 record_id, text, f"budget_exceeded: {error}")
 
@@ -532,6 +569,7 @@ class LlmFactSupply:
                     # charge 落盘失败（fail-closed）：本结果仍直通（调用已
                     # 发生、token 已耗），此后调用由 check_open 拒——账不
                     # 旁路；台账记 degraded 原因可溯。
+                    self.ledger.count_budget_charge_failure()
                     self._record(record_id=record_id, text=text,
                                  facts_count=len(facts), tokens_in=tokens_in,
                                  tokens_out=tokens_out, latency_s=latency,
@@ -544,6 +582,223 @@ class LlmFactSupply:
                      tokens_in=tokens_in, tokens_out=tokens_out,
                      latency_s=latency, cache_hit=cache_hit)
         return facts
+
+
+# ---------- ①b（开工令 2026-10-11）：track 2 按需 LLM 事实抽取面 ----------
+
+
+class LlmFactsOutcome(NamedTuple):
+    """按需抽取结果（接口冻结面——decide 层结构性消费，鸭子型属性访问）。
+
+    - facts：LLM facts 原样（facts/llm.py 合同形——evidence 引文真跨度
+      +record_id 归属）；None=不可得；
+    - available：True=LLM facts 可用（source="llm"|"cache"）；False=
+      不可得（预算耗尽无缓存/抽取失败/零事实被拒——回落纪律由 decide
+      层执行：rule 回落只补证据+失败闭门）；
+    - source："llm"（新调用）|"cache"（缓存命中——零 token 消耗）|
+      "unavailable"；
+    - reason：不可得原因（审计串；available 时 None）。
+    """
+
+    facts: list[dict] | None
+    available: bool
+    source: str
+    reason: str | None
+
+
+class _BudgetRefusedCall(LlmExtractionError):
+    """①b 令3 预算闸拒绝（调用时刻执法——探针/预检与调用间 TOCTOU 兜底
+    ）：LlmExtractionError 子类→facts/llm.py 重试环确定性直抛（不重试
+    ），extract() 归类 budget_exceeded 不可得。"""
+
+
+def _record_extraction(ledger: FactExtractionLedger, *, model: str,
+                       record_id: str, text: str, facts_count: int,
+                       tokens_in: int = 0, tokens_out: int = 0,
+                       latency_s: float = 0.0, cache_hit: bool = False,
+                       fallback: bool = False,
+                       fallback_reason: str | None = None) -> None:
+    """台账逐条记账（与 LlmFactSupply._record 同键集——两供给面账面同构）。"""
+    text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    ledger.record({
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "record_id": record_id,
+        "text_sha256": text_sha,
+        "model": model,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "latency_s": round(float(latency_s), 3),
+        "cache_hit": cache_hit,
+        "fallback": fallback,
+        "fallback_reason": fallback_reason,
+        "n_facts": facts_count,
+    })
+
+
+class OnDemandLlmFacts:
+    """①b track 2：按需 LLM 事实抽取面（decide 层注入协议参考实现）。
+
+    【接口冻结清单（P0 运行时装配对接面）】
+    - 协议：``extract(record_id: str, text: str) -> LlmFactsOutcome``
+      （幂等性不要求——decide 层每任务按 (record_id, text) 记忆化，
+      同文多次判定只抽一次）；
+    - 构造面：call_fn（注入 mock/默认 DashScope urllib）|model|base_url
+      |api_key|cache_dir|timeout_s（缺席=DEDUP_FACT_TIMEOUT_S/30.0）
+      |max_retries=2|ledger|budget|token_counter|env；
+    - 语义（与 decide_for_task(llm_facts=...) 消费面共同冻结）：
+      · 缓存键四元（令2）：raw_text_hash+model+prompt_version+
+        extractor_schema_version——遗产条目（无 schema 维）miss 重抽；
+      · 日 token 耗尽合同（令3）：探针命中（cache_entry_usable）→不经
+        预算（已有缓存继续用）；未命中→预算闸在调用前（停新增，诚实
+        零 token 消耗）+调用时刻 belt 再核（TOCTOU 兜底）；拒绝→
+        unavailable(budget_exceeded)+告警计数 budget_exhausted_events；
+      · 失败闭门（令4）：抽取失败/零事实被拒→unavailable（**不做
+        rule 替换**——F3 无条件面失败回落 rule 供给结果，按需面回落
+        纪律由 decide 层执行：rule 回落只补证据不越 R7 硬门槛）。
+
+    与 LlmFactSupply（①令 F3 unconditional 面）的关系：共用
+    extract_facts_llm 抽取器+缓存+日闸+台账件；供给语义分野——F3 面
+    整批文档供给（build_commit_inputs 调用），本面判径对按需（decide
+    层调用），失败处置分道（见上）。
+    """
+
+    def __init__(self, *, call_fn: Callable[..., tuple[str, float]] | None = None,
+                 model: str | None = None,
+                 base_url: str | None = None,
+                 api_key: str | None = None,
+                 cache_dir: str | os.PathLike[str] | None = None,
+                 timeout_s: float | None = None,
+                 max_retries: int = 2,
+                 ledger: FactExtractionLedger | None = None,
+                 budget: FactsDailyTokenBudget | None = None,
+                 token_counter: Callable[[str], tuple[int, str]] | None = None,
+                 env: Mapping[str, str] | None = None) -> None:
+        self._env = os.environ if env is None else env
+        self.model = model if model is not None else _facts_llm.DEFAULT_MODEL
+        self.base_url = base_url
+        self.api_key = api_key
+        self.cache_dir = cache_dir
+        self.timeout_s = (timeout_s if timeout_s is not None
+                          else fact_timeout_from_env(self._env))
+        self.max_retries = max_retries
+        self.ledger = ledger if ledger is not None else FactExtractionLedger()
+        self.budget = budget if budget is not None else FactsDailyTokenBudget()
+        self._token_counter = (token_counter if token_counter is not None
+                               else _count_text_tokens)
+        self._call_fn = call_fn
+
+    # ---------- 内部 ----------
+
+    def _accounting_call_fn(self, call_state: dict) -> Callable:
+        """包 call_fn：调用时刻预算 belt 再核（TOCTOU）+tokens in/out 计数
+        （cache 命中不经此处——零 token 消耗）；逐调用闭包态（线程安全，
+        与 LlmFactSupply 实例态计数分野）。"""
+        inner = self._call_fn
+        base_url = (self.base_url if self.base_url is not None
+                    else _facts_llm.DEFAULT_BASE_URL)
+        api_key = self.api_key or (self._env.get("QWEN_API_KEY") or "")
+        counter = self._token_counter
+
+        def wrapped(*, model: str, text: str, timeout_s: float) -> tuple[str, float]:
+            try:
+                self.budget.check_open()
+            except FactsBudgetExceeded as error:
+                raise _BudgetRefusedCall(str(error)) from None
+            if inner is None:
+                content, latency = _facts_llm._default_call_fn(
+                    model=model, base_url=base_url, api_key=api_key,
+                    text=text, timeout_s=timeout_s)
+            else:
+                content, latency = inner(model=model, text=text,
+                                         timeout_s=timeout_s)
+            tokens_in = counter(_facts_llm._SYSTEM_PROMPT)[0] + counter(text)[0]
+            tokens_out = counter(content)[0]
+            call_state.update(tokens_in=tokens_in, tokens_out=tokens_out,
+                              latency_s=latency)
+            return content, latency
+
+        return wrapped
+
+    def _unavailable(self, record_id: str, text: str, reason: str, *,
+                     budget_exhausted: bool = False) -> LlmFactsOutcome:
+        self.ledger.count_llm_path(success=False)
+        if budget_exhausted:
+            self.ledger.count_budget_exhausted()
+        _record_extraction(self.ledger, model=self.model, record_id=record_id,
+                           text=text, facts_count=0, fallback=True,
+                           fallback_reason=reason)
+        return LlmFactsOutcome(None, False, "unavailable", reason)
+
+    # ---------- ①b 协议 ----------
+
+    def extract(self, record_id: str, text: str) -> LlmFactsOutcome:
+        """按需抽取单文（decide 层判径对调用；协议见类 docstring）。"""
+        if not isinstance(text, str):
+            raise TypeError("text must be str")
+        if not text or not text.strip():
+            # 空文本：抽取器合同=[]（零事实）——按需面如实报不可得
+            # （判径上游最小长度闸本已滤除，防御面）。
+            return LlmFactsOutcome(None, False, "unavailable", "empty_text")
+        # 令3 缓存优先（只读探针）：命中→不经预算（已有缓存继续用）；
+        # 未命中（含遗产条目键门失配）→预算闸在调用前（停新增）。
+        cache_usable = (self.cache_dir is not None
+                        and _facts_llm.cache_entry_usable(
+                            self.cache_dir, text, model=self.model))
+        if not cache_usable:
+            try:
+                self.budget.check_open()
+            except FactsBudgetExceeded as error:
+                return self._unavailable(
+                    record_id, text, f"budget_exceeded: {error}",
+                    budget_exhausted=True)
+        report: dict = {}
+        call_state: dict = {}
+        try:
+            facts = _facts_llm.extract_facts_llm(
+                record_id, text, call_fn=self._accounting_call_fn(call_state),
+                model=self.model, base_url=self.base_url,
+                api_key=self.api_key, cache_dir=self.cache_dir,
+                timeout_s=self.timeout_s, max_retries=self.max_retries,
+                report_hook=report.update)
+        except _BudgetRefusedCall as error:
+            return self._unavailable(
+                record_id, text, f"budget_exceeded: {error}",
+                budget_exhausted=True)
+        except LlmExtractionError as error:
+            # 超时/API 失败/JSON 非法/预算软边界——失败闭门（令4）：不
+            # 做 rule 替换，如实报不可得（decide 层 rule 回落只补证据）。
+            return self._unavailable(
+                record_id, text,
+                f"llm_extraction_failed: {type(error).__name__}: {error}")
+        except OSError as error:
+            return self._unavailable(
+                record_id, text,
+                f"llm_extraction_failed: OSError: {error}")
+        issues = report.get("issues") or []
+        if any(ZERO_FACTS_MARKER in str(issue) for issue in issues):
+            # F 项：零可定位事实被拒（含缓存命中遗产条目同兜底路径）。
+            return self._unavailable(record_id, text, "zero_facts_rejected")
+        cache_hit = bool(report.get("cache_hit"))
+        latency = float(report.get("latency_s", 0.0))
+        tokens_in = int(call_state.get("tokens_in", 0))
+        tokens_out = int(call_state.get("tokens_out", 0))
+        if not cache_hit and call_state:
+            try:
+                self.budget.charge(tokens_in + tokens_out)
+            except FactsBudgetExceeded as error:
+                # charge 落盘失败（fail-closed，R14 同构）：结果已取得照实
+                # 直通（token 已耗、facts 真实），此后调用由 check_open
+                # 拒——账不旁路；告警计数入台账（budget_charge_failures）。
+                self.ledger.count_budget_charge_failure()
+                _log.warning("facts budget charge failed (result kept, "
+                             "future calls refused): %s", error)
+        self.ledger.count_llm_path(success=True)
+        _record_extraction(self.ledger, model=self.model, record_id=record_id,
+                           text=text, facts_count=len(facts),
+                           tokens_in=tokens_in, tokens_out=tokens_out,
+                           latency_s=latency, cache_hit=cache_hit)
+        return LlmFactsOutcome(list(facts), True,
+                               "cache" if cache_hit else "llm", None)
 
 
 # ---------- 工厂（T 接线替换口，令 5 文档化） ----------
@@ -570,6 +825,43 @@ def resolve_fact_supply(
     return RuleFactSupply()
 
 
+def build_llm_facts_from_env(
+        env: Mapping[str, str] | None = None,
+        **kwargs: Any) -> OnDemandLlmFacts | None:
+    """按需 LLM facts 注入工厂（最终接线窗，P1c 装配注入设计单 §二-B）。
+
+    注入位 B 预装配专用（shadow_decide/commit_one 的 ``llm_facts is None``
+    位；显式注入=注入位 A 优先，不经本工厂）：
+
+    - ``DEDUP_LLM_FACTS_ONDEMAND`` 缺席/空/非真值 → **None**（decide_
+      for_task 缺省双轨关，一切现役语义逐字节——fail-closed 默认关，
+      judge_pair._SWITCH_ON_VALUES 同款真值集 "1"/"true"/"yes"/"on"）；
+    - 开 → ``OnDemandLlmFacts(env=…)``（构造面 env 单源：超时沿
+      DEDUP_FACT_TIMEOUT_S[构造器缺省自读]、日 token 闸沿 DEDUP_FACT_
+      DAILY_TOKEN_BUDGET[本工厂显式接线——OnDemandLlmFacts 构造缺省不
+      自读 budget env；两轨道共用同一 env 档，P1c 设计单 §五-3 共用裁量]；
+      model/base_url/api_key 沿构造器缺省[DEFAULT_MODEL/DEFAULT_BASE_URL/
+      QWEN_API_KEY 现读]）。非法 knob 值在构造时刻 ValueError fail-closed
+      （fact_timeout_from_env/fact_daily_token_budget_from_env 同纪律）；
+    - ``**kwargs`` 直通 OnDemandLlmFacts 构造面（call_fn/ledger/cache_dir/
+      budget 等——罐装测试/未来 T 窗生产接线位；``env`` 键由本工厂单源
+      传入， kwargs 携带即弹出丢弃防重复实参；显式 ``budget`` 在场优先，
+      缺省才 env 接线）。跨任务预算持久化（store_path）与磁盘缓存
+      （cache_dir）归 T 窗生产接线（FactsDailyTokenBudget docstring 同
+      口径——缺省内存态）。
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(LLM_FACTS_ONDEMAND_ENV) or "").strip().lower()
+    if raw not in _LLM_FACTS_ONDEMAND_ON:
+        return None
+    kwargs.pop("env", None)        # env 由本工厂单源传（防重复实参）
+    budget = kwargs.pop("budget", None)
+    if budget is None:
+        budget = FactsDailyTokenBudget(
+            daily_tokens=fact_daily_token_budget_from_env(source))
+    return OnDemandLlmFacts(env=source, budget=budget, **kwargs)
+
+
 __all__ = [
     "DEFAULT_FACT_DAILY_TOKEN_BUDGET",
     "DEFAULT_FACT_TIMEOUT_S",
@@ -582,8 +874,12 @@ __all__ = [
     "FactSupplyModeInvalid",
     "FactsBudgetExceeded",
     "FactsDailyTokenBudget",
+    "LLM_FACTS_ONDEMAND_ENV",
     "LlmFactSupply",
+    "LlmFactsOutcome",
+    "OnDemandLlmFacts",
     "ZERO_FACTS_MARKER",
+    "build_llm_facts_from_env",
     "fact_daily_token_budget_from_env",
     "fact_supply_mode_from_env",
     "fact_timeout_from_env",

@@ -507,7 +507,8 @@ def test_w2_f2_facts_permit_drives_retry_and_charge():
 def test_w2_f3_facts_cache_hit_not_charged():
     """缓存命中结构性不计（12 L377）：命中分支在 permit 创建前返回。"""
     import json as _json
-    from news_flash_dedup.facts.llm import LLM_PROMPT_VERSION, extract_facts_llm
+    from news_flash_dedup.facts.llm import (
+        EXTRACTOR_SCHEMA_VERSION, LLM_PROMPT_VERSION, extract_facts_llm)
     budget = rb.ProcessingBudget.derive(accepted_at_mono=1000.0,
                                         config=_config(), clock_mono=_Mono())
     text = "正文二。"
@@ -516,7 +517,10 @@ def test_w2_f3_facts_cache_hit_not_charged():
     _json.dumps({})                                   # noqa：保持 json 引用显式
     (cache / f"{key}.json").write_text(_json.dumps({
         # 7b965b6 模型切换对齐：缓存命中键含 model——与现役默认一致才命中
+        # 开工令①b（2026-10-11 令2）：缓存键四元——直种条目须带
+        # extractor_schema_version 维才命中（遗产三原条目=miss 重抽）
         "model": "qwen-plus", "prompt_version": LLM_PROMPT_VERSION,
+        "extractor_schema_version": EXTRACTOR_SCHEMA_VERSION,
         "raw_llm_content": '{"facts": []}', "issues": []}), encoding="utf-8")
 
     def boom(**kw):                                   # 命中面若误创建调用即炸

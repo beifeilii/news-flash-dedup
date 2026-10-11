@@ -31,6 +31,10 @@ PairOutcome = Literal["equivalent", "conflict", "unresolved"]
 EQUIVALENT_CODES = frozenset({
     "EXACT_TEXT_MATCH",
     "LOSSLESS_TEXT_MATCH",
+    # 2026-10-11（主窗令·判定优先级修复 ②）：剥来源壳后一致的独立证书码
+    # ——与 EXACT/LOSSLESS 三分立（审计可单独统计误判面）；签发见
+    # p15_integration.certify_shell_stripped_equality（信源壳闭表 v2）。
+    "SHELL_STRIPPED_TEXT_MATCH",
     "FACT_EQUIVALENT",
     # 提交一（2026-10-10，p3-semantic-authority，§5.1 修改点 2）：判官
     # 双序一致判重复的语义权威码——不伪装成机器已验证的 FACT_EQUIVALENT。
@@ -43,6 +47,9 @@ EQUIVALENT_CODES = frozenset({
 _TEXT_CERT_PROOF_CODES = frozenset({
     "EXACT_TEXT_MATCH",
     "LOSSLESS_TEXT_MATCH",
+    # 2026-10-11（判定优先级修复 ②）：剥来源壳证书同入直签码集——判定序
+    # 与 EXACT/LOSSLESS 同位（冲突→证书直签→issues）。
+    "SHELL_STRIPPED_TEXT_MATCH",
 })
 CONFLICT_CODES = frozenset({
     "VERIFIED_CONFLICT",

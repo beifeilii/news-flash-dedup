@@ -65,6 +65,7 @@ from pathlib import Path
 
 import pytest
 
+from news_flash_dedup.api.assemble import wire_embedding_micro_batch
 from news_flash_dedup.es_client import (
     APPROVED_UAT_HOST,
     APPROVED_UAT_PORT,
@@ -258,6 +259,14 @@ def shadow_env(shadow_cluster):
             cache_root=_SHADOW_CACHE_ROOT, daily_token_budget=budget,
             query_disk_cache_enabled=True),       # shadow 期间查询磁盘层开
         env=dict(os.environ))
+    # 最终接线（点3，Embedding 微批写径——P1c 装配注入设计单 §四-1 具名
+    # 消费点=emb 真轨 harness 构造位）：组合根构造 EmbeddingClient 处接
+    # 微批网关——DEDUP_EMBEDDING_MICRO_BATCH 缺省 OFF=直通原 client
+    # （同一对象，写径逐字节现役）；ON=BatchedEmbeddingClient 鸭型包装
+    # （写径合批+三态失败映射；读径 embed_query/台账/护栏直通——同
+    # client 兼查询径 QueryEmbedder 直通面）。回填注入位（b1_backfill
+    # 消费本 pipeline）随本组合根一并接线。
+    client = wire_embedding_micro_batch(client, env=dict(os.environ))
     tokenizer = qb.QwenBpeTokenizer()
     pipeline = vp.RealVectorPipeline(store, client, space, tokenizer=tokenizer)
     recall_store = MilvusVectorStore(

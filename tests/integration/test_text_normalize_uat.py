@@ -10,18 +10,24 @@ Hash 相等永不短路判重（必须回取原文）。
 from __future__ import annotations
 
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-# P0-T6 卫生修正：原硬编码主产品树路径（绝对路径）在收集期把外来 src 插到
-# sys.path[0]，使本仓（worktree）后续首次导入的 news_flash_dedup 子模块
-# 解析到外来副本（本测试默认整体 skip，插入仍生效——隐性毒化）。
-# 回锚仓相对（同目录 test_cross_day_uat.py 同型）：本文件所在仓即目标仓。
-ROOT = str(Path(__file__).resolve().parents[2])
-sys.path.insert(0, ROOT + "/src")
+# TFIX-p3c（2026-10-11 测试债修复；合流冲突裁定取此版——不插 sys.path 从根上灭毒化类）：原两行 ROOT=硬编码外树
+# （workspace-dedup/news-flash-dedup 主干 2d0d418）+ sys.path.insert(0,
+# ROOT+"/src")——模块导入副作用把**另一棵产品树**的旧包前插 sys.path；
+# 全套件收集序（integration 先于 unit）下，news_flash_dedup.runtime_budget
+# 首导窗口命中旧树并被 sys.modules 永久钉死（无 counter_snapshot/
+# bump_counter），后续 tests/unit/test_p3c_decision_mode::test_budget_
+# counter_hook 顺序污染红（单跑绿、套件红——探针实测 runtime_budget.
+# __file__ 指向旧树）。死重清理照 test_cleanup_uat.py W3e F1 先例：导入
+# 由 PYTHONPATH=src 跑法保证（本文件 docstring 跑法本就如此）；ROOT 改
+# Path(__file__) 本树回锚 + 导入期钉防回归（失锚即收集红）。
+ROOT = Path(__file__).resolve().parents[2]
+assert (ROOT / "src" / "news_flash_dedup").is_dir(), (
+    f"ROOT 派生失锚：{ROOT} 下无 src/news_flash_dedup（parents 索引漂移）")
 
 
 def _uat_env_ready() -> bool:

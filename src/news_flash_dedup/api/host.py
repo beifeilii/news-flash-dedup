@@ -217,13 +217,21 @@ def create_host(*, es_client: Any, index_prefix: str, scope_id: str = "default",
                 max_stale_retries: int = 3,
                 dictionary: Any = None,
                 dictionary_version: str = "dict_v1",
-                debug_router: Any = None) -> HostAssembly:
+                debug_router: Any = None,
+                llm_facts: Any = None) -> HostAssembly:
     """组装根：模式闸→召回链四件→查询两件→端点 app→（可选）受理 app。
 
     debug_router（log\\debug-endpoint\\方案设计-v1.md §D1）：可选预制只读
     日志查看 router（api/debug.py create_debug_router 产物）；None→不挂
     /debug（现状不变），注入→挂到 query_app。本层只接线不复制闸逻辑——
     token/日志源校验归 create_debug_router 工厂所有。
+
+    llm_facts（最终接线窗，P1c 装配注入设计单 §二-A 组合根显式注入）：
+    可选按需 LLM facts 供给件（decide_for_task(llm_facts=…) 鸭子协议，
+    参考实现 recall.fact_supply.OnDemandLlmFacts）。注入→单源一路传
+    DedupWorker（影子腿 shadow_decide+生效腿 commit_one 同一件）；
+    None（缺省）=两腿各自按 env 预装配注入位 B（DEDUP_LLM_FACTS_
+    ONDEMAND 缺省关→None=现役双轨关语义逐字节零 diff）。
     """
     if es_client is None:
         raise ValueError("es_client must be explicitly injected")
@@ -255,7 +263,8 @@ def create_host(*, es_client: Any, index_prefix: str, scope_id: str = "default",
         commit_store=commit_store, artifact_sink=artifact_sink, clock=clock,
         max_stale_retries=max_stale_retries,
         dictionary=dictionary, dictionary_version=dictionary_version,
-        judge_version_config=judge_version_config)
+        judge_version_config=judge_version_config,
+        llm_facts=llm_facts)
 
     store = ElasticsearchBatchStore(es_client, index_prefix=index_prefix)
     query_port = TaskQueryPort(store, scope_id=scope_id, clock=clock)
